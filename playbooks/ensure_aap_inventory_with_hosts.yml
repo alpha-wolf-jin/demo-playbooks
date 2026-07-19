@@ -97,17 +97,18 @@
               - aap_password | length > 0
               - organization_name | length > 0
               - inventory_name | length > 0
-            fail_msg: "Missing required variables – check aap_gateway_ip, aap_user, aap_password, organization_name, inventory_name"
+              - hosts_list | length > 0
+            fail_msg: "Missing required variables – check aap_gateway_ip, aap_user, aap_password, organization_name, inventory_name, hosts_list"
           tags: execute
 
-        # step-01: Split hosts list (Req 02)
-        - name: "Req 02 - Split hosts list into a list"
+        # Prepare desired hosts list (used for verification)
+        - name: "Prepare desired hosts list from hosts_list"
           ansible.builtin.set_fact:
-            _hosts: "{{ (hosts_list | default('')).split(',') | map('trim') | reject('equalto', '') | list }}"
+            _hosts: "{{ (hosts_list).split(',') | map('trim') | reject('equalto', '') | list }}"
           tags: execute
 
-        # step-02: Look up organization (Req 03)
-        - name: "Req 03 - Look up existing organization"
+        # step-01: Look up organization (Req 2)
+        - name: "Req 2 - Look up existing organization"
           ansible.builtin.set_fact:
             _existing_org: >-
               {{ query('ansible.controller.controller_api', 'organizations',
@@ -119,8 +120,10 @@
                      return_all=true) | flatten }}
           tags: execute
 
-        # step-04: Create organization if missing (step-03 decide via when)
-        - name: "Req 05 - Create the organization"
+        # step-02: Decide (implicit in when below) – org exists if _existing_org has length > 0
+
+        # step-03: Create organization (Req 4)
+        - name: "Req 4 - Create the organization"
           ansible.controller.organization:
             name: "{{ organization_name }}"
             state: present
@@ -132,8 +135,8 @@
           when: _existing_org | length == 0
           tags: execute
 
-        # step-05: Look up inventory (Req 06)
-        - name: "Req 06 - Look up existing inventory"
+        # step-04: Ensure inventory exists (Req 5) – lookup + create + capture ID
+        - name: "Req 5 - Look up existing inventory"
           ansible.builtin.set_fact:
             _existing_inventory: >-
               {{ query('ansible.controller.controller_api', 'inventories',
@@ -145,8 +148,7 @@
                      return_all=true) | flatten }}
           tags: execute
 
-        # step-07: Create inventory if missing (step-06 decide via when)
-        - name: "Req 08 - Create the inventory"
+        - name: "Req 5 - Create the inventory"
           ansible.controller.inventory:
             name: "{{ inventory_name }}"
             organization: "{{ organization_name }}"
@@ -159,14 +161,33 @@
           when: _existing_inventory | length == 0
           tags: execute
 
-        # Store inventory ID for later use
-        - name: "Set inventory ID fact for subsequent tasks"
+        - name: "Req 5 - Set inventory ID fact"
           ansible.builtin.set_fact:
             _inv_id: "{{ _existing_inventory[0].id if (_existing_inventory | length > 0) else _inv_created.id }}"
           tags: execute
 
-        # step-08: Add each host to the inventory (Req 09)
-        - name: "Req 09 - Add each host to the inventory"
+        # step-05: Collect hosts already in inventory (Req 6)
+        - name: "Req 6 - Collect hosts already in inventory"
+          ansible.builtin.set_fact:
+            _hosts_raw: >-
+              {{ query('ansible.controller.controller_api', 'hosts',
+                     host='https://' ~ aap_gateway_ip,
+                     username=aap_user,
+                     password=aap_password,
+                     verify_ssl=false,
+                     query_params={'inventory': _inv_id},
+                     return_all=true) | flatten }}
+          tags: execute
+
+        # step-06: Compute missing hosts (Req 7)
+        - name: "Req 7 - Compute missing hosts"
+          ansible.builtin.set_fact:
+            _existing_host_names: "{{ _hosts_raw | map(attribute='name') | list }}"
+            _missing_hosts: "{{ (hosts_list.split(',') | map('trim') | reject('equalto', '') | list) | difference(_existing_host_names) }}"
+          tags: execute
+
+        # step-07: Add missing hosts (Req 8)
+        - name: "Req 8 - Add missing hosts to the inventory"
           ansible.controller.host:
             name: "{{ item }}"
             inventory: "{{ inventory_name }}"
@@ -175,39 +196,22 @@
             controller_username: "{{ aap_user }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
-          loop: "{{ _hosts }}"
-          register: _host_results
+          loop: "{{ _missing_hosts }}"
+          register: _add_results
           ignore_errors: true
+          when: _missing_hosts | length > 0
           tags: execute
 
-        # step-09: Summarize host results (Req 10)
-        - name: "Req 10 - Extract successful hosts"
+        # step-08: Evaluate host addition results (Req 9)
+        - name: "Req 9 - Evaluate host addition results"
           ansible.builtin.set_fact:
-            _success_hosts: "{{ _host_results.results | default([]) | rejectattr('failed') | map(attribute='item') | list }}"
+            _added_hosts: "{{ _add_results.results | default([]) | rejectattr('failed') | map(attribute='item') | join(',') }}"
+            _failed_hosts: "{{ _add_results.results | default([]) | selectattr('failed') | map(attribute='item') | join(',') }}"
+            _all_succeeded: "{{ (_add_results.results | default([]) | selectattr('failed') | list | length) == 0 }}"
           tags: execute
 
-        - name: "Req 10 - Extract failed hosts"
-          ansible.builtin.set_fact:
-            _failed_hosts: "{{ _host_results.results | default([]) | selectattr('failed') | map(attribute='item') | list }}"
-          tags: execute
-
-        - name: "Req 10 - Join success hosts"
-          ansible.builtin.set_fact:
-            _success_hosts_comma: "{{ _success_hosts | join(',') }}"
-          tags: execute
-
-        - name: "Req 10 - Join failed hosts"
-          ansible.builtin.set_fact:
-            _failed_hosts_comma: "{{ _failed_hosts | join(',') }}"
-          tags: execute
-
-        # Verification: ensure all hosts (minus known failures) are present
-        - name: "Set desired hosts for verification"
-          ansible.builtin.set_fact:
-            _desired_hosts: "{{ _hosts }}"
-          tags: execute
-
-        - name: "Verify - all desired hosts (minus known failures) are present"
+        # Verification: ensure all desired hosts are present (minus failures)
+        - name: "Verify - all desired hosts are present"
           block:
             - name: "Verify - Re-query current inventory hosts"
               ansible.builtin.set_fact:
@@ -223,24 +227,24 @@
             - name: "Verify - Assert no unexpected missing hosts"
               ansible.builtin.assert:
                 that:
-                  - (_desired_hosts | difference(_current_hosts) | sort) == (_failed_hosts | sort)
+                  - (_hosts | difference(_current_hosts) | sort) == (_failed_hosts.split(',') | reject('equalto', '') | list | sort)
                 fail_msg: "Verification failed: hosts missing after addition do not match failed list."
           tags: execute
 
-        # step-10: Emit result block (Req 11)
-        - name: "Req 11 - Emit result block"
+        # step-09: Emit result block (Req 10)
+        - name: "Req 10 - Emit result block"
           ansible.builtin.debug:
             msg: |
               <result>
-              organization: {{ organization_name }}
-              inventory: {{ inventory_name }}
-              success_hosts: {{ _success_hosts_comma }}
-              failed_hosts: {{ _failed_hosts_comma }}
+              inventory_id: {{ _inv_id }}
+              added_hosts: {{ _added_hosts }}
+              failed_hosts: {{ _failed_hosts }}
+              all_succeeded: {{ _all_succeeded }}
               </result>
           tags: execute
 
       rescue:
-        - name: "Req 12 - Emit error block"
+        - name: "Req 11 - Emit error block"
           ansible.builtin.debug:
             msg: |
               <result>
