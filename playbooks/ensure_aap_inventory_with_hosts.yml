@@ -1,0 +1,350 @@
+---
+- name: "SOP playbook 'ensure_aap_inventory_with_hosts' - Ensures organization, inventory and hosts in AAP"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aap_gateway_ip: ""
+    aap_user: ""
+    aap_password: ""
+    organization_name: ""
+    inventory_name: ""
+    hosts_list: ""
+    request_timeout: 60
+    backup_dir: "/var/log/ai-playbooks-backup/ensure_aap_inventory_with_hosts"
+
+  pre_tasks:
+    # ==================== SNAPSHOT (tag: snapshot) ====================
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0755'
+      tags: snapshot
+
+    - name: "Snapshot - Look up organization existence"
+      ansible.builtin.set_fact:
+        _snap_org: >-
+          {{ query('ansible.controller.controller_api', 'organizations',
+                 host='https://' ~ aap_gateway_ip,
+                 username=aap_user,
+                 password=aap_password,
+                 verify_ssl=false,
+                 query_params={'name': organization_name},
+                 return_all=true) | flatten }}
+      tags: snapshot
+
+    - name: "Snapshot - Save organization existence flag"
+      ansible.builtin.copy:
+        content: "{{ (_snap_org | length > 0) | lower }}"
+        dest: "{{ backup_dir }}/org_exists.txt"
+      tags: snapshot
+
+    - name: "Snapshot - Look up inventory existence"
+      ansible.builtin.set_fact:
+        _snap_inv: >-
+          {{ query('ansible.controller.controller_api', 'inventories',
+                 host='https://' ~ aap_gateway_ip,
+                 username=aap_user,
+                 password=aap_password,
+                 verify_ssl=false,
+                 query_params={'name': inventory_name, 'organization__name': organization_name},
+                 return_all=true) | flatten }}
+      tags: snapshot
+
+    - name: "Snapshot - Save inventory existence flag"
+      ansible.builtin.copy:
+        content: "{{ (_snap_inv | length > 0) | lower }}"
+        dest: "{{ backup_dir }}/inv_exists.txt"
+      tags: snapshot
+
+    - name: "Snapshot - Save inventory ID if inventory exists"
+      ansible.builtin.copy:
+        content: "{{ _snap_inv[0].id | string }}"
+        dest: "{{ backup_dir }}/inv_id.txt"
+      when: _snap_inv | length > 0
+      tags: snapshot
+
+    - name: "Snapshot - Gather original hosts if inventory existed"
+      block:
+        - name: "Snapshot - Gather original hosts list"
+          ansible.builtin.set_fact:
+            _snap_hosts: >-
+              {{ query('ansible.controller.controller_api', 'hosts',
+                     host='https://' ~ aap_gateway_ip,
+                     username=aap_user,
+                     password=aap_password,
+                     verify_ssl=false,
+                     query_params={'inventory': _snap_inv[0].id},
+                     return_all=true) | flatten | map(attribute='name') | list }}
+
+        - name: "Snapshot - Write original hosts list"
+          ansible.builtin.copy:
+            content: "{{ _snap_hosts | join(',') }}"
+            dest: "{{ backup_dir }}/hosts_original.txt"
+      when: _snap_inv | length > 0
+      tags: snapshot
+
+  tasks:
+    - block:
+        # ==================== EXECUTE (tag: execute) ====================
+        - name: "Assert required variables are provided"
+          ansible.builtin.assert:
+            that:
+              - aap_gateway_ip | length > 0
+              - aap_user | length > 0
+              - aap_password | length > 0
+              - organization_name | length > 0
+              - inventory_name | length > 0
+            fail_msg: "Missing required variables – check aap_gateway_ip, aap_user, aap_password, organization_name, inventory_name"
+          tags: execute
+
+        # step-01: Split hosts list (Req 02)
+        - name: "Req 02 - Split hosts list into a list"
+          ansible.builtin.set_fact:
+            _hosts: "{{ (hosts_list | default('')).split(',') | map('trim') | reject('equalto', '') | list }}"
+          tags: execute
+
+        # step-02: Look up organization (Req 03)
+        - name: "Req 03 - Look up existing organization"
+          ansible.builtin.set_fact:
+            _existing_org: >-
+              {{ query('ansible.controller.controller_api', 'organizations',
+                     host='https://' ~ aap_gateway_ip,
+                     username=aap_user,
+                     password=aap_password,
+                     verify_ssl=false,
+                     query_params={'name': organization_name},
+                     return_all=true) | flatten }}
+          tags: execute
+
+        # step-04: Create organization if missing (step-03 decide via when)
+        - name: "Req 05 - Create the organization"
+          ansible.controller.organization:
+            name: "{{ organization_name }}"
+            state: present
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_user }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          register: _org_created
+          when: _existing_org | length == 0
+          tags: execute
+
+        # step-05: Look up inventory (Req 06)
+        - name: "Req 06 - Look up existing inventory"
+          ansible.builtin.set_fact:
+            _existing_inventory: >-
+              {{ query('ansible.controller.controller_api', 'inventories',
+                     host='https://' ~ aap_gateway_ip,
+                     username=aap_user,
+                     password=aap_password,
+                     verify_ssl=false,
+                     query_params={'name': inventory_name, 'organization__name': organization_name},
+                     return_all=true) | flatten }}
+          tags: execute
+
+        # step-07: Create inventory if missing (step-06 decide via when)
+        - name: "Req 08 - Create the inventory"
+          ansible.controller.inventory:
+            name: "{{ inventory_name }}"
+            organization: "{{ organization_name }}"
+            state: present
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_user }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          register: _inv_created
+          when: _existing_inventory | length == 0
+          tags: execute
+
+        # Store inventory ID for later use
+        - name: "Set inventory ID fact for subsequent tasks"
+          ansible.builtin.set_fact:
+            _inv_id: "{{ _existing_inventory[0].id if (_existing_inventory | length > 0) else _inv_created.id }}"
+          tags: execute
+
+        # step-08: Add each host to the inventory (Req 09)
+        - name: "Req 09 - Add each host to the inventory"
+          ansible.controller.host:
+            name: "{{ item }}"
+            inventory: "{{ inventory_name }}"
+            state: present
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_user }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          loop: "{{ _hosts }}"
+          register: _host_results
+          ignore_errors: true
+          tags: execute
+
+        # step-09: Summarize host results (Req 10)
+        - name: "Req 10 - Extract successful hosts"
+          ansible.builtin.set_fact:
+            _success_hosts: "{{ _host_results.results | default([]) | rejectattr('failed') | map(attribute='item') | list }}"
+          tags: execute
+
+        - name: "Req 10 - Extract failed hosts"
+          ansible.builtin.set_fact:
+            _failed_hosts: "{{ _host_results.results | default([]) | selectattr('failed') | map(attribute='item') | list }}"
+          tags: execute
+
+        - name: "Req 10 - Join success hosts"
+          ansible.builtin.set_fact:
+            _success_hosts_comma: "{{ _success_hosts | join(',') }}"
+          tags: execute
+
+        - name: "Req 10 - Join failed hosts"
+          ansible.builtin.set_fact:
+            _failed_hosts_comma: "{{ _failed_hosts | join(',') }}"
+          tags: execute
+
+        # Verification: ensure all hosts (minus known failures) are present
+        - name: "Set desired hosts for verification"
+          ansible.builtin.set_fact:
+            _desired_hosts: "{{ _hosts }}"
+          tags: execute
+
+        - name: "Verify - all desired hosts (minus known failures) are present"
+          block:
+            - name: "Verify - Re-query current inventory hosts"
+              ansible.builtin.set_fact:
+                _current_hosts: >-
+                  {{ query('ansible.controller.controller_api', 'hosts',
+                         host='https://' ~ aap_gateway_ip,
+                         username=aap_user,
+                         password=aap_password,
+                         verify_ssl=false,
+                         query_params={'inventory': _inv_id},
+                         return_all=true) | flatten | map(attribute='name') | list }}
+
+            - name: "Verify - Assert no unexpected missing hosts"
+              ansible.builtin.assert:
+                that:
+                  - (_desired_hosts | difference(_current_hosts) | sort) == (_failed_hosts | sort)
+                fail_msg: "Verification failed: hosts missing after addition do not match failed list."
+          tags: execute
+
+        # step-10: Emit result block (Req 11)
+        - name: "Req 11 - Emit result block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              organization: {{ organization_name }}
+              inventory: {{ inventory_name }}
+              success_hosts: {{ _success_hosts_comma }}
+              failed_hosts: {{ _failed_hosts_comma }}
+              </result>
+          tags: execute
+
+      rescue:
+        - name: "Req 12 - Emit error block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: ensure_aap_inventory_with_hosts failed - {{ ansible_failed_task.name | default('unknown') }}: {{ ansible_failed_result.msg | default('unknown error') }}
+              </result>
+        - name: "Fail playbook after error"
+          ansible.builtin.fail:
+            msg: "ensure_aap_inventory_with_hosts failed"
+
+      always:
+        # ==================== RESTORE (tag: restore) ====================
+        - name: "Restore - Read organization existence flag"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/org_exists.txt"
+          register: _r_org_exists_raw
+          tags: restore
+          ignore_errors: true
+
+        - name: "Restore - Set org existence fact"
+          ansible.builtin.set_fact:
+            _restore_org_existed: "{{ _r_org_exists_raw.content | b64decode | trim | bool }}"
+          when: _r_org_exists_raw.content is defined
+          tags: restore
+
+        - name: "Restore - Delete organization if it was created by this run"
+          ansible.controller.organization:
+            name: "{{ organization_name }}"
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_user }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          when: not _restore_org_existed
+          tags: restore
+          ignore_errors: true
+
+        - name: "Restore - Read inventory existence flag"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/inv_exists.txt"
+          register: _r_inv_exists_raw
+          tags: restore
+          ignore_errors: true
+
+        - name: "Restore - Set inventory existence fact"
+          ansible.builtin.set_fact:
+            _restore_inv_existed: "{{ _r_inv_exists_raw.content | b64decode | trim | bool }}"
+          when: _r_inv_exists_raw.content is defined
+          tags: restore
+
+        - name: "Restore - Delete inventory if created and org existed originally"
+          ansible.controller.inventory:
+            name: "{{ inventory_name }}"
+            organization: "{{ organization_name }}"
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_user }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          when: not _restore_inv_existed and _restore_org_existed
+          tags: restore
+          ignore_errors: true
+
+        - name: "Restore - Restore original hosts if inventory existed originally"
+          when: _restore_inv_existed | bool
+          block:
+            - name: "Restore - Read original hosts list"
+              ansible.builtin.slurp:
+                src: "{{ backup_dir }}/hosts_original.txt"
+              register: _r_hosts_orig_raw
+              ignore_errors: true
+
+            - name: "Restore - Read inventory ID from backup"
+              ansible.builtin.slurp:
+                src: "{{ backup_dir }}/inv_id.txt"
+              register: _r_inv_id_raw
+              ignore_errors: true
+
+            - name: "Restore - Gather current hosts"
+              ansible.builtin.set_fact:
+                _restore_current_hosts: >-
+                  {{ query('ansible.controller.controller_api', 'hosts',
+                         host='https://' ~ aap_gateway_ip,
+                         username=aap_user,
+                         password=aap_password,
+                         verify_ssl=false,
+                         query_params={'inventory': (_r_inv_id_raw.content | b64decode | trim | int)},
+                         return_all=true) | flatten | map(attribute='name') | list }}
+              when: _r_inv_id_raw.content is defined
+
+            - name: "Restore - Compute hosts to remove (added by playbook)"
+              ansible.builtin.set_fact:
+                _restore_hosts_to_remove: >-
+                  {%- set _orig = (_r_hosts_orig_raw.content | b64decode).split(',') | map('trim') | list -%}
+                  {{ _restore_current_hosts | difference(_orig) }}
+
+            - name: "Restore - Remove hosts that were added"
+              ansible.controller.host:
+                name: "{{ item }}"
+                inventory: "{{ inventory_name }}"
+                state: absent
+                controller_host: "https://{{ aap_gateway_ip }}"
+                controller_username: "{{ aap_user }}"
+                controller_password: "{{ aap_password }}"
+                validate_certs: false
+              loop: "{{ _restore_hosts_to_remove }}"
+              ignore_errors: true
+          tags: restore
