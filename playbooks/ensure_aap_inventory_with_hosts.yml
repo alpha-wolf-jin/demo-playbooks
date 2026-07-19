@@ -101,7 +101,6 @@
             fail_msg: "Missing required variables – check aap_gateway_ip, aap_user, aap_password, organization_name, inventory_name, hosts_list"
           tags: execute
 
-        # Prepare desired hosts list (used for verification)
         - name: "Prepare desired hosts list from hosts_list"
           ansible.builtin.set_fact:
             _hosts: "{{ (hosts_list).split(',') | map('trim') | reject('equalto', '') | list }}"
@@ -110,7 +109,7 @@
         # step-01: Look up organization (Req 2)
         - name: "Req 2 - Look up existing organization"
           ansible.builtin.set_fact:
-            _existing_org: >-
+            _org_results: >-
               {{ query('ansible.controller.controller_api', 'organizations',
                      host='https://' ~ aap_gateway_ip,
                      username=aap_user,
@@ -120,9 +119,14 @@
                      return_all=true) | flatten }}
           tags: execute
 
-        # step-02: Decide (implicit in when below) – org exists if _existing_org has length > 0
+        # step-02: Decide if organization exists (Req 3) – fixed
+        - name: "Req 3 - Decide if organization exists"
+          ansible.builtin.set_fact:
+            _org_exists: true
+          when: _org_results | length > 0
+          tags: execute
 
-        # step-03: Create organization (Req 4)
+        # step-03: Create organization (Req 4) – condition updated
         - name: "Req 4 - Create the organization"
           ansible.controller.organization:
             name: "{{ organization_name }}"
@@ -132,7 +136,7 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           register: _org_created
-          when: _existing_org | length == 0
+          when: not _org_exists | default(false)
           tags: execute
 
         # step-04: Ensure inventory exists (Req 5) – lookup + create + capture ID
@@ -163,7 +167,7 @@
 
         - name: "Req 5 - Set inventory ID fact"
           ansible.builtin.set_fact:
-            _inv_id: "{{ _existing_inventory[0].id if (_existing_inventory | length > 0) else _inv_created.id }}"
+            _inventory_id: "{{ _existing_inventory[0].id if (_existing_inventory | length > 0) else _inv_created.id }}"
           tags: execute
 
         # step-05: Collect hosts already in inventory (Req 6)
@@ -175,14 +179,23 @@
                      username=aap_user,
                      password=aap_password,
                      verify_ssl=false,
-                     query_params={'inventory': _inv_id},
+                     query_params={'inventory': _inventory_id},
                      return_all=true) | flatten }}
           tags: execute
 
-        # step-06: Compute missing hosts (Req 7)
-        - name: "Req 7 - Compute missing hosts"
+        # step-06: Compute missing hosts (Req 7) – added _inv_id carry forward
+        - name: "Req 7 - Carry forward inventory ID"
+          ansible.builtin.set_fact:
+            _inv_id: "{{ _inventory_id }}"
+          tags: execute
+
+        - name: "Req 7 - Extract existing host names"
           ansible.builtin.set_fact:
             _existing_host_names: "{{ _hosts_raw | map(attribute='name') | list }}"
+          tags: execute
+
+        - name: "Req 7 - Compute missing hosts"
+          ansible.builtin.set_fact:
             _missing_hosts: "{{ (hosts_list.split(',') | map('trim') | reject('equalto', '') | list) | difference(_existing_host_names) }}"
           tags: execute
 
@@ -221,7 +234,7 @@
                          username=aap_user,
                          password=aap_password,
                          verify_ssl=false,
-                         query_params={'inventory': _inv_id},
+                         query_params={'inventory': _inventory_id},
                          return_all=true) | flatten | map(attribute='name') | list }}
 
             - name: "Verify - Assert no unexpected missing hosts"
@@ -231,7 +244,12 @@
                 fail_msg: "Verification failed: hosts missing after addition do not match failed list."
           tags: execute
 
-        # step-09: Emit result block (Req 10)
+        - name: "Set verification fact"
+          ansible.builtin.set_fact:
+            _verification_passed: true
+          tags: execute
+
+        # step-09: Emit result block (Req 10) – EXACTLY four required fields
         - name: "Req 10 - Emit result block"
           ansible.builtin.debug:
             msg: |
