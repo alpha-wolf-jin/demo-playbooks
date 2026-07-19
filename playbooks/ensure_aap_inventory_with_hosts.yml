@@ -6,7 +6,7 @@
 
   vars:
     aap_gateway_ip: ""
-    aap_user: ""
+    aap_username: ""        # overridden by extra_vars at runtime
     aap_password: ""
     organization_name: ""
     inventory_name: ""
@@ -28,7 +28,7 @@
         _snap_org: >-
           {{ query('ansible.controller.controller_api', 'organizations',
                  host='https://' ~ aap_gateway_ip,
-                 username=aap_user,
+                 username=aap_username,
                  password=aap_password,
                  verify_ssl=false,
                  query_params={'name': organization_name},
@@ -46,7 +46,7 @@
         _snap_inv: >-
           {{ query('ansible.controller.controller_api', 'inventories',
                  host='https://' ~ aap_gateway_ip,
-                 username=aap_user,
+                 username=aap_username,
                  password=aap_password,
                  verify_ssl=false,
                  query_params={'name': inventory_name, 'organization__name': organization_name},
@@ -73,7 +73,7 @@
             _snap_hosts: >-
               {{ query('ansible.controller.controller_api', 'hosts',
                      host='https://' ~ aap_gateway_ip,
-                     username=aap_user,
+                     username=aap_username,
                      password=aap_password,
                      verify_ssl=false,
                      query_params={'inventory': _snap_inv[0].id},
@@ -93,12 +93,12 @@
           ansible.builtin.assert:
             that:
               - aap_gateway_ip | length > 0
-              - aap_user | length > 0
+              - aap_username | length > 0
               - aap_password | length > 0
               - organization_name | length > 0
               - inventory_name | length > 0
               - hosts_list | length > 0
-            fail_msg: "Missing required variables – check aap_gateway_ip, aap_user, aap_password, organization_name, inventory_name, hosts_list"
+            fail_msg: "Missing required variables – check aap_gateway_ip, aap_username, aap_password, organization_name, inventory_name, hosts_list"
           tags: execute
 
         - name: "Prepare desired hosts list from hosts_list"
@@ -109,155 +109,131 @@
         # step-01: Look up organization (Req 2)
         - name: "Req 2 - Look up existing organization"
           ansible.builtin.set_fact:
-            _org_results: >-
+            _existing_org: >-
               {{ query('ansible.controller.controller_api', 'organizations',
                      host='https://' ~ aap_gateway_ip,
-                     username=aap_user,
+                     username=aap_username,
                      password=aap_password,
                      verify_ssl=false,
                      query_params={'name': organization_name},
                      return_all=true) | flatten }}
           tags: execute
 
-        # step-02: Decide if organization exists (Req 3) – fixed
+        # step-02: Decide if organization exists (Req 3)
         - name: "Req 3 - Decide if organization exists"
           ansible.builtin.set_fact:
             _org_exists: true
-          when: _org_results | length > 0
+          when: _existing_org | length > 0
           tags: execute
 
-        # step-03: Create organization (Req 4) – condition updated
+        # step-03: Create organization (Req 4)
         - name: "Req 4 - Create the organization"
           ansible.controller.organization:
             name: "{{ organization_name }}"
             state: present
             controller_host: "https://{{ aap_gateway_ip }}"
-            controller_username: "{{ aap_user }}"
+            controller_username: "{{ aap_username }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
           register: _org_created
           when: not _org_exists | default(false)
           tags: execute
 
-        # step-04: Ensure inventory exists (Req 5) – lookup + create + capture ID
+        # step-04: Look up existing inventory (Req 5)
         - name: "Req 5 - Look up existing inventory"
           ansible.builtin.set_fact:
             _existing_inventory: >-
               {{ query('ansible.controller.controller_api', 'inventories',
                      host='https://' ~ aap_gateway_ip,
-                     username=aap_user,
+                     username=aap_username,
                      password=aap_password,
                      verify_ssl=false,
                      query_params={'name': inventory_name, 'organization__name': organization_name},
                      return_all=true) | flatten }}
           tags: execute
 
-        - name: "Req 5 - Create the inventory"
+        # step-05: Decide if inventory exists (Req 6)
+        - name: "Req 6 - Decide if inventory exists"
+          ansible.builtin.set_fact:
+            _inv_exists: "{{ _existing_inventory | length > 0 }}"
+          tags: execute
+
+        # step-06: Create inventory if missing (Req 7)
+        - name: "Req 7 - Create the inventory"
           ansible.controller.inventory:
             name: "{{ inventory_name }}"
             organization: "{{ organization_name }}"
             state: present
             controller_host: "https://{{ aap_gateway_ip }}"
-            controller_username: "{{ aap_user }}"
+            controller_username: "{{ aap_username }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
-          register: _inv_created
-          when: _existing_inventory | length == 0
+          register: _inventory_created
+          when: not _inv_exists
           tags: execute
 
-        - name: "Req 5 - Set inventory ID fact"
+        # Capture the inventory object for later verification
+        - name: "Capture inventory object for verification"
           ansible.builtin.set_fact:
-            _inventory_id: "{{ _existing_inventory[0].id if (_existing_inventory | length > 0) else _inv_created.id }}"
+            _inv_obj: "{{ _existing_inventory[0] if _existing_inventory | length > 0 else _inventory_created }}"
           tags: execute
 
-        # step-05: Collect hosts already in inventory (Req 6)
-        - name: "Req 6 - Collect hosts already in inventory"
-          ansible.builtin.set_fact:
-            _hosts_raw: >-
-              {{ query('ansible.controller.controller_api', 'hosts',
-                     host='https://' ~ aap_gateway_ip,
-                     username=aap_user,
-                     password=aap_password,
-                     verify_ssl=false,
-                     query_params={'inventory': _inventory_id},
-                     return_all=true) | flatten }}
-          tags: execute
+        # step-07 (Req 8) is already handled by the _hosts set_fact above
 
-        # step-06: Compute missing hosts (Req 7) – added _inv_id carry forward
-        - name: "Req 7 - Carry forward inventory ID"
-          ansible.builtin.set_fact:
-            _inv_id: "{{ _inventory_id }}"
-          tags: execute
-
-        - name: "Req 7 - Extract existing host names"
-          ansible.builtin.set_fact:
-            _existing_host_names: "{{ _hosts_raw | map(attribute='name') | list }}"
-          tags: execute
-
-        - name: "Req 7 - Compute missing hosts"
-          ansible.builtin.set_fact:
-            _missing_hosts: "{{ (hosts_list.split(',') | map('trim') | reject('equalto', '') | list) | difference(_existing_host_names) }}"
-          tags: execute
-
-        # step-07: Add missing hosts (Req 8)
-        - name: "Req 8 - Add missing hosts to the inventory"
+        # step-08 (Req 9): Add all hosts, loop over _hosts, ignore errors
+        - name: "Req 8 - Add each host to the inventory"
           ansible.controller.host:
             name: "{{ item }}"
             inventory: "{{ inventory_name }}"
             state: present
             controller_host: "https://{{ aap_gateway_ip }}"
-            controller_username: "{{ aap_user }}"
+            controller_username: "{{ aap_username }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
-          loop: "{{ _missing_hosts }}"
-          register: _add_results
+          loop: "{{ _hosts }}"
+          register: _host_results
           ignore_errors: true
-          when: _missing_hosts | length > 0
+          when: _hosts | length > 0
           tags: execute
 
-        # step-08: Evaluate host addition results (Req 9)
-        - name: "Req 9 - Evaluate host addition results"
+        # step-09 (Req 10): Summarize host addition results from per‑host results
+        - name: "Req 9 - Evaluate host addition results from per‑host results"
           ansible.builtin.set_fact:
-            _added_hosts: "{{ _add_results.results | default([]) | rejectattr('failed') | map(attribute='item') | join(',') }}"
-            _failed_hosts: "{{ _add_results.results | default([]) | selectattr('failed') | map(attribute='item') | join(',') }}"
-            _all_succeeded: "{{ (_add_results.results | default([]) | selectattr('failed') | list | length) == 0 }}"
+            _failed_hosts: >-
+              {{ _host_results.results | default([]) | selectattr('failed', 'true') | map(attribute='item') | list }}
+            _added_count: >-
+              {{ _host_results.results | default([]) | selectattr('changed', 'true') | rejectattr('failed', 'true') | list | length }}
+            _total_hosts: >-
+              {{ _host_results.results | default([]) | length }}
           tags: execute
 
-        # Verification: ensure all desired hosts are present (minus failures)
-        - name: "Verify - all desired hosts are present"
-          block:
-            - name: "Verify - Re-query current inventory hosts"
-              ansible.builtin.set_fact:
-                _current_hosts: >-
-                  {{ query('ansible.controller.controller_api', 'hosts',
-                         host='https://' ~ aap_gateway_ip,
-                         username=aap_user,
-                         password=aap_password,
-                         verify_ssl=false,
-                         query_params={'inventory': _inventory_id},
-                         return_all=true) | flatten | map(attribute='name') | list }}
-
-            - name: "Verify - Assert no unexpected missing hosts"
-              ansible.builtin.assert:
-                that:
-                  - (_hosts | difference(_current_hosts) | sort) == (_failed_hosts.split(',') | reject('equalto', '') | list | sort)
-                fail_msg: "Verification failed: hosts missing after addition do not match failed list."
-          tags: execute
-
-        - name: "Set verification fact"
+        # Verification task – query actual hosts in inventory
+        - name: "Verify hosts are present in inventory"
           ansible.builtin.set_fact:
-            _verification_passed: true
+            _verified_hosts: >-
+              {{ query('ansible.controller.controller_api', 'hosts',
+                     host='https://' ~ aap_gateway_ip,
+                     username=aap_username,
+                     password=aap_password,
+                     verify_ssl=false,
+                     query_params={'inventory': _inv_obj.id},
+                     return_all=true) | flatten | map(attribute='name') | list }}
           tags: execute
 
-        # step-09: Emit result block (Req 10) – EXACTLY four required fields
+        - name: "Merge API verification into failed hosts list"
+          ansible.builtin.set_fact:
+            _failed_hosts: >-
+              {{ _failed_hosts | union( _hosts | difference(_verified_hosts) ) }}
+          tags: execute
+
+        # step-10 (Req 11): Emit result block
         - name: "Req 10 - Emit result block"
           ansible.builtin.debug:
             msg: |
               <result>
-              inventory_id: {{ _inv_id }}
-              added_hosts: {{ _added_hosts }}
               failed_hosts: {{ _failed_hosts }}
-              all_succeeded: {{ _all_succeeded }}
+              added_count: {{ _added_count }}
+              total_hosts: {{ _total_hosts }}
               </result>
           tags: execute
 
@@ -292,7 +268,7 @@
             name: "{{ organization_name }}"
             state: absent
             controller_host: "https://{{ aap_gateway_ip }}"
-            controller_username: "{{ aap_user }}"
+            controller_username: "{{ aap_username }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
           when: not _restore_org_existed
@@ -318,7 +294,7 @@
             organization: "{{ organization_name }}"
             state: absent
             controller_host: "https://{{ aap_gateway_ip }}"
-            controller_username: "{{ aap_user }}"
+            controller_username: "{{ aap_username }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
           when: not _restore_inv_existed and _restore_org_existed
@@ -345,7 +321,7 @@
                 _restore_current_hosts: >-
                   {{ query('ansible.controller.controller_api', 'hosts',
                          host='https://' ~ aap_gateway_ip,
-                         username=aap_user,
+                         username=aap_username,
                          password=aap_password,
                          verify_ssl=false,
                          query_params={'inventory': (_r_inv_id_raw.content | b64decode | trim | int)},
@@ -364,7 +340,7 @@
                 inventory: "{{ inventory_name }}"
                 state: absent
                 controller_host: "https://{{ aap_gateway_ip }}"
-                controller_username: "{{ aap_user }}"
+                controller_username: "{{ aap_username }}"
                 controller_password: "{{ aap_password }}"
                 validate_certs: false
               loop: "{{ _restore_hosts_to_remove }}"
