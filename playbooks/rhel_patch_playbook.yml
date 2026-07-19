@@ -1,0 +1,206 @@
+---
+- name: SOP playbook 'rhel_patch_playbook' (ACTION — changes system state) — Pre‑checks memory and disk space, updates all packages, reboots, post‑checks memory/disk/services, and compares running services.
+  hosts: "{{ target_server if target_server | trim else 'localhost' }}"
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    target_server: ""
+    fs_exclude_list: "/boot,/iso,run"
+    min_free_memory_gb: 2
+    min_free_disk_gb: 5
+    fs_type_exclude_list: "devtmpfs,tmpfs,iso9660"
+    reboot_timeout: 120
+
+  tasks:
+    - name: Block with rescue for entire playbook
+      block:
+        - name: Req 1 - Validate target_server is provided
+          ansible.builtin.assert:
+            that:
+              - target_server | trim | length > 0
+              - target_server != 'localhost'
+            fail_msg: "target_server must be provided via extra_vars and must not be 'localhost' (placeholder)"
+
+        - name: Req 2 - Collect pre-patch free memory in bytes
+          ansible.builtin.shell: set -o pipefail && free -b | awk '/^Mem:/{print $4}'
+          args:
+            executable: /bin/bash
+          register: _free_mem_bytes_raw
+          changed_when: false
+
+        - name: Req 3 - Compute free memory GB
+          ansible.builtin.set_fact:
+            _free_mem_gb: "{{ (_free_mem_bytes_raw.stdout | int) // 1073741824 }}"
+
+        - name: Req 4 - Abort if pre-patch free memory below threshold
+          ansible.builtin.fail:
+            msg: "Pre-patch free memory ({{ _free_mem_gb }} GB) is below minimum threshold ({{ min_free_memory_gb }} GB)"
+          when: _free_mem_gb | int < min_free_memory_gb | int
+
+        - name: Req 5 - Collect pre-patch disk space in bytes
+          ansible.builtin.shell: set -o pipefail && df --output=target,avail -B1 | tail -n +2
+          args:
+            executable: /bin/bash
+          register: _df_raw
+          changed_when: false
+
+        - name: Req 6 - Parse pre-patch disk issues
+          ansible.builtin.set_fact:
+            _disk_issues: >-
+              {%- set issues = [] -%}
+              {%- for line in _df_raw.stdout_lines -%}
+                {%- set parts = line.split() -%}
+                {%- if parts | length >= 2 -%}
+                  {%- set mount = parts[0] -%}
+                  {%- set avail_bytes = parts[1] | int -%}
+                  {%- if mount not in (fs_exclude_list | split(',') | map('trim') | list) -%}
+                    {%- if avail_bytes < (min_free_disk_gb | int * 1073741824) -%}
+                      {%- set issues = issues + [mount] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ issues | join(',') }}
+
+        - name: Req 7 - Abort if pre-patch disk issues exist
+          ansible.builtin.fail:
+            msg: "Pre-patch disk issues found: {{ _disk_issues }}"
+          when: _disk_issues | trim | length > 0
+
+        - name: Req 8 - Collect pre-patch running services
+          ansible.builtin.service_facts:
+          register: _service_facts_raw
+
+        - name: Req 9 - Extract pre-patch running service names
+          ansible.builtin.set_fact:
+            _pre_services: >-
+              {{ ansible_facts.services
+                 | dict2items
+                 | selectattr('value.state', 'equalto', 'running')
+                 | map(attribute='key')
+                 | join(',') }}
+
+        - name: Req 10 - Set package upgrade parameters
+          ansible.builtin.set_fact:
+            _package_name: "*"
+            _package_state: "latest"
+
+        - name: Req 11 - Update all packages
+          ansible.builtin.package:
+            name: "{{ _package_name }}"
+            state: "{{ _package_state }}"
+          register: _update_result
+
+        - name: Req 12 - Reboot server
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ reboot_timeout }}"
+          register: _reboot_result
+
+        - name: Req 13 - Collect post-patch free memory in bytes
+          ansible.builtin.shell: set -o pipefail && free -b | awk '/^Mem:/{print $4}'
+          args:
+            executable: /bin/bash
+          register: _post_free_mem_bytes_raw
+          changed_when: false
+          failed_when: false
+
+        - name: Req 14 - Compute post-patch free memory GB
+          ansible.builtin.set_fact:
+            _post_free_mem_gb: "{{ (_post_free_mem_bytes_raw.stdout | int) // 1073741824 }}"
+
+        - name: Req 15 - Flag post-patch memory below threshold
+          ansible.builtin.set_fact:
+            _post_memory_below_threshold: "{{ _post_free_mem_gb | int < min_free_memory_gb | int }}"
+
+        - name: Req 16 - Collect post-patch disk space with filesystem type
+          ansible.builtin.shell: set -o pipefail && df --output=target,fstype,avail -B1 | tail -n +2
+          args:
+            executable: /bin/bash
+          register: _post_df_raw
+          changed_when: false
+          failed_when: false
+
+        - name: Req 17 - Parse post-patch disk issues
+          ansible.builtin.set_fact:
+            _post_disk_issues: >-
+              {%- set issues = [] -%}
+              {%- for line in _post_df_raw.stdout_lines -%}
+                {%- set parts = line.split() -%}
+                {%- if parts | length >= 3 -%}
+                  {%- set mount = parts[0] -%}
+                  {%- set fstype = parts[1] -%}
+                  {%- set avail_bytes = parts[2] | int -%}
+                  {%- if mount not in (fs_exclude_list | split(',') | map('trim') | list) -%}
+                    {%- if fstype not in (fs_type_exclude_list | split(',') | map('trim') | list) -%}
+                      {%- if avail_bytes < (min_free_disk_gb | int * 1073741824) -%}
+                        {%- set issues = issues + [mount] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ issues | join(',') }}
+
+        - name: Req 18 - Flag post-patch disk issues existence
+          ansible.builtin.set_fact:
+            _post_disk_issues_exist: "{{ _post_disk_issues | trim | length > 0 }}"
+
+        - name: Req 19 - Collect post-patch running services
+          ansible.builtin.service_facts:
+          register: _post_service_facts_raw
+          failed_when: false
+
+        - name: Req 20 - Extract post-patch running service names
+          ansible.builtin.set_fact:
+            _post_services: >-
+              {{ ansible_facts.services
+                 | dict2items
+                 | selectattr('value.state', 'equalto', 'running')
+                 | map(attribute='key')
+                 | join(',') }}
+
+        - name: Req 20 - Compare pre and post services
+          ansible.builtin.set_fact:
+            _services_match: "{{ (_pre_services.split(',') | sort) == (_post_services.split(',') | sort) }}"
+            _service_diff: >-
+              {{ ((_pre_services.split(',') | reject('in', _post_services.split(',')) | list) +
+                  (_post_services.split(',') | reject('in', _pre_services.split(',')) | list))
+                 | join(',') }}
+
+        - name: Req 21 - Build final report JSON
+          ansible.builtin.set_fact:
+            _report_json: >-
+              {{ {
+                'pre_memory_free_gb': _free_mem_gb,
+                'pre_disk_issues': _disk_issues,
+                'update_changed': _update_result.changed,
+                'reboot_successful': _reboot_result.rebooted | default(false),
+                'post_memory_free_gb': _post_free_mem_gb,
+                'post_disk_issues': _post_disk_issues,
+                'services_match': _services_match,
+                'service_diff': _service_diff
+              } | to_json }}
+
+        - name: Req 22 - Emit success result block
+          ansible.builtin.debug:
+            msg:
+              - "<result>"
+              - "pre_memory_free_gb: {{ _free_mem_gb }}"
+              - "pre_disk_issues: {{ _disk_issues }}"
+              - "update_changed: {{ _update_result.changed }}"
+              - "reboot_successful: {{ _reboot_result.rebooted }}"
+              - "post_memory_free_gb: {{ _post_free_mem_gb }}"
+              - "post_disk_issues: {{ _post_disk_issues }}"
+              - "services_match: {{ _services_match }}"
+              - "service_diff: {{ _service_diff }}"
+              - "</result>"
+
+      rescue:
+        - name: Req 23 - Emit error result block
+          ansible.builtin.debug:
+            msg:
+              - "<result>"
+              - "ERROR: rhel_patch_playbook failed on {{ inventory_hostname }}. A pre-check, update, or reboot step failed."
+              - "</result>"
+          failed_when: true
