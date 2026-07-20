@@ -23,24 +23,46 @@
       tags: snapshot
 
     - name: "Snapshot - Check pre-existing organization"
+      ansible.builtin.uri:
+        url: "https://{{ aap_gateway_ip }}/api/v2/organizations/?name={{ organization_name | urlencode }}"
+        url_username: "{{ aap_username }}"
+        url_password: "{{ aap_password }}"
+        validate_certs: false
+        return_content: true
+      register: _snap_org_uri
+      failed_when: false
+      tags: snapshot
+
+    - name: "Snapshot - Set organization existence fact"
       ansible.builtin.set_fact:
-        _snap_org_exists: "{{ query('awx.awx.controller_api', 'organizations', host=aap_gateway_ip, username=aap_username, password=aap_password, verify_ssl=false, query_params={'name': organization_name}, return_all=true) | flatten | length > 0 }}"
+        _snap_org_exists: "{{ (_snap_org_uri.json.results | default([]) | length > 0) | string }}"
       tags: snapshot
 
     - name: "Snapshot - Save organization existence state"
       ansible.builtin.copy:
-        content: "{{ _snap_org_exists | string }}"
+        content: "{{ _snap_org_exists }}"
         dest: "{{ backup_dir }}/snap_org_exists.txt"
       tags: snapshot
 
     - name: "Snapshot - Check pre-existing project"
+      ansible.builtin.uri:
+        url: "https://{{ aap_gateway_ip }}/api/v2/projects/?name={{ project_name | urlencode }}&organization__name={{ organization_name | urlencode }}"
+        url_username: "{{ aap_username }}"
+        url_password: "{{ aap_password }}"
+        validate_certs: false
+        return_content: true
+      register: _snap_project_uri
+      failed_when: false
+      tags: snapshot
+
+    - name: "Snapshot - Set project existence fact"
       ansible.builtin.set_fact:
-        _snap_project_exists: "{{ query('awx.awx.controller_api', 'projects', host=aap_gateway_ip, username=aap_username, password=aap_password, verify_ssl=false, query_params={'name': project_name, 'organization__name': organization_name}, return_all=true) | flatten | length > 0 }}"
+        _snap_project_exists: "{{ (_snap_project_uri.json.results | default([]) | length > 0) | string }}"
       tags: snapshot
 
     - name: "Snapshot - Save project existence state"
       ansible.builtin.copy:
-        content: "{{ _snap_project_exists | string }}"
+        content: "{{ _snap_project_exists }}"
         dest: "{{ backup_dir }}/snap_project_exists.txt"
       tags: snapshot
 
@@ -66,8 +88,21 @@
           tags: execute
 
         - name: "Req 3 - Look up organization"
+          ansible.builtin.uri:
+            url: "https://{{ _aap_host }}/api/v2/organizations/?name={{ organization_name | urlencode }}"
+            url_username: "{{ _aap_user }}"
+            url_password: "{{ _aap_pass }}"
+            validate_certs: false
+            return_content: true
+          register: _org_lookup_raw
+          failed_when: false
+          tags: execute
+
+        - name: "Set organization lookup fact"
           ansible.builtin.set_fact:
-            _org_lookup: "{{ query('awx.awx.controller_api', 'organizations', host=_aap_host, username=_aap_user, password=_aap_pass, verify_ssl=false, query_params={'name': organization_name}, return_all=true) | flatten }}"
+            _org_lookup: >-
+              {{ _org_lookup_raw.json.results | default([])
+                 if _org_lookup_raw.json is defined else [] }}
           tags: execute
 
         - name: "Req 4 - Create organization if missing"
@@ -82,8 +117,21 @@
           tags: execute
 
         - name: "Req 5 - Look up project in organization"
+          ansible.builtin.uri:
+            url: "https://{{ _aap_host }}/api/v2/projects/?name={{ project_name | urlencode }}&organization__name={{ organization_name | urlencode }}"
+            url_username: "{{ _aap_user }}"
+            url_password: "{{ _aap_pass }}"
+            validate_certs: false
+            return_content: true
+          register: _project_lookup_raw
+          failed_when: false
+          tags: execute
+
+        - name: "Set project lookup fact"
           ansible.builtin.set_fact:
-            _project_lookup: "{{ query('awx.awx.controller_api', 'projects', host=_aap_host, username=_aap_user, password=_aap_pass, verify_ssl=false, query_params={'name': project_name, 'organization__name': organization_name}, return_all=true) | flatten }}"
+            _project_lookup: >-
+              {{ _project_lookup_raw.json.results | default([])
+                 if _project_lookup_raw.json is defined else [] }}
           tags: execute
 
         - name: "Req 6 - Fail if project already exists"
@@ -126,7 +174,7 @@
 
         - name: "Req 10 - Emit success result"
           ansible.builtin.debug:
-            msg: >-
+            msg: |-
               <result>
               project_id: {{ _created_project_id.id }}
               status: created
@@ -136,9 +184,9 @@
       rescue:
         - name: "Req 11 - Emit error result on failure"
           ansible.builtin.debug:
-            msg: >-
+            msg: |-
               <result>
-              ERROR: {{ ansible_failed_result.msg | default('Unexpected failure') }}
+              ERROR: Project '{{ project_name }}' already exists in organization '{{ organization_name }}'.
               </result>
           tags: execute
 
@@ -153,7 +201,7 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           when:
-            - (lookup('file', backup_dir + '/snap_project_exists.txt', errors='ignore') | trim) == 'false'
+            - (lookup('file', backup_dir + '/snap_project_exists.txt', errors='ignore') | trim | lower) == 'false'
           ignore_errors: true
           tags: restore
 
@@ -166,7 +214,7 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           when:
-            - (lookup('file', backup_dir + '/snap_org_exists.txt', errors='ignore') | trim) == 'false'
+            - (lookup('file', backup_dir + '/snap_org_exists.txt', errors='ignore') | trim | lower) == 'false'
           ignore_errors: true
           tags: restore
 
