@@ -1,0 +1,132 @@
+---
+- name: "SOP playbook 'rhel_patch' (ACTION — changes system state) - Updates all packages on a RHEL server, reboots, and validates memory, disk space, and running services before and after the patch."
+  hosts: "{{ target_server or 'localhost' }}"
+  become: yes
+  gather_facts: false
+  vars:
+    target_server: ""               # required – override with -e target_server=real_host
+    min_free_memory_gb: 2
+    min_free_disk_gb: 5
+    fs_exclude_list: "/boot,/iso"
+    fs_type_exclude_list: "devtmpfs,tmpfs,iso9660"
+    msg: "Ansible Reboot After Patching"
+    reboot_timeout: 120
+    package_name: "*"
+    package_state: "latest"
+
+  tasks:
+    - block:
+        - name: "Req 1 - Validate required variable target_server"
+          ansible.builtin.assert:
+            that:
+              - target_server is defined
+              - target_server | length > 0
+              - target_server != "localhost"
+            fail_msg: "target_server must be provided and must not be the placeholder 'localhost'"
+
+        - name: "Req 02 - Gather pre-patch system facts"
+          ansible.builtin.setup:
+          register: _pre_facts_raw
+
+        - name: "Req 03 - Extract pre-patch memory and filter mounts"
+          ansible.builtin.set_fact:
+            _pre_memory_free_gb: "{{ (_pre_facts_raw.ansible_facts.ansible_memory_mb.real.free / 1024) | round(2) }}"
+            _pre_mounts_filtered: >-
+              {{ _pre_facts_raw.ansible_facts.ansible_mounts
+                | rejectattr('mount', 'in', (fs_exclude_list | split(',') | map('trim') | select | list))
+                | rejectattr('fstype', 'in', (fs_type_exclude_list | split(',') | map('trim') | select | list))
+                | list }}
+
+        - name: "Req 04 - Check pre-patch free memory"
+          ansible.builtin.assert:
+            that: _pre_memory_free_gb | float >= min_free_memory_gb | int
+            fail_msg: "Pre-patch free memory {{ _pre_memory_free_gb }} GB below threshold {{ min_free_memory_gb }} GB"
+
+        - name: "Req 05 - Check pre-patch disk space"
+          ansible.builtin.assert:
+            that: (_pre_mounts_filtered | selectattr('size_available', 'lt', (min_free_disk_gb | int) * 1024*1024*1024) | list | length) == 0
+            fail_msg: "Pre-patch disk space: at least one mount has available space below {{ min_free_disk_gb }} GB"
+
+        - name: "Req 06 - Collect pre-patch running services"
+          ansible.builtin.service_facts:
+          register: _pre_service_facts_raw
+
+        - name: "Req 07 - Extract pre-patch service list and count"
+          ansible.builtin.set_fact:
+            _pre_running_services: "{{ _pre_service_facts_raw.ansible_facts.services | dict2items | selectattr('value.state', 'equalto', 'running') | map(attribute='key') | sort | list }}"
+            _pre_running_services_count: "{{ (_pre_service_facts_raw.ansible_facts.services | dict2items | selectattr('value.state', 'equalto', 'running') | list) | length }}"
+
+        - name: "Req 08 - Update all packages"
+          ansible.builtin.package:
+            name: "{{ package_name }}"
+            state: "{{ package_state }}"
+          register: _update_result
+
+        - name: "Req 09 - Reboot the server"
+          ansible.builtin.reboot:
+            msg: "{{ msg }}"
+            reboot_timeout: "{{ reboot_timeout }}"
+          register: _reboot_result
+
+        - name: "Req 10 - Gather post-patch system facts"
+          ansible.builtin.setup:
+          register: _post_facts_raw
+
+        - name: "Req 11 - Extract post-patch memory and filter mounts"
+          ansible.builtin.set_fact:
+            _post_memory_free_gb: "{{ (_post_facts_raw.ansible_facts.ansible_memory_mb.real.free / 1024) | round(2) }}"
+            _post_mounts_filtered: >-
+              {{ _post_facts_raw.ansible_facts.ansible_mounts
+                | rejectattr('mount', 'in', (fs_exclude_list | split(',') | map('trim') | select | list))
+                | rejectattr('fstype', 'in', (fs_type_exclude_list | split(',') | map('trim') | select | list))
+                | list }}
+
+        - name: "Req 12 - Check post-patch free memory"
+          ansible.builtin.assert:
+            that: _post_memory_free_gb | float >= min_free_memory_gb | int
+            fail_msg: "Post-patch free memory {{ _post_memory_free_gb }} GB below threshold {{ min_free_memory_gb }} GB"
+
+        - name: "Req 13 - Check post-patch disk space"
+          ansible.builtin.assert:
+            that: (_post_mounts_filtered | selectattr('size_available', 'lt', (min_free_disk_gb | int) * 1024*1024*1024) | list | length) == 0
+            fail_msg: "Post-patch disk space: at least one mount has available space below {{ min_free_disk_gb }} GB"
+
+        - name: "Req 14 - Collect post-patch running services"
+          ansible.builtin.service_facts:
+          register: _post_service_facts_raw
+
+        - name: "Req 15 - Extract post-patch service list and count"
+          ansible.builtin.set_fact:
+            _post_running_services: "{{ _post_service_facts_raw.ansible_facts.services | dict2items | selectattr('value.state', 'equalto', 'running') | map(attribute='key') | sort | list }}"
+            _post_running_services_count: "{{ (_post_service_facts_raw.ansible_facts.services | dict2items | selectattr('value.state', 'equalto', 'running') | list) | length }}"
+
+        - name: "Req 16 - Compare service lists"
+          ansible.builtin.set_fact:
+            _service_mismatches: >-
+              {{ (_pre_running_services | difference(_post_running_services) | map('regex_replace', '^(.*)$', 'only in pre: \1') | list)
+                + (_post_running_services | difference(_pre_running_services) | map('regex_replace', '^(.*)$', 'only in post: \1') | list) }}
+
+        - name: "Req 17 - Emit success report"
+          debug:
+            msg: |
+              <result>
+              overall_status: SUCCESS
+              pre_memory_free_gb: {{ _pre_memory_free_gb }}
+              pre_disk_status: ok
+              update_status: ok
+              reboot_status: ok
+              post_memory_free_gb: {{ _post_memory_free_gb }}
+              post_disk_status: ok
+              pre_running_services_count: {{ _pre_running_services_count }}
+              post_running_services_count: {{ _post_running_services_count }}
+              service_mismatches: {{ _service_mismatches | join(', ') }}
+              </result>
+
+      rescue:
+        - name: "Req 18 - Emit error and fail"
+          debug:
+            msg: |
+              <result>
+              ERROR: rhel_patch failed on {{ inventory_hostname }}
+              </result>
+          failed_when: true
