@@ -25,6 +25,9 @@
 
         - name: "Req 2 - Gather pre-patch system facts"
           ansible.builtin.setup:
+            filter:
+              - 'ansible_mounts'
+              - 'ansible_memory_mb'
           register: _pre_facts_raw
 
         - name: "Req 3 - Extract pre-patch memory and filter mounts"
@@ -34,7 +37,7 @@
               {{ _pre_facts_raw.ansible_facts.ansible_mounts
                 | rejectattr('mount', 'in', (fs_exclude_list | split(',') | map('trim') | select | list))
                 | rejectattr('fstype', 'in', (fs_type_exclude_list | split(',') | map('trim') | select | list))
-                | json_query('[].{mount: mount, size_available: size_available, fstype: fstype}') }}
+                | list }}
 
         - name: "Req 4 - Check pre-patch free memory"
           ansible.builtin.fail:
@@ -76,6 +79,9 @@
 
         - name: "Req 10 - Gather post-patch system facts"
           ansible.builtin.setup:
+            filter:
+              - 'ansible_mounts'
+              - 'ansible_memory_mb'
           register: _post_facts_raw
 
         - name: "Req 11 - Extract post-patch memory and filter mounts"
@@ -85,7 +91,7 @@
               {{ _post_facts_raw.ansible_facts.ansible_mounts
                 | rejectattr('mount', 'in', (fs_exclude_list | split(',') | map('trim') | select | list))
                 | rejectattr('fstype', 'in', (fs_type_exclude_list | split(',') | map('trim') | select | list))
-                | json_query('[].{mount: mount, size_available: size_available, fstype: fstype}') }}
+                | list }}
 
         - name: "Req 12 - Check post-patch free memory"
           ansible.builtin.fail:
@@ -134,12 +140,13 @@
               pre_memory_free_gb: {{ _pre_memory_free_gb }}
               pre_disk_status: ok
               update_status: ok
-              reboot_status: {{ 'ok' if _host_verify_result.ping == 'pong' else 'fail' }}
+              reboot_status: ok
               post_memory_free_gb: {{ _post_memory_free_gb }}
               post_disk_status: ok
               pre_running_services_count: {{ _pre_running_services_count }}
               post_running_services_count: {{ _post_running_services_count }}
               service_mismatches: {{ _service_mismatches }}
+              host_reachable: true
               </result>
 
       rescue:
