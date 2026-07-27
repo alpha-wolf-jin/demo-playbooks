@@ -4,7 +4,6 @@
   become: yes
   gather_facts: false
   vars:
-    # Required variable – must be overridden via extra_vars; sentinel value rejected by assert
     target_server: ""
     min_free_memory_gb: 2
     min_free_disk_gb: 5
@@ -27,14 +26,6 @@
         - name: "Req 2 - Gather pre-patch system facts"
           ansible.builtin.setup:
           register: _pre_facts_raw
-
-        - name: "Req 2a - Show pre-patch raw free memory for verification"
-          ansible.builtin.debug:
-            var: _pre_facts_raw.ansible_facts.ansible_memory_mb.real.free
-
-        - name: "Req 2b - Show pre-patch raw mounts for verification"
-          ansible.builtin.debug:
-            var: _pre_facts_raw.ansible_facts.ansible_mounts
 
         - name: "Req 3 - Extract pre-patch memory and filter mounts"
           ansible.builtin.set_fact:
@@ -59,10 +50,6 @@
         - name: "Req 6 - Gather pre-patch service facts"
           ansible.builtin.service_facts:
           register: _pre_service_facts_raw
-
-        - name: "Req 6a - Show pre-patch raw service facts for verification"
-          ansible.builtin.debug:
-            var: _pre_service_facts_raw.ansible_facts.services
 
         - name: "Req 7 - Extract pre-patch running services"
           ansible.builtin.set_fact:
@@ -91,14 +78,6 @@
           ansible.builtin.setup:
           register: _post_facts_raw
 
-        - name: "Req 10a - Show post-patch raw free memory for verification"
-          ansible.builtin.debug:
-            var: _post_facts_raw.ansible_facts.ansible_memory_mb.real.free
-
-        - name: "Req 10b - Show post-patch raw mounts for verification"
-          ansible.builtin.debug:
-            var: _post_facts_raw.ansible_facts.ansible_mounts
-
         - name: "Req 11 - Extract post-patch memory and filter mounts"
           ansible.builtin.set_fact:
             _post_memory_free_gb: "{{ ((_post_facts_raw.ansible_facts.ansible_memory_mb.real.free | float) / 1024) | round(2) }}"
@@ -123,10 +102,6 @@
           ansible.builtin.service_facts:
           register: _post_service_facts_raw
 
-        - name: "Req 14a - Show post-patch raw service facts for verification"
-          ansible.builtin.debug:
-            var: _post_service_facts_raw.ansible_facts.services
-
         - name: "Req 15 - Extract post-patch running services"
           ansible.builtin.set_fact:
             _post_running_services: >-
@@ -147,7 +122,6 @@
                 (_post_running_services | difference(_pre_running_services) | map('regex_replace', '^', 'only in post: ') | list)
               }}
 
-        # Verification task required by Requirement 22 – confirm host reachability after patching
         - name: "Req 22 - Verify host reachability after patch"
           ansible.builtin.ping:
           register: _host_verify_result
@@ -166,7 +140,6 @@
               pre_running_services_count: {{ _pre_running_services_count }}
               post_running_services_count: {{ _post_running_services_count }}
               service_mismatches: {{ _service_mismatches }}
-              host_verify_status: {{ _host_verify_result.ping }}
               </result>
 
       rescue:
