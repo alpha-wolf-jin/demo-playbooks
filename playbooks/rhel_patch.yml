@@ -122,7 +122,7 @@
                 (_post_running_services | difference(_pre_running_services) | map('regex_replace', '^', 'only in post: ') | list)
               }}
 
-        - name: "Req 22 - Verify host reachability after patch"
+        - name: "Verify - Host reachability after patch"
           ansible.builtin.ping:
           register: _host_verify_result
 
@@ -134,7 +134,7 @@
               pre_memory_free_gb: {{ _pre_memory_free_gb }}
               pre_disk_status: ok
               update_status: ok
-              reboot_status: ok
+              reboot_status: {{ 'ok' if _host_verify_result.ping == 'pong' else 'fail' }}
               post_memory_free_gb: {{ _post_memory_free_gb }}
               post_disk_status: ok
               pre_running_services_count: {{ _pre_running_services_count }}
