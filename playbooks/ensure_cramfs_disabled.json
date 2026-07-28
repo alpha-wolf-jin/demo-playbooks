@@ -1,0 +1,253 @@
+{
+  "tool_name": "ensure_cramfs_disabled",
+  "version": "1.0",
+  "title": "Disable cramfs Kernel Module",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Checks if the cramfs kernel module exists on the target host and, if present, disables it by blacklisting, creating an install directive, and unloading the module.",
+  "aap_template": "ensure_cramfs_disabled++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The hostname or IP address of the target Linux host where cramfs will be disabled."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "What the emit step's <result> block contains",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "remediation_performed",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if any remediation action was taken (module existed), false otherwise."
+      },
+      {
+        "name": "actions",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of strings describing the actions that were (or would have been) taken."
+      },
+      {
+        "name": "status_message",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "A human-readable summary of the outcome."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Check for cramfs module directories",
+      "function": "Find any existing cramfs kernel module directories under /lib/modules.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_module_paths"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "decide",
+      "name": "Does the cramfs module exist?",
+      "function": "Branch based on whether any cramfs module directory was found.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_module_paths"
+        ]
+      },
+      "condition": "At least one cramfs kernel module directory is found.",
+      "on_pass": "step-03",
+      "on_fail": "step-07"
+    },
+    {
+      "id": "step-03",
+      "type": "action",
+      "name": "Ensure install directive",
+      "function": "Add the 'install cramfs /bin/false' line to /etc/modprobe.d/cramfs.conf if not already present.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "idempotent": true,
+      "stores": [
+        "_install_result"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Ensure blacklist directive",
+      "function": "Add the 'blacklist cramfs' line to /etc/modprobe.d/cramfs.conf if not already present.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "idempotent": true,
+      "stores": [
+        "_blacklist_result"
+      ],
+      "on_success": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "action",
+      "name": "Unload cramfs module",
+      "function": "Attempt to remove the cramfs module from the running kernel, ignoring errors if already unloaded.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "idempotent": true,
+      "stores": [
+        "_unload_result"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Build actions list and result (module present)",
+      "function": "Compile the actions taken from the three remediation steps and set the success result variables.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_install_result",
+          "_blacklist_result",
+          "_unload_result"
+        ]
+      },
+      "computations": {
+        "_remediation_performed": "true",
+        "_actions": "Create a list: if _install_result is changed, add 'install directive added' else 'install directive already present'; if _blacklist_result is changed, add 'blacklist directive added' else 'blacklist directive already present'; always add 'module unload attempted'.",
+        "_status_message": "'cramfs module disabled successfully'"
+      },
+      "stores": [
+        "_remediation_performed",
+        "_actions",
+        "_status_message"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-07",
+      "type": "transform",
+      "name": "Set no-op result (module absent)",
+      "function": "Set the result variables to indicate that no remediation was necessary.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_remediation_performed": "false",
+        "_actions": "empty list",
+        "_status_message": "'cramfs module not present on system, no remediation necessary'"
+      },
+      "stores": [
+        "_remediation_performed",
+        "_actions",
+        "_status_message"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the final <result> block with remediation status, actions taken, and a summary message.",
+      "output_fields": {
+        "remediation_performed": "{{ _remediation_performed }}",
+        "actions": "{{ _actions }}",
+        "status_message": "{{ _status_message }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-09",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the error output and fails.",
+      "error_message": "ERROR: ensure_cramfs_disabled failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-09",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Discovery",
+      "description": "Detect whether the cramfs module exists under /lib/modules.",
+      "steps": [
+        "step-01",
+        "step-02"
+      ]
+    },
+    {
+      "name": "Remediation",
+      "description": "Apply blacklisting, install directive, and module unload when the module is present.",
+      "steps": [
+        "step-03",
+        "step-04",
+        "step-05"
+      ]
+    },
+    {
+      "name": "Result assembly",
+      "description": "Build the final result variables for either the remediation or no-op path.",
+      "steps": [
+        "step-06",
+        "step-07"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured output to the caller.",
+      "steps": [
+        "step-08"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-09"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "923f1a9b0b6a50fd69fdb93827b12539c06229f0894bc6308d7c42abc403bcd4",
+    "saved_at": "2026-07-28T10:53:29+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
