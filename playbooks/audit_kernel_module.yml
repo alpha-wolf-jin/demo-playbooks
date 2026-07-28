@@ -1,0 +1,88 @@
+---
+- name: "SOP playbook 'audit_kernel_module' (DATA COLLECTOR — read-only): Audit a kernel module on a Linux host: if the module exists, verify it is not loaded, has an install disable with /bin/true or /bin/false, and is denylisted in modprobe config; otherwise pass."
+  hosts: "{{ target_server if target_server != '' else 'localhost' }}"
+  become: yes
+  gather_facts: false
+  vars:
+    target_server: ""
+    kernel_module_name: "cramfs"
+  tasks:
+    - block:
+        - name: "Validate required variable target_server"
+          ansible.builtin.assert:
+            that:
+              - target_server is defined
+              - target_server | length > 0
+              - target_server != ''
+            fail_msg: "target_server must be provided via extra_vars"
+
+        - name: "Req 02 - Find kernel module .ko files"
+          ansible.builtin.find:
+            paths: /lib/modules
+            patterns: "{{ kernel_module_name }}.ko*"
+            file_type: file
+          register: _module_exists
+          changed_when: false
+
+        - name: "Req 03 - Check install disable line"
+          ansible.builtin.shell: "set -o pipefail && modprobe --showconfig | grep 'install {{ kernel_module_name }} /bin/\\(true\\|false\\)'"
+          args:
+            executable: /bin/bash
+          register: _install_check
+          failed_when: false
+          changed_when: false
+          when: "_module_exists.files | length > 0"
+
+        - name: "Req 04 - Check blacklist line"
+          ansible.builtin.shell: "set -o pipefail && modprobe --showconfig | grep 'blacklist {{ kernel_module_name }}'"
+          args:
+            executable: /bin/bash
+          register: _blacklist_check
+          failed_when: false
+          changed_when: false
+          when: "_module_exists.files | length > 0"
+
+        - name: "Req 05 - Check if module is loaded"
+          ansible.builtin.shell: "set -o pipefail && lsmod | grep '^{{ kernel_module_name }}\\s'"
+          args:
+            executable: /bin/bash
+          register: _loaded_check
+          failed_when: false
+          changed_when: false
+          when: "_module_exists.files | length > 0"
+
+        - name: "Req 06 - Determine overall audit result when module exists"
+          ansible.builtin.set_fact:
+            _install_ok: "{{ _install_check.rc == 0 }}"
+            _blacklist_ok: "{{ _blacklist_check.rc == 0 }}"
+            _loaded_ok: "{{ _loaded_check.rc != 0 }}"
+            _all_checks_pass: "{{ _install_ok and _blacklist_ok and _loaded_ok }}"
+            _final_result: "{{ 'PASS' if _all_checks_pass else 'FAIL' }}"
+          when: "_module_exists.files | length > 0"
+
+        - name: "Req 08 - Set result to PASS when module not present"
+          ansible.builtin.set_fact:
+            _final_result: "PASS"
+          when: "_module_exists.files | length == 0"
+
+        - name: "Store final audit result in cis_result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ _final_result | default('ERROR') | trim }}"
+
+        - name: "Req 07 - Emit result block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              result: {{ cis_result | default('ERROR') | trim }}
+              </result>
+
+      rescue:
+        - name: "Req 09 - Emit error block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: Audit failed due to an unexpected error. Please check the Ansible output for details.
+              </result>
+        - name: "Fail the play"
+          ansible.builtin.fail:
+            msg: "Audit failed due to an unexpected error"
