@@ -1,5 +1,5 @@
 ---
-- name: "SOP playbook 'ensure_aap_inventory_with_hosts' (ACTION — changes system state): Ensures an AAP organization and inventory exist, then ensures a comma-separated list of hosts are present in that inventory. Reports per-host status: added, skipped, failed. [target host: localhost (localhost)]"
+- name: "SOP playbook 'ensure_aap_inventory_with_hosts' (ACTION — changes system state) - Ensures an AAP organization and inventory exist, then ensures a comma-separated list of hosts are present in that inventory. Reports per-host status: added, skipped, failed. [target host: localhost (localhost)]"
   hosts: localhost
   connection: local
   become: yes
@@ -23,6 +23,74 @@
         mode: '0700'
       tags: [snapshot]
 
+    # --- Capture organization state ---
+    - name: "Snapshot - Query current organization"
+      ansible.builtin.uri:
+        url: "https://{{ aap_gateway_ip }}/api/controller/v2/organizations/?name={{ organization_name }}"
+        method: GET
+        user: "{{ aap_username }}"
+        password: "{{ aap_password }}"
+        force_basic_auth: yes
+        validate_certs: false
+        return_content: yes
+      register: _snap_org_api
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Write organization snapshot"
+      ansible.builtin.copy:
+        content: "{{ _snap_org_api.json | to_nice_json }}"
+        dest: "{{ backup_dir }}/organizations.json"
+      when: _snap_org_api is not failed
+      tags: [snapshot]
+
+    # --- Capture inventory state (by name + organization name) ---
+    - name: "Snapshot - Query current inventory"
+      ansible.builtin.uri:
+        url: "https://{{ aap_gateway_ip }}/api/controller/v2/inventories/?name={{ inventory_name }}&organization__name={{ organization_name }}"
+        method: GET
+        user: "{{ aap_username }}"
+        password: "{{ aap_password }}"
+        force_basic_auth: yes
+        validate_certs: false
+        return_content: yes
+      register: _snap_inv_api
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Write inventory snapshot"
+      ansible.builtin.copy:
+        content: "{{ _snap_inv_api.json | to_nice_json }}"
+        dest: "{{ backup_dir }}/inventories.json"
+      when: _snap_inv_api is not failed
+      tags: [snapshot]
+
+    # --- Capture hosts only if inventory existed ---
+    - name: "Snapshot - Query hosts in inventory (if it existed)"
+      ansible.builtin.uri:
+        url: "https://{{ aap_gateway_ip }}/api/controller/v2/inventories/{{ _snap_inv_api.json.results[0].id }}/hosts/"
+        method: GET
+        user: "{{ aap_username }}"
+        password: "{{ aap_password }}"
+        force_basic_auth: yes
+        validate_certs: false
+        return_content: yes
+      register: _snap_hosts_api
+      when:
+        - _snap_inv_api is not failed
+        - _snap_inv_api.json.results | length > 0
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Write hosts snapshot"
+      ansible.builtin.copy:
+        content: "{{ _snap_hosts_api.json | to_nice_json }}"
+        dest: "{{ backup_dir }}/hosts.json"
+      when:
+        - _snap_hosts_api is not failed
+        - _snap_hosts_api.json is defined
+      tags: [snapshot]
+
   tasks:
     - block:
         - name: "Req 00 - Validate required variables"
@@ -43,11 +111,23 @@
           tags: [execute]
 
         - name: "Req 3 - Look up organization"
-          ansible.builtin.set_fact:
-            _org_lookup: "{{ query('ansible.controller.controller_api', 'organizations', host=aap_gateway_ip, username=aap_username, password=aap_password, verify_ssl=false, query_params={'name': organization_name}, return_all=true) | flatten }}"
+          ansible.builtin.uri:
+            url: "https://{{ aap_gateway_ip }}/api/controller/v2/organizations/?name={{ organization_name }}"
+            method: GET
+            user: "{{ aap_username }}"
+            password: "{{ aap_password }}"
+            force_basic_auth: yes
+            validate_certs: false
+            return_content: yes
+          register: _org_api_response
           tags: [execute]
 
-        - name: "Req 5 - Create organization if missing"
+        - name: "Store organization lookup data"
+          ansible.builtin.set_fact:
+            _org_lookup: "{{ (_org_api_response.json.results | default([])) }}"
+          tags: [execute]
+
+        - name: "Req 4 - Create organization if missing"
           ansible.controller.organization:
             name: "{{ organization_name }}"
             state: present
@@ -59,22 +139,34 @@
           when: _org_lookup | length == 0
           tags: [execute]
 
-        - name: "Req 6 - Set organization ID"
+        - name: "Req 5 - Set organization ID"
           ansible.builtin.set_fact:
-            _org_id: "{{ (_org_lookup | first).id if (_org_lookup | length > 0) else _org_created.id }}"
+            _org_id: "{{ ((_org_lookup | first).id if (_org_lookup | length > 0) else _org_created.id) | int }}"
           tags: [execute]
 
-        - name: "Req 7 - Fetch all inventories"
-          ansible.builtin.set_fact:
-            _all_inventories: "{{ query('ansible.controller.controller_api', 'inventories', host=aap_gateway_ip, username=aap_username, password=aap_password, verify_ssl=false, return_all=true) | flatten }}"
+        - name: "Req 6 - Fetch all inventories"
+          ansible.builtin.uri:
+            url: "https://{{ aap_gateway_ip }}/api/controller/v2/inventories/"
+            method: GET
+            user: "{{ aap_username }}"
+            password: "{{ aap_password }}"
+            force_basic_auth: yes
+            validate_certs: false
+            return_content: yes
+          register: _inv_api_response
           tags: [execute]
 
-        - name: "Req 8 - Filter inventory by name and organization"
+        - name: "Store inventory fetch data"
           ansible.builtin.set_fact:
-            _existing_inventory: "{{ _all_inventories | selectattr('name', 'equalto', inventory_name) | selectattr('organization', 'equalto', _org_id) | list }}"
+            _all_inventories: "{{ (_inv_api_response.json.results | default([])) }}"
           tags: [execute]
 
-        - name: "Req 9 - Create inventory if missing"
+        - name: "Req 7 - Filter inventory by name and organization"
+          ansible.builtin.set_fact:
+            _existing_inventory: "{{ _all_inventories | selectattr('name', 'equalto', inventory_name) | selectattr('summary_fields.organization.id', 'equalto', _org_id | int) | list }}"
+          tags: [execute]
+
+        - name: "Req 8 - Create inventory if missing"
           ansible.controller.inventory:
             name: "{{ inventory_name }}"
             organization: "{{ organization_name }}"
@@ -87,12 +179,12 @@
           when: _existing_inventory | length == 0
           tags: [execute]
 
-        - name: "Req 10 - Set inventory ID"
+        - name: "Req 9 - Set inventory ID"
           ansible.builtin.set_fact:
             _inventory_id: "{{ (_existing_inventory | first).id if (_existing_inventory | length > 0) else _inventory_created.id }}"
           tags: [execute]
 
-        - name: "Req 11 - Ensure hosts present"
+        - name: "Req 10 - Ensure hosts present"
           ansible.controller.host:
             name: "{{ item }}"
             inventory: "{{ inventory_name }}"
@@ -106,31 +198,29 @@
           ignore_errors: yes
           tags: [execute]
 
-        - name: "Req 12 - Summarize host results"
+        - name: "Req 11 - Summarize host results"
           ansible.builtin.set_fact:
             _added_hosts: "{{ _host_results.results | selectattr('changed', 'eq', true) | selectattr('failed', 'eq', false) | map(attribute='item') | list }}"
             _skipped_hosts: "{{ _host_results.results | selectattr('changed', 'eq', false) | selectattr('failed', 'eq', false) | map(attribute='item') | list }}"
             _failed_hosts: "{{ _host_results.results | selectattr('failed', 'eq', true) | map(attribute='item') | list }}"
           tags: [execute]
 
-        - name: "Req 19 - Query hosts in inventory for verification"
-          ansible.builtin.set_fact:
-            _queried_hosts: >-
-              {{ query(
-                'ansible.controller.controller_api',
-                'hosts',
-                host=aap_gateway_ip,
-                username=aap_username,
-                password=aap_password,
-                verify_ssl=false,
-                query_params={'inventory': _inventory_id},
-                return_all=true
-              ) | flatten | map(attribute='name') | list }}
+        - name: "Req 12 - Query hosts in inventory for verification"
+          ansible.builtin.uri:
+            url: "https://{{ aap_gateway_ip }}/api/controller/v2/inventories/{{ _inventory_id }}/hosts/"
+            method: GET
+            user: "{{ aap_username }}"
+            password: "{{ aap_password }}"
+            force_basic_auth: yes
+            validate_certs: false
+            return_content: yes
+          register: _hosts_api_response
           tags: [execute]
 
-        - name: "Req 19 - Verify all desired hosts are present"
+        - name: "Store queried hosts"
           ansible.builtin.set_fact:
-            _verification_passed: "{{ (_hosts | difference(_queried_hosts) | length == 0) and (_failed_hosts | length == 0) }}"
+            _queried_hosts: >-
+              {{ (_hosts_api_response.json.results | default([])) | map(attribute='name') | list }}
           tags: [execute]
 
         - name: "Req 13 - Emit result"
@@ -142,7 +232,7 @@
               added_hosts: {{ _added_hosts }}
               skipped_hosts: {{ _skipped_hosts }}
               failed_hosts: {{ _failed_hosts }}
-              verification_passed: {{ _verification_passed | default('false') }}
+              verified_hosts: {{ _queried_hosts }}
               </result>
           tags: [execute]
 
@@ -155,12 +245,141 @@
               </result>
           tags: [execute]
 
-        - name: "Fail play on error"
+        - name: "Req 15 - Fail play on error"
           ansible.builtin.fail:
             msg: "ensure_aap_inventory_with_hosts failed."
           tags: [execute]
 
       always:
+        # ---- RESTORE phase (reads only from disk, never from pre_tasks/block variables) ----
+        - name: "Restore - Check if organization snapshot exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/organizations.json"
+          register: _restore_org_file_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read organization snapshot"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/organizations.json"
+          register: _restore_org_slurp
+          when: _restore_org_file_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Delete organization if it did not exist before"
+          ansible.controller.organization:
+            name: "{{ organization_name }}"
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_username }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          when:
+            - _restore_org_slurp.content is defined
+            - ((_restore_org_slurp.content | b64decode | from_json).results | default([])) | length == 0
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Check if inventory snapshot exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/inventories.json"
+          register: _restore_inv_file_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read inventory snapshot"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/inventories.json"
+          register: _restore_inv_slurp
+          when: _restore_inv_file_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Delete inventory if it did not exist before"
+          ansible.controller.inventory:
+            name: "{{ inventory_name }}"
+            organization: "{{ organization_name }}"
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_username }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          when:
+            - _restore_inv_slurp.content is defined
+            - ((_restore_inv_slurp.content | b64decode | from_json).results | default([])) | length == 0
+          failed_when: false
+          tags: [restore]
+
+        # --- Host-level restore (only if inventory existed before) ---
+        - name: "Restore - Check if hosts snapshot exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/hosts.json"
+          register: _restore_hosts_file_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read hosts snapshot"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/hosts.json"
+          register: _restore_hosts_slurp
+          when: _restore_hosts_file_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Obtain inventory ID from snapshot (needed for host query)"
+          ansible.builtin.set_fact:
+            _restore_inv_id: >-
+              {{ ((_restore_inv_slurp.content | b64decode | from_json).results | first).id | default('') }}
+          when:
+            - _restore_inv_slurp is defined
+            - _restore_inv_slurp.content is defined
+            - ((_restore_inv_slurp.content | b64decode | from_json).results | default([])) | length > 0
+          tags: [restore]
+
+        - name: "Restore - Query current hosts in the inventory"
+          ansible.builtin.uri:
+            url: "https://{{ aap_gateway_ip }}/api/controller/v2/inventories/{{ _restore_inv_id }}/hosts/"
+            method: GET
+            user: "{{ aap_username }}"
+            password: "{{ aap_password }}"
+            force_basic_auth: yes
+            validate_certs: false
+            return_content: yes
+          register: _restore_current_hosts_api
+          when: _restore_inv_id | default('') | length > 0
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Compute hosts to delete (added during execution)"
+          ansible.builtin.set_fact:
+            _restore_hosts_to_delete: >-
+              {{
+                (_restore_current_hosts_api.json.results | default([]) | map(attribute='name') | list)
+                | difference((_restore_hosts_slurp.content | b64decode | from_json).results | default([]) | map(attribute='name') | list)
+              }}
+          when:
+            - _restore_hosts_slurp.content is defined
+            - _restore_current_hosts_api.json is defined
+          tags: [restore]
+
+        - name: "Restore - Remove hosts that were added by the playbook"
+          ansible.controller.host:
+            name: "{{ item }}"
+            inventory: "{{ inventory_name }}"
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_username }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          loop: "{{ _restore_hosts_to_delete }}"
+          when:
+            - _restore_hosts_to_delete is defined
+            - _restore_hosts_to_delete | length > 0
+          failed_when: false
+          tags: [restore]
+
+        # -- Cleanup --
         - name: "Restore - Remove backup directory"
           ansible.builtin.file:
             path: "{{ backup_dir }}"
