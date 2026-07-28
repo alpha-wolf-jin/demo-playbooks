@@ -1,0 +1,209 @@
+---
+- name: "filesystem_kernel_modules_audit - DATA COLLECTOR"
+  hosts: "{{ target_server if target_server != '' else 'localhost' }}"
+  become: yes
+  gather_facts: false
+  vars:
+    target_server: ""
+    fs_type_blacklist: "afs,ceph,cifs,exfat,ext,fat,fscache,fuse,gfs2,nfs_common,nfsd,smbfs_common"
+    fs_type_whitelist: "xfs,vfat,ext2,ext3,ext4"
+    playbook_name: "filesystem_kernel_modules_audit"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    _script_static_body: !unsafe |
+      a_output=(); a_output2=(); a_modprope_config=(); a_excluded=(); a_available_modules=()
+      f_module_chk()
+      {
+         l_out2=""; grep -Pq -- "\b$l_mod_name\b" <<< "${a_cve_exists[*]}" && l_out2=" <- CVE exists!"
+         if ! grep -Pq -- '\bblacklist\h+'"$l_mod_name"'\b' <<< "${a_modprope_config[*]}"; then
+            a_output2+=("  - Kernel module: \"$l_mod_name\" is not fully disabled $l_out2")
+         elif ! grep -Pq -- '\binstall\h+'"$l_mod_name"'\h+\/bin\/(false|true)\b' <<< "${a_modprope_config[*]}"; then
+            a_output2+=("  - Kernel module: \"$l_mod_name\" is not fully disabled $l_out2")
+         fi
+         if lsmod | grep "$l_mod_name" &> /dev/null; then
+            l_output2+=("  - Kernel module: \"$l_mod_name\" is loaded" "")
+         fi
+      }
+      while IFS= read -r -d $'\0' l_module_dir; do
+         a_available_modules+=("$(basename "$l_module_dir")")
+      done < <(find "$(readlink -f /lib/modules/"$(uname -r)"/kernel/fs)" -mindepth 1 -maxdepth 1 -type d ! -empty -print0)
+      while IFS= read -r l_exclude; do
+         if grep -Pq -- "\b$l_exclude\b" <<< "${a_cve_exists[*]}"; then
+            a_output2+=("  - ** WARNING: kernel module: \"$l_exclude\" has a CVE and is currently mounted! **")
+         elif grep -Pq -- "\b$l_exclude\b" <<< "${a_available_modules[*]}"; then
+            a_output+=("  - Kernel module: \"$l_exclude\" is currently mounted - do NOT unload or disable")
+         fi
+         ! grep -Pq -- "\b$l_exclude\b" <<< "${a_ignore[*]}" && a_ignore+=("$l_exclude")
+      done < <(findmnt -knD | awk '{print $2}' | sort -u)
+      while IFS= read -r l_config; do
+         a_modprope_config+=("$l_config")
+      done < <(modprobe --showconfig | grep -P '^\h*(blacklist|install)')
+      for l_mod_name in "${a_available_modules[@]}"; do
+         [[ "$l_mod_name" =~ overlay ]] && l_mod_name="${l_mod_name::-2}"
+         if grep -Pq -- "\b$l_mod_name\b" <<< "${a_ignore[*]}"; then
+            a_excluded+=(" - Kernel module: \"$l_mod_name\"")
+         else
+            f_module_chk
+         fi
+      done
+      [ "${#a_excluded[@]}" -gt 0 ] && printf '%s\n' "" " -- INFO --" "The following intentionally skipped" "${a_excluded[@]}"
+      if [ "${#a_output2[@]}" -le 0 ]; then
+         printf '%s\n' "" "  - No unused filesystem kernel modules are enabled" "${a_output[@]}" ""
+      else
+         printf '%s\n' "" "-- Audit Result: --" "  ** REVIEW the following **" "${a_output2[@]}"
+         [ "${#a_output[@]}" -gt 0 ] && printf '%s\n' "" "-- Correctly set: --" "${a_output[@]}" ""
+      fi
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
+
+    - name: "Snapshot - Check if audit script exists"
+      ansible.builtin.stat:
+        path: "/tmp/fs_audit.sh"
+      register: _script_pre_stat
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Backup audit script if it exists"
+      ansible.builtin.copy:
+        src: "/tmp/fs_audit.sh"
+        dest: "{{ backup_dir }}/fs_audit.sh.bak"
+        remote_src: yes
+      when: _script_pre_stat.stat.exists
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Create existence marker"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}/script_existed.marker"
+        state: touch
+        mode: '0600'
+      when: _script_pre_stat.stat.exists
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Validate target_server"
+          ansible.builtin.assert:
+            that:
+              - target_server != ''
+              - target_server != 'localhost'
+            fail_msg: "target_server must be provided and not 'localhost' placeholder"
+          tags: [execute]
+
+        - name: "step-01 - Prepare script content and path"
+          ansible.builtin.set_fact:
+            _script_path: "/tmp/fs_audit.sh"
+            _script_content: |
+              a_ignore=( {{ fs_type_whitelist | split(',') | map('trim') | reject('equalto','') | join(' ') }} )
+              a_cve_exists=( {{ fs_type_blacklist | split(',') | map('trim') | reject('equalto','') | join(' ') }} )
+              {{ _script_static_body }}
+          tags: [execute]
+
+        - name: "step-02 - Copy audit script to target"
+          ansible.builtin.copy:
+            dest: "{{ _script_path }}"
+            content: "{{ _script_content }}"
+            mode: '0700'
+          tags: [execute]
+
+        - name: "step-03 - Execute audit script"
+          ansible.builtin.shell: /bin/bash "{{ _script_path }}"
+          args:
+            executable: /bin/bash
+          register: _script_result
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "step-04/05 - Set audit result to fail if issues found"
+          ansible.builtin.set_fact:
+            _audit_result: fail
+          when: "'** REVIEW the following **' in _script_result.stdout"
+          tags: [execute]
+
+        - name: "step-04/06 - Set audit result to pass if no issues found"
+          ansible.builtin.set_fact:
+            _audit_result: pass
+          when: "'** REVIEW the following **' not in _script_result.stdout"
+          tags: [execute]
+
+        - name: "step-07 - Emit result block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              audit_result: {{ _audit_result }}
+              </result>
+          tags: [execute]
+
+      rescue:
+        - name: "step-08 - Emit error block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: {{ inventory_hostname }} - Filesystem kernel modules audit failed
+              </result>
+
+        - name: "Fail playbook"
+          ansible.builtin.fail:
+            msg: "Filesystem kernel modules audit failed"
+
+      always:
+        - name: "Restore - Check if script existed before execution"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/script_existed.marker"
+          register: _marker_stat
+          changed_when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Restore original audit script"
+          ansible.builtin.copy:
+            src: "{{ backup_dir }}/fs_audit.sh.bak"
+            dest: "/tmp/fs_audit.sh"
+            remote_src: yes
+          when: _marker_stat.stat.exists
+          changed_when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove audit script if it did not exist before execution"
+          ansible.builtin.file:
+            path: "/tmp/fs_audit.sh"
+            state: absent
+          when: not _marker_stat.stat.exists
+          changed_when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup file"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}/fs_audit.sh.bak"
+            state: absent
+          changed_when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove existence marker"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}/script_existed.marker"
+            state: absent
+          changed_when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          changed_when: false
+          failed_when: false
+          tags: [restore]
