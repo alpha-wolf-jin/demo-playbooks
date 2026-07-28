@@ -1,0 +1,185 @@
+{
+  "tool_name": "disable_kernel_modules",
+  "version": "1.0",
+  "title": "Disable Kernel Modules",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Disables specified kernel modules on managed Linux hosts by unloading them (if loaded) and adding install and blacklist directives to configuration files under /etc/modprobe.d/. Processes a comma-separated list of module names.",
+  "aap_template": "disable_kernel_modules++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP address of the Linux target to SSH into."
+      },
+      {
+        "name": "module_list",
+        "type": "string",
+        "required": false,
+        "default": "gfs2",
+        "unit": null,
+        "description": "Comma-separated list of kernel module names to disable."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Structured result containing per-module status and overall success flag.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "all_succeeded",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if every module was processed without any error."
+      },
+      {
+        "name": "modules",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of objects, each with keys: name (string), status (success/failure), actions (list of strings describing actions taken), error (string; empty if success)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "transform",
+      "name": "Parse input module list",
+      "function": "Convert the comma-separated module_list parameter into a list and a space-separated string for shell loop usage.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_list"
+        ]
+      },
+      "computations": {
+        "_module_list": "{{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | list }}",
+        "_module_list_str": "{{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | join(' ') }}"
+      },
+      "stores": [
+        "_module_list",
+        "_module_list_str"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "action",
+      "name": "Remediate kernel modules",
+      "function": "Process each module in the list: unload if loaded, ensure install directive to /bin/false, ensure blacklist, and output per-module result lines for later parsing.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_module_list_str"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_remediation_result"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "transform",
+      "name": "Parse per-module results",
+      "function": "Convert the stdout lines from the remediation script into a structured list of per-module results and derive an overall success flag.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_remediation_result"
+        ]
+      },
+      "computations": {
+        "_module_results": "Parse each line of _remediation_result.stdout_lines, which are space-separated key=value entries in the form 'module:<name> status:<success/failure> actions:<comma,sep,actions> error:<string>'. For each line, extract name, status (keep as string), split actions by comma into a list (empty if none), and error (empty string if none). Build a list of dicts with these fields.",
+        "_all_succeeded": "True if no entry in _module_results has status equal to 'failure', false otherwise."
+      },
+      "stores": [
+        "_module_results",
+        "_all_succeeded"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the structured result containing per-module status and overall success.",
+      "output_fields": {
+        "all_succeeded": "{{ _all_succeeded }}",
+        "modules": "{{ _module_results }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-05",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block if any step fails fatally. Prints error and fails the play.",
+      "error_message": "ERROR: disable_kernel_modules failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-05",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Parse and normalize input parameters.",
+      "steps": [
+        "step-01"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Apply module disabling actions on the target host.",
+      "steps": [
+        "step-02"
+      ]
+    },
+    {
+      "name": "Post-checks",
+      "description": "Interpret the script output into a structured result.",
+      "steps": [
+        "step-03"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Deliver the final per-module status report.",
+      "steps": [
+        "step-04"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Handle unrecoverable errors during execution.",
+      "steps": [
+        "step-05"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "9a75c5099b82816f52e2ebfba63f7abb6b117e3e517de1746925227ef5daf7a0",
+    "saved_at": "2026-07-28T14:04:15+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
