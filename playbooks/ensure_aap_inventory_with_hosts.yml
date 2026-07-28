@@ -103,6 +103,7 @@
             validate_certs: false
           loop: "{{ _hosts }}"
           register: _host_results
+          ignore_errors: yes
           tags: [execute]
 
         - name: "Req 12 - Summarize host results"
@@ -141,7 +142,7 @@
               added_hosts: {{ _added_hosts }}
               skipped_hosts: {{ _skipped_hosts }}
               failed_hosts: {{ _failed_hosts }}
-              verification_passed: {{ _verification_passed }}
+              verification_passed: {{ _verification_passed | default('false') }}
               </result>
           tags: [execute]
 
