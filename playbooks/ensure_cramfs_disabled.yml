@@ -1,0 +1,258 @@
+---
+- name: "SOP playbook 'ensure_cramfs_disabled' (ACTION — changes system state): Checks if the cramfs kernel module exists on the target host and, if present, disables it by blacklisting, creating an install directive, and unloading the module."
+  hosts: "{{ target_server if target_server != '' else 'localhost' }}"
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    playbook_name: "ensure_cramfs_disabled"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    target_server: ""                                     # overridden by extra_vars at runtime
+    kernel_module: "cramfs"
+    config_file: "/etc/modprobe.d/cramfs.conf"
+
+  pre_tasks:
+    - name: "Validate target_server is provided"
+      ansible.builtin.assert:
+        that:
+          - target_server is defined
+          - target_server | length > 0
+          - target_server != 'localhost'
+        fail_msg: "target_server must be provided and must not be the placeholder 'localhost'"
+      run_once: true
+      connection: local
+      delegate_to: localhost
+      tags: [always]
+
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
+
+    - name: "Snapshot - Check if config file exists"
+      ansible.builtin.stat:
+        path: "{{ config_file }}"
+      register: _snap_conf_stat
+      tags: [snapshot]
+
+    - name: "Snapshot - Backup config file if exists"
+      ansible.builtin.copy:
+        src: "{{ config_file }}"
+        dest: "{{ backup_dir }}/cramfs.conf.orig"
+        remote_src: true
+      when: _snap_conf_stat.stat.exists | default(false)
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Record whether config file existed"
+      ansible.builtin.copy:
+        content: "{{ _snap_conf_stat.stat.exists | default(false) }}"
+        dest: "{{ backup_dir }}/conf_existed"
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Record if module is loaded"
+      ansible.builtin.shell: |
+        set -o pipefail
+        lsmod | grep -q '^{{ kernel_module }} ' && echo loaded || echo not_loaded
+      args:
+        executable: /bin/bash
+      register: _snap_mod_state
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Save module load state to file"
+      ansible.builtin.copy:
+        content: "{{ _snap_mod_state.stdout | trim }}"
+        dest: "{{ backup_dir }}/module_loaded_state"
+      changed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Req 02 - Check for cramfs module directories"
+          ansible.builtin.shell: set -o pipefail && find /lib/modules -type d -name cramfs 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          register: _module_paths
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req 04 - Ensure install directive"
+          ansible.builtin.lineinfile:
+            path: "{{ config_file }}"
+            line: "install {{ kernel_module }} /bin/false"
+            create: true
+            mode: '0644'
+          register: _install_result
+          when: _module_paths.stdout_lines | length > 0
+          tags: [execute]
+
+        - name: "Req 05 - Ensure blacklist directive"
+          ansible.builtin.lineinfile:
+            path: "{{ config_file }}"
+            line: "blacklist {{ kernel_module }}"
+            create: true
+            mode: '0644'
+          register: _blacklist_result
+          when: _module_paths.stdout_lines | length > 0
+          tags: [execute]
+
+        - name: "Req 06 - Unload cramfs module"
+          ansible.builtin.shell: set -o pipefail && modprobe -r {{ kernel_module }} 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          register: _unload_result
+          changed_when: false
+          when: _module_paths.stdout_lines | length > 0
+          tags: [execute]
+
+        - name: "Req 07 - Build actions list and result (module present)"
+          ansible.builtin.set_fact:
+            _remediation_performed: true
+            _actions: >-
+              {%- set actions = [] -%}
+              {%- if _install_result.changed | default(false) -%}
+                {%- set _ = actions.append('install directive added') -%}
+              {%- else -%}
+                {%- set _ = actions.append('install directive already present') -%}
+              {%- endif -%}
+              {%- if _blacklist_result.changed | default(false) -%}
+                {%- set _ = actions.append('blacklist directive added') -%}
+              {%- else -%}
+                {%- set _ = actions.append('blacklist directive already present') -%}
+              {%- endif -%}
+              {{ actions + ['module unload attempted'] | list }}
+            _status_message: "cramfs module disabled successfully"
+          when: _module_paths.stdout_lines | length > 0
+          tags: [execute]
+
+        - name: "Req 08 - Set no-op result (module absent)"
+          ansible.builtin.set_fact:
+            _remediation_performed: false
+            _actions: []
+            _status_message: "cramfs module not present on system, no remediation necessary"
+          when: _module_paths.stdout_lines | length == 0
+          tags: [execute]
+
+        - name: "Verify - Check module unloaded and config directives present"
+          ansible.builtin.shell: |
+            set -o pipefail
+            if lsmod | grep -q '^{{ kernel_module }} '; then
+              echo "FAIL_LOADED"
+              exit 0
+            fi
+            if ! grep -q '^install {{ kernel_module }} /bin/false$' "{{ config_file }}"; then
+              echo "FAIL_INSTALL"
+              exit 0
+            fi
+            if ! grep -q '^blacklist {{ kernel_module }}$' "{{ config_file }}"; then
+              echo "FAIL_BLACKLIST"
+              exit 0
+            fi
+            echo "OK"
+          args:
+            executable: /bin/bash
+          register: _verify
+          changed_when: false
+          failed_when: false
+          when: _module_paths.stdout_lines | length > 0
+          tags: [execute]
+
+        - name: "Override result if verification failed"
+          ansible.builtin.set_fact:
+            _remediation_performed: false
+            _status_message: "Verification failed: {{ _verify.stdout | trim }}"
+          when:
+            - _module_paths.stdout_lines | length > 0
+            - _verify.stdout | trim != 'OK'
+          tags: [execute]
+
+        - name: "Store final remediation result for compliance automation"
+          ansible.builtin.set_fact:
+            cis_result: "{{ 'PASS' if _remediation_performed | d(false) else 'SKIP' }}"
+          tags: [execute]
+
+        - name: "Req 09 - Emit result block"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              remediation_performed: {{ _remediation_performed }}
+              actions: {{ _actions }}
+              status_message: {{ _status_message }}
+              </result>
+          tags: [execute]
+
+      rescue:
+        - name: "Req 10 - Emit error block on failure"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: ensure_cramfs_disabled failed
+              </result>
+          failed_when: false
+
+        - name: "Fail play after error reporting"
+          ansible.builtin.fail:
+            msg: "Playbook failed"
+
+      always:
+        - name: "Restore - Check if config backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/cramfs.conf.orig"
+          register: _restore_conf_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Overwrite config with original"
+          ansible.builtin.copy:
+            src: "{{ backup_dir }}/cramfs.conf.orig"
+            dest: "{{ config_file }}"
+            remote_src: true
+          when: _restore_conf_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read existence marker"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/conf_existed"
+          register: _restore_existed
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove config if it was absent before"
+          ansible.builtin.file:
+            path: "{{ config_file }}"
+            state: absent
+          when:
+            - _restore_existed.content is defined
+            - (_restore_existed.content | b64decode | trim) == 'False'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read saved module load state"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/module_loaded_state"
+          register: _restore_mod_state
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Reload module if it was previously loaded"
+          ansible.builtin.shell: set -o pipefail && modprobe {{ kernel_module }} 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          when:
+            - _restore_mod_state.content is defined
+            - (_restore_mod_state.content | b64decode | trim) == 'loaded'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
