@@ -1,0 +1,352 @@
+{
+  "tool_name": "disable_kernel_module",
+  "version": "1.0",
+  "title": "Disable a kernel module",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Disable a loadable Linux kernel module by blacklisting it, preventing it from loading, and unloading it if currently active.",
+  "aap_template": "disable_kernel_module++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The target Linux host to SSH into (IP or hostname)."
+      },
+      {
+        "name": "kernel_module_name",
+        "type": "string",
+        "required": false,
+        "default": "cramfs",
+        "unit": null,
+        "description": "Name of the kernel module to disable (e.g. cramfs, udf)."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Structured result of the module disable operation",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "module_found",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if the module was found as a loadable kernel object."
+      },
+      {
+        "name": "loaded_before",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if the module was loaded before the playbook ran."
+      },
+      {
+        "name": "module_unloaded",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if the module was successfully unloaded by this playbook."
+      },
+      {
+        "name": "config_updated",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if the modprobe.d configuration was created or modified."
+      },
+      {
+        "name": "status_message",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Human‑readable summary of the outcome."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "transform",
+      "name": "Set default not‑found output variables",
+      "function": "Initialize output facts to the 'module not found / no action needed' state so the emit step always has valid data. Also compute the modprobe.d configuration file path.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "computations": {
+        "_module_found": "false",
+        "_config_updated": "false",
+        "_module_unloaded": "false",
+        "_loaded_before": "false",
+        "_status_message": "Module not available or built‑in, no remediation necessary.",
+        "_conf_path": "/etc/modprobe.d/{{ kernel_module_name }}.conf"
+      },
+      "stores": [
+        "_module_found",
+        "_config_updated",
+        "_module_unloaded",
+        "_loaded_before",
+        "_status_message",
+        "_conf_path"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "collect",
+      "name": "Find kernel module files on disk",
+      "function": "Search /lib/modules for .ko files matching the target module name.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "stores": [
+        "_module_files"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Is the module available as a loadable kernel object?",
+      "function": "Branch on whether any .ko file was found for the target module.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_module_files"
+        ]
+      },
+      "condition": "The search for kernel module files returned at least one result.",
+      "on_pass": "step-04",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Ensure install /bin/false line in modprobe.d",
+      "function": "Write (if missing) the line 'install <module> /bin/false' into the module's .conf file under /etc/modprobe.d.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "kernel_module_name",
+          "_conf_path"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_install_result"
+      ],
+      "on_success": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "action",
+      "name": "Ensure blacklist line in modprobe.d",
+      "function": "Write (if missing) the line 'blacklist <module>' into the module's .conf file under /etc/modprobe.d.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "kernel_module_name",
+          "_conf_path"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_blacklist_result"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "collect",
+      "name": "Check if the module is currently loaded",
+      "function": "Run lsmod and grep for the module name to determine if it is actively loaded in the kernel.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "stores": [
+        "_lsmod_result"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "transform",
+      "name": "Derive loaded flag from lsmod result",
+      "function": "Set _loaded_before to true if the grep exit code was 0 (module found in lsmod).",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_lsmod_result"
+        ]
+      },
+      "computations": {
+        "_loaded_before": "{{ _lsmod_result.rc == 0 }}"
+      },
+      "stores": [
+        "_loaded_before"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "decide",
+      "name": "Is the module currently loaded?",
+      "function": "Branch on whether the kernel module is currently loaded, to decide if an unload attempt is needed.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_loaded_before"
+        ]
+      },
+      "condition": "The kernel module is currently loaded.",
+      "on_pass": "step-09",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Unload the module (never fails)",
+      "function": "Run modprobe -r and rmmod to remove the module; errors are ignored and captured via return code.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_unload_result"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "transform",
+      "name": "Assemble final output variables",
+      "function": "Update output facts with the actual results of configuration and unloading.",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_install_result",
+          "_blacklist_result",
+          "_loaded_before",
+          "_unload_result"
+        ]
+      },
+      "computations": {
+        "_module_found": "true",
+        "_config_updated": "{{ _install_result.changed or _blacklist_result.changed }}",
+        "_module_unloaded": "{{ _unload_result.rc == 0 }}",
+        "_status_message": "Module disabled successfully."
+      },
+      "stores": [
+        "_module_found",
+        "_config_updated",
+        "_module_unloaded",
+        "_status_message"
+      ],
+      "on_success": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "emit",
+      "name": "Emit final result",
+      "function": "Print the structured result block containing module status and summary message.",
+      "output_fields": {
+        "module_found": "{{ _module_found }}",
+        "loaded_before": "{{ _loaded_before }}",
+        "module_unloaded": "{{ _module_unloaded }}",
+        "config_updated": "{{ _config_updated }}",
+        "status_message": "{{ _status_message }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-12",
+      "type": "abort",
+      "name": "Abort on failure",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the required error output and fails the play.",
+      "error_message": "ERROR: disable_kernel_module failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-12",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre‑checks and discovery",
+      "description": "Set default output facts and determine whether the target kernel module exists as a loadable object.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03"
+      ]
+    },
+    {
+      "name": "Main remediation",
+      "description": "Ensure the module is blacklisted and optionally unload it if currently active.",
+      "steps": [
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07",
+        "step-08",
+        "step-09"
+      ]
+    },
+    {
+      "name": "Result assembly",
+      "description": "Derive the final output variables from the remediation actions.",
+      "steps": [
+        "step-10"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured result block.",
+      "steps": [
+        "step-11"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-12"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "705c78d1f7ed3cf6fbdc2f3f2845f37eb07fe2ce84e292b386666e88e1cc5e5e",
+    "saved_at": "2026-07-28T10:17:56+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
