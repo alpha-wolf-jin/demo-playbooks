@@ -6,12 +6,12 @@
   vars:
     playbook_name: "ensure_aap_inventory_with_hosts"
     backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
-    aap_gateway_ip: ""
-    aap_username: ""
-    aap_password: ""
-    organization_name: ""
-    inventory_name: ""
-    hosts_list: ""
+    aap_gateway_ip: ""          # required – override via extra_vars
+    aap_username: ""            # required – override via extra_vars
+    aap_password: ""            # required – override via extra_vars
+    organization_name: ""       # required – override via extra_vars
+    inventory_name: ""          # required – override via extra_vars
+    hosts_list: ""              # required – override via extra_vars
 
   pre_tasks:
     - block:
@@ -184,6 +184,7 @@
               added_hosts: {{ _added_hosts }}
               skipped_hosts: {{ _skipped_hosts }}
               failed_hosts: {{ _failed_hosts }}
+              verification: {{ (_hosts | difference(_failed_hosts) | difference(_current_host_names) | length == 0) | ternary('PASS','FAIL') }}
               </result>
           tags: [execute]
 
