@@ -1,0 +1,234 @@
+{
+  "tool_name": "filesystem_kernel_modules_audit",
+  "version": "1.0",
+  "title": "Filesystem Kernel Modules Audit",
+  "role": "collect",
+  "effect": "transient",
+  "description": "Run the provided filesystem kernel modules audit script on a target Linux server and determine pass/fail based on whether any non-disabled or loaded modules are found.",
+  "aap_template": "filesystem_kernel_modules_audit++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The hostname or IP address of the target Linux server to audit."
+      },
+      {
+        "name": "fs_type_blacklist",
+        "type": "string",
+        "required": false,
+        "default": "afs,ceph,cifs,exfat,ext,fat,fscache,fuse,gfs2,nfs_common,nfsd,smbfs_common",
+        "unit": null,
+        "description": "Comma-separated list of filesystem kernel module names that have known CVEs and should be flagged if not fully disabled."
+      },
+      {
+        "name": "fs_type_whitelist",
+        "type": "string",
+        "required": false,
+        "default": "xfs,vfat,ext2,ext3,ext4",
+        "unit": null,
+        "description": "Comma-separated list of filesystem kernel module names that are intentionally ignored by the audit."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "The emit step's <result> block contains the pass/fail status.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "audit_result",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Result of the audit: 'pass' means no issues found; 'fail' means at least one module is not fully disabled or is loaded."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "transform",
+      "name": "Prepare script content and path",
+      "function": "Store the audit script content and destination path as facts. Script arrays for CVE blacklist and ignore whitelist are built from the provided parameters.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "fs_type_blacklist",
+          "fs_type_whitelist"
+        ]
+      },
+      "computations": {
+        "_script_content": "a_output=(); a_output2=(); a_modprope_config=(); a_excluded=(); a_available_modules=()\na_ignore=( {{ fs_type_whitelist | default('') | split(',') | map('trim') | reject('equalto', '') | join(' ') }} )\na_cve_exists=( {{ fs_type_blacklist | default('') | split(',') | map('trim') | reject('equalto', '') | join(' ') }} )\nf_module_chk()\n{\n   l_out2=\"\"; grep -Pq -- \"\\b$l_mod_name\\b\" <<< \"${a_cve_exists[*]}\" && l_out2=\" <- CVE exists!\"\n   if ! grep -Pq -- '\\bblacklist\\h+'\"$l_mod_name\"'\\b' <<< \"${a_modprope_config[*]}\"; then\n      a_output2+=(\"  - Kernel module: \\\"$l_mod_name\\\" is not fully disabled $l_out2\")\n   elif ! grep -Pq -- '\\binstall\\h+'\"$l_mod_name\"'\\h+\\/bin\\/(false|true)\\b' <<< \"${a_modprope_config[*]}\"; then\n      a_output2+=(\"  - Kernel module: \\\"$l_mod_name\\\" is not fully disabled $l_out2\")\n   fi\n   if lsmod | grep \"$l_mod_name\" &> /dev/null; then\n      l_output2+=(\"  - Kernel module: \\\"$l_mod_name\\\" is loaded\" \"\")\n   fi\n}\nwhile IFS= read -r -d $'\\0' l_module_dir; do\n   a_available_modules+=(\"$(basename \"$l_module_dir\")\")\ndone < <(find \"$(readlink -f /lib/modules/\"$(uname -r)\"/kernel/fs)\" -mindepth 1 -maxdepth 1 -type d ! -empty -print0)\nwhile IFS= read -r l_exclude; do\n   if grep -Pq -- \"\\b$l_exclude\\b\" <<< \"${a_cve_exists[*]}\"; then\n      a_output2+=(\"  - ** WARNING: kernel module: \\\"$l_exclude\\\" has a CVE and is currently mounted! **\")\n   elif grep -Pq -- \"\\b$l_exclude\\b\" <<< \"${a_available_modules[*]}\"; then\n      a_output+=(\"  - Kernel module: \\\"$l_exclude\\\" is currently mounted - do NOT unload or disable\")\n   fi\n   ! grep -Pq -- \"\\b$l_exclude\\b\" <<< \"${a_ignore[*]}\" && a_ignore+=(\"$l_exclude\")\ndone < <(findmnt -knD | awk '{print $2}' | sort -u)\nwhile IFS= read -r l_config; do\n   a_modprope_config+=(\"$l_config\")\ndone < <(modprobe --showconfig | grep -P '^\\h*(blacklist|install)')\nfor l_mod_name in \"${a_available_modules[@]}\"; do\n   [[ \"$l_mod_name\" =~ overlay ]] && l_mod_name=\"${l_mod_name::-2}\"\n   if grep -Pq -- \"\\b$l_mod_name\\b\" <<< \"${a_ignore[*]}\"; then\n      a_excluded+=(\" - Kernel module: \\\"$l_mod_name\\\"\")\n   else\n      f_module_chk\n   fi\ndone\n[ \"${#a_excluded[@]}\" -gt 0 ] && printf '%s\\n' \"\" \" -- INFO --\" \"The following intentionally skipped\" \"${a_excluded[@]}\"\nif [ \"${#a_output2[@]}\" -le 0 ]; then\n   printf '%s\\n' \"\" \"  - No unused filesystem kernel modules are enabled\" \"${a_output[@]}\" \"\"\nelse\n   printf '%s\\n' \"\" \"-- Audit Result: --\" \"  ** REVIEW the following **\" \"${a_output2[@]}\"\n   [ \"${#a_output[@]}\" -gt 0 ] && printf '%s\\n' \"\" \"-- Correctly set: --\" \"${a_output[@]}\" \"\"\nfi",
+        "_script_path": "/tmp/fs_audit.sh"
+      },
+      "stores": [
+        "_script_content",
+        "_script_path"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "action",
+      "name": "Copy audit script to target",
+      "function": "Place the audit script at the target path with execute permissions.",
+      "module": "ansible.builtin.copy",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_script_content",
+          "_script_path"
+        ]
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "action",
+      "name": "Execute audit script",
+      "function": "Run the audit script and capture its output.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_script_path"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_script_result"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "decide",
+      "name": "Does the script report issues?",
+      "function": "Check if the audit script flagged any modules as not fully disabled or loaded.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_script_result"
+        ]
+      },
+      "condition": "The script output contains the string '** REVIEW the following **', indicating issues were found.",
+      "on_pass": "step-05",
+      "on_fail": "step-06"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Set audit result to fail",
+      "function": "Record that the audit found issues.",
+      "input": {
+        "source": "step-04",
+        "fields": []
+      },
+      "computations": {
+        "_audit_result": "fail"
+      },
+      "stores": [
+        "_audit_result"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Set audit result to pass",
+      "function": "Record that the audit found no issues.",
+      "input": {
+        "source": "step-04",
+        "fields": []
+      },
+      "computations": {
+        "_audit_result": "pass"
+      },
+      "stores": [
+        "_audit_result"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the final audit result.",
+      "output_fields": {
+        "audit_result": "{{ _audit_result }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-08",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Outputs the error message and fails the play.",
+      "error_message": "Filesystem kernel modules audit failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-08",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Setup",
+      "description": "Store the audit script content and copy it to the target system.",
+      "steps": [
+        "step-01",
+        "step-02"
+      ]
+    },
+    {
+      "name": "Script Execution",
+      "description": "Execute the filesystem kernel modules audit script on the target.",
+      "steps": [
+        "step-03"
+      ]
+    },
+    {
+      "name": "Result Evaluation",
+      "description": "Inspect the script output to determine pass or fail status.",
+      "steps": [
+        "step-04",
+        "step-05",
+        "step-06"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final audit result.",
+      "steps": [
+        "step-07"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-08"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "3962d88a9d70dad90b3ef12551073b1855acbb328a900d97b39a7b46a7438fe2",
+    "saved_at": "2026-07-28T12:25:02+00:00",
+    "saved_by": "admin",
+    "revision": 2
+  }
+}
