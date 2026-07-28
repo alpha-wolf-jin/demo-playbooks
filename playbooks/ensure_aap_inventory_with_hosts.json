@@ -1,0 +1,421 @@
+{
+  "tool_name": "ensure_aap_inventory_with_hosts",
+  "version": "1.0",
+  "title": "Ensure AAP Inventory with Hosts",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Ensures an AAP organization and inventory exist, then ensures a comma-separated list of hosts are present in that inventory. Reports per-host status: added, skipped, failed.",
+  "aap_template": "ensure_aap_inventory_with_hosts++Default",
+  "organization": "Default",
+  "execution_target": "controller",
+  "connection": {
+    "hosts": "localhost",
+    "connection": "local",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "aap_gateway_ip",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "AAP controller hostname or IP address"
+      },
+      {
+        "name": "aap_username",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Username for AAP API authentication"
+      },
+      {
+        "name": "aap_password",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Password for AAP API authentication"
+      },
+      {
+        "name": "organization_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Organization name to ensure exists"
+      },
+      {
+        "name": "inventory_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Inventory name to ensure exists inside the organization"
+      },
+      {
+        "name": "hosts_list",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Comma-separated list of host names to ensure present in the inventory"
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Reports the organization name, inventory name, and lists of hosts added, skipped, or failed.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "organization_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The organization name that was ensured"
+      },
+      {
+        "name": "inventory_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The inventory name that was ensured"
+      },
+      {
+        "name": "added_hosts",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Host names that were newly added to the inventory"
+      },
+      {
+        "name": "skipped_hosts",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Host names that were already present and were skipped"
+      },
+      {
+        "name": "failed_hosts",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Host names that could not be added due to an error"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "transform",
+      "name": "Parse hosts list",
+      "function": "Split the comma-separated hosts_list string into a list of host names.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "hosts_list"
+        ]
+      },
+      "computations": {
+        "_hosts": "{{ (hosts_list | default('')).split(',') | map('trim') | reject('equalto', '') | list }}"
+      },
+      "stores": [
+        "_hosts"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "collect",
+      "name": "Look up organization",
+      "function": "Query the AAP controller API for an organization matching the given name.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "organization_name"
+        ]
+      },
+      "stores": [
+        "_org_lookup"
+      ],
+      "on_success": "step-03",
+      "on_fail": "step-14"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Check if organization exists",
+      "function": "Branch on whether step-02 found a matching organization.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_org_lookup"
+        ]
+      },
+      "condition": "The organization lookup returned at least one result.",
+      "on_pass": "step-05",
+      "on_fail": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Create organization",
+      "function": "Create the organization using the idempotent ansible.controller.organization module.",
+      "module": "ansible.controller.organization",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "organization_name",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_org_created"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-14"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Set organization ID",
+      "function": "Combine the existing or newly created organization data to obtain the organization ID.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_org_lookup",
+          "_org_created"
+        ]
+      },
+      "computations": {
+        "_org_id": "If _org_lookup contains at least one item, extract its id; otherwise extract id from _org_created."
+      },
+      "stores": [
+        "_org_id"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "collect",
+      "name": "Fetch all inventories",
+      "function": "Retrieve all inventories from the AAP controller API.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password"
+        ]
+      },
+      "stores": [
+        "_all_inventories"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-14"
+    },
+    {
+      "id": "step-07",
+      "type": "transform",
+      "name": "Filter inventory by name and organization",
+      "function": "From the full list of inventories, keep only those whose name matches inventory_name and whose organization ID equals _org_id.",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_all_inventories",
+          "_org_id",
+          "inventory_name"
+        ]
+      },
+      "computations": {
+        "_existing_inventory": "Filter _all_inventories to items where name equals inventory_name and organization equals _org_id."
+      },
+      "stores": [
+        "_existing_inventory"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "decide",
+      "name": "Check if inventory exists",
+      "function": "Branch on whether step-07 found a matching inventory.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_existing_inventory"
+        ]
+      },
+      "condition": "At least one inventory matching the name and organization was found.",
+      "on_pass": "step-10",
+      "on_fail": "step-09"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Create inventory",
+      "function": "Create the inventory in the organization using the idempotent ansible.controller.inventory module.",
+      "module": "ansible.controller.inventory",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "inventory_name",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_inventory_created"
+      ],
+      "on_success": "step-10",
+      "on_fail": "step-14"
+    },
+    {
+      "id": "step-10",
+      "type": "transform",
+      "name": "Set inventory ID",
+      "function": "Combine the existing or newly created inventory data to obtain the inventory ID.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_existing_inventory",
+          "_inventory_created"
+        ]
+      },
+      "computations": {
+        "_inventory_id": "If _existing_inventory is not empty, extract id from its first element; otherwise extract id from _inventory_created."
+      },
+      "stores": [
+        "_inventory_id"
+      ],
+      "on_success": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "action",
+      "name": "Ensure hosts present",
+      "function": "Iterate over each host in _hosts and ensure it is present in the inventory using ansible.controller.host with state: present. Captures per-host results; individual host failures do not stop processing.",
+      "module": "ansible.controller.host",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_inventory_id"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_host_results"
+      ],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-12",
+      "type": "transform",
+      "name": "Summarize host results",
+      "function": "Derive added, skipped, and failed host lists from the per-host results captured in step-11.",
+      "input": {
+        "source": "step-11",
+        "fields": [
+          "_host_results"
+        ]
+      },
+      "computations": {
+        "_added_hosts": "Extract host names from _host_results.results where the task changed (host was added) and the task did not fail.",
+        "_skipped_hosts": "Extract host names from _host_results.results where the task did not change (host already existed) and the task did not fail.",
+        "_failed_hosts": "Extract host names from _host_results.results where the task failed."
+      },
+      "stores": [
+        "_added_hosts",
+        "_skipped_hosts",
+        "_failed_hosts"
+      ],
+      "on_success": "step-13"
+    },
+    {
+      "id": "step-13",
+      "type": "emit",
+      "name": "Emit result",
+      "function": "Print the structured result block containing the organization, inventory, and per-host outcome lists.",
+      "output_fields": {
+        "organization_name": "{{ organization_name }}",
+        "inventory_name": "{{ inventory_name }}",
+        "added_hosts": "{{ _added_hosts }}",
+        "skipped_hosts": "{{ _skipped_hosts }}",
+        "failed_hosts": "{{ _failed_hosts }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-14",
+      "type": "abort",
+      "name": "Abort on failure",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the required error output and fails the play.",
+      "error_message": "ERROR: ensure_aap_inventory_with_hosts failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-14",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Setup",
+      "description": "Validate or create the organization and the inventory; prepare hosts list.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07",
+        "step-08",
+        "step-09",
+        "step-10"
+      ]
+    },
+    {
+      "name": "Host Enrollment",
+      "description": "Ensure all hosts from the list are present in the inventory.",
+      "steps": [
+        "step-11"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Summarize per-host results and emit the final output.",
+      "steps": [
+        "step-12",
+        "step-13"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-14"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "2e2eb31150453a07a6ebe7c286ee9f75f95f5f891ff3f16cb98c9b36561542b9",
+    "saved_at": "2026-07-24T13:05:15+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
