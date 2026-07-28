@@ -21,6 +21,7 @@
             paths: /lib/modules
             patterns: "{{ kernel_module_name }}.ko*"
             file_type: file
+            recurse: yes
           register: _module_exists
           changed_when: false
 
@@ -43,7 +44,7 @@
           when: "_module_exists.files | length > 0"
 
         - name: "Req 05 - Check if module is loaded"
-          ansible.builtin.shell: "set -o pipefail && lsmod | grep '^{{ kernel_module_name }}\\s'"
+          ansible.builtin.shell: "set -o pipefail && lsmod | grep '^{{ kernel_module_name }} '"
           args:
             executable: /bin/bash
           register: _loaded_check
