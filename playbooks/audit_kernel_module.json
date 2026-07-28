@@ -1,0 +1,240 @@
+{
+  "tool_name": "audit_kernel_module",
+  "version": "1.0",
+  "title": "Audit Kernel Module Disable and Denylist",
+  "role": "collect",
+  "effect": "transient",
+  "description": "Audit a kernel module on a Linux host: if the module exists, verify it is not loaded, has an install disable with /bin/true or /bin/false, and is denylisted in modprobe config; otherwise pass.",
+  "aap_template": "audit_kernel_module++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP of the target Linux server to audit."
+      },
+      {
+        "name": "kernel_module_name",
+        "type": "string",
+        "required": false,
+        "default": "cramfs",
+        "unit": null,
+        "description": "Name of the kernel module to audit (default: cramfs)."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "A single PASS/FAIL result field.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "result",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Overall audit result: PASS if the module is properly disabled/denylisted or does not exist, FAIL otherwise."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Find kernel module files",
+      "function": "Search /lib/modules for any .ko files belonging to the specified module (default fs type) to determine if the module exists.",
+      "module": "ansible.builtin.find",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "stores": [
+        "_module_exists"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "decide",
+      "name": "Does the module exist?",
+      "function": "Branch based on whether any module .ko files were found.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_module_exists"
+        ]
+      },
+      "condition": "The kernel module exists on the system (at least one .ko file found).",
+      "on_pass": "step-03",
+      "on_fail": "step-08"
+    },
+    {
+      "id": "step-03",
+      "type": "collect",
+      "name": "Check install disable line",
+      "function": "Run modprobe --showconfig and grep for an install line with /bin/true or /bin/false for the module. The task must not fail if grep finds nothing (use failed_when: false).",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "stores": [
+        "_install_check"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Check blacklist line",
+      "function": "Run modprobe --showconfig and grep for a blacklist line for the module. The task must not fail if grep finds nothing (use failed_when: false).",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "stores": [
+        "_blacklist_check"
+      ],
+      "on_success": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "collect",
+      "name": "Check if module is loaded",
+      "function": "Run lsmod and grep for the module name (whole word). The task must not fail if grep finds nothing (use failed_when: false).",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "kernel_module_name"
+        ]
+      },
+      "stores": [
+        "_loaded_check"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Determine overall audit result",
+      "function": "Evaluate the three checks: install disable exists (exit code 0), blacklist exists (exit code 0), module not loaded (exit code not 0). Set final result to PASS if all three are true, else FAIL.",
+      "input": {
+        "source": "step-03,step-04,step-05",
+        "fields": [
+          "_install_check",
+          "_blacklist_check",
+          "_loaded_check"
+        ]
+      },
+      "computations": {
+        "_install_ok": "True if _install_check.rc == 0",
+        "_blacklist_ok": "True if _blacklist_check.rc == 0",
+        "_loaded_ok": "True if _loaded_check.rc != 0",
+        "_all_checks_pass": "True if _install_ok and _blacklist_ok and _loaded_ok",
+        "_final_result": "PASS if _all_checks_pass, else FAIL"
+      },
+      "stores": [
+        "_final_result"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Output the audit result.",
+      "output_fields": {
+        "result": "{{ _final_result }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Set result to PASS (module not present)",
+      "function": "When the module does not exist on the system, set the audit result to PASS.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_final_result": "PASS"
+      },
+      "stores": [
+        "_final_result"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-09",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: Audit failed due to an unexpected error. Please check the Ansible output for details.",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-09",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 120,
+  "phases": [
+    {
+      "name": "Module Existence Verification",
+      "description": "Check whether the kernel module files exist on the target host.",
+      "steps": [
+        "step-01",
+        "step-02"
+      ]
+    },
+    {
+      "name": "Compliance Checks",
+      "description": "If the module exists, verify install disable, denylist, and load state.",
+      "steps": [
+        "step-03",
+        "step-04",
+        "step-05"
+      ]
+    },
+    {
+      "name": "Result Compilation and Reporting",
+      "description": "Compute the overall audit result and emit the final PASS/FAIL output.",
+      "steps": [
+        "step-06",
+        "step-08",
+        "step-07"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-09"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "debf5fb0b94ade0dd30c6eede7b428b921893b385e36fefbcb7a4295de37161d",
+    "saved_at": "2026-07-28T02:39:08+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
