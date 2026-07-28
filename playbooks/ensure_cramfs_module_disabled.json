@@ -1,0 +1,341 @@
+{
+  "tool_name": "ensure_cramfs_module_disabled",
+  "version": "1.0",
+  "title": "Disable Cramfs Kernel Module",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Check for the cramfs kernel module on the target host and, if found, unload it and add modprobe.d configuration to prevent future loading.",
+  "aap_template": "ensure_cramfs_module_disabled++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The hostname or IP address of the managed host to SSH into."
+      },
+      {
+        "name": "module_name",
+        "type": "string",
+        "required": false,
+        "default": "cramfs",
+        "unit": null,
+        "description": "Name of the kernel module to check and disable."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Whether the cramfs module directory was found and a list of the actions taken.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "module_found",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Indicates whether the cramfs module directory exists on the system."
+      },
+      {
+        "name": "actions",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of strings describing the actions that were performed (e.g. unloaded kernel module, added install configuration, added blacklist configuration)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Find cramfs module directories",
+      "function": "Search for cramfs module directories under /lib/modules to determine if the module exists on the system.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_name"
+        ]
+      },
+      "stores": [
+        "_module_dirs"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "decide",
+      "name": "Module exists?",
+      "function": "Branch on whether any cramfs module directory was found.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_module_dirs"
+        ]
+      },
+      "condition": "At least one cramfs module directory was found.",
+      "on_pass": "step-03",
+      "on_fail": "step-12"
+    },
+    {
+      "id": "step-03",
+      "type": "collect",
+      "name": "Check if module loaded",
+      "function": "Determine whether the cramfs kernel module is currently loaded by checking the output of lsmod.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_name"
+        ]
+      },
+      "stores": [
+        "_loaded_status"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "decide",
+      "name": "Module loaded?",
+      "function": "Decide if the cramfs module is currently loaded and therefore needs to be unloaded.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_loaded_status"
+        ]
+      },
+      "condition": "The cramfs module is currently loaded (reported by lsmod).",
+      "on_pass": "step-05",
+      "on_fail": "step-07"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Flag unload needed",
+      "function": "Set a fact indicating that an unload attempt is required.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_loaded_status"
+        ]
+      },
+      "computations": {
+        "_unload_needed": "true"
+      },
+      "stores": [
+        "_unload_needed"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "action",
+      "name": "Unload module",
+      "function": "Attempt to unload the cramfs module using modprobe and rmmod, ignoring failures if the module is built-in or already absent.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_name"
+        ]
+      },
+      "idempotent": false,
+      "stores": [],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Add install configuration",
+      "function": "Ensure that an 'install cramfs /bin/false' line is present in the module’s configuration file under /etc/modprobe.d.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_name"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_install_result"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Record install status",
+      "function": "Capture whether the install configuration line was actually added because it was missing.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_install_result"
+        ]
+      },
+      "computations": {
+        "_install_changed": "{{ _install_result is changed }}"
+      },
+      "stores": [
+        "_install_changed"
+      ],
+      "on_success": "step-09"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Add blacklist configuration",
+      "function": "Ensure that a 'blacklist cramfs' line is present in the module’s configuration file under /etc/modprobe.d.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_name"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_blacklist_result"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "transform",
+      "name": "Record blacklist status",
+      "function": "Capture whether the blacklist configuration line was actually added because it was missing.",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_blacklist_result"
+        ]
+      },
+      "computations": {
+        "_blacklist_changed": "{{ _blacklist_result is changed }}"
+      },
+      "stores": [
+        "_blacklist_changed"
+      ],
+      "on_success": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "transform",
+      "name": "Compile remediation results",
+      "function": "Assemble the final output facts: whether the module was found and a list of actions that were performed.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "module_name"
+        ]
+      },
+      "computations": {
+        "_module_found": "true",
+        "_actions": "{{ (['unloaded kernel module'] if (_unload_needed | default(false)) else []) + (['added install configuration'] if (_install_changed | default(false)) else []) + (['added blacklist configuration'] if (_blacklist_changed | default(false)) else []) }}"
+      },
+      "stores": [
+        "_module_found",
+        "_actions"
+      ],
+      "on_success": "step-13"
+    },
+    {
+      "id": "step-12",
+      "type": "transform",
+      "name": "Summarize not-found case",
+      "function": "Set facts when the cramfs module directory was not found – no remediation is necessary.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_module_found": "false",
+        "_actions": "[]"
+      },
+      "stores": [
+        "_module_found",
+        "_actions"
+      ],
+      "on_success": "step-13"
+    },
+    {
+      "id": "step-13",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the structured output with module_found and the list of actions taken.",
+      "output_fields": {
+        "module_found": "{{ _module_found }}",
+        "actions": "{{ _actions }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-14",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: ensure_cramfs_module_disabled failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-14",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Check module existence",
+      "description": "Determine whether the cramfs kernel module directory is present on the target system.",
+      "steps": [
+        "step-01",
+        "step-02"
+      ]
+    },
+    {
+      "name": "Remediation",
+      "description": "If the module exists, check if it is loaded, then unload it and ensure the appropriate modprobe.d configuration is in place.",
+      "steps": [
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07",
+        "step-08",
+        "step-09",
+        "step-10",
+        "step-11",
+        "step-12"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final result to the caller.",
+      "steps": [
+        "step-13"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-14"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "89753ffa10bb54242f944a1405419409af3e25257bcfbfeeb60c97bf1daa9f64",
+    "saved_at": "2026-07-28T11:27:26+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
