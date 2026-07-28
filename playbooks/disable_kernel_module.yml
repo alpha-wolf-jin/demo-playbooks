@@ -1,0 +1,262 @@
+---
+- name: "SOP playbook 'disable_kernel_module' (ACTION — changes system state): Disable a loadable Linux kernel module by blacklisting it, preventing it from loading, and unloading it if currently active."
+  hosts: "{{ target_server if target_server != '' else 'localhost' }}"
+  become: yes
+  gather_facts: false
+  vars:
+    target_server: ""
+    kernel_module_name: "cramfs"
+    playbook_name: "disable_kernel_module"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    conf_path: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
+
+  pre_tasks:
+    - block:
+        - name: "Snapshot - Create backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: directory
+            mode: "0700"
+          tags: [snapshot]
+
+        - name: "Snapshot - Check if modprobe config file exists"
+          ansible.builtin.stat:
+            path: "{{ conf_path }}"
+          register: _snap_conf_stat
+          tags: [snapshot]
+
+        - name: "Snapshot - Check if config backup already exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/{{ kernel_module_name }}.conf.orig"
+          register: _snap_backup_exists
+          tags: [snapshot]
+
+        - name: "Snapshot - Backup config file if exists and backup not yet taken"
+          ansible.builtin.copy:
+            src: "{{ conf_path }}"
+            dest: "{{ backup_dir }}/{{ kernel_module_name }}.conf.orig"
+            remote_src: true
+          when:
+            - _snap_conf_stat.stat.exists | default(false)
+            - not _snap_backup_exists.stat.exists | default(false)
+          failed_when: false
+          changed_when: false
+          tags: [snapshot]
+
+        - name: "Snapshot - Record whether config file existed"
+          ansible.builtin.copy:
+            content: "{{ _snap_conf_stat.stat.exists | default(false) }}"
+            dest: "{{ backup_dir }}/conf_existed"
+            force: false
+          tags: [snapshot]
+
+        - name: "Snapshot - Check if module is loaded"
+          ansible.builtin.shell: "set -o pipefail && lsmod | grep -q '^{{ kernel_module_name }} ' && echo loaded || echo not_loaded"
+          args:
+            executable: /bin/bash
+          register: _snap_loaded_state
+          changed_when: false
+          failed_when: false
+          tags: [snapshot]
+
+        - name: "Snapshot - Save module loaded state"
+          ansible.builtin.copy:
+            content: "{{ _snap_loaded_state.stdout | trim }}"
+            dest: "{{ backup_dir }}/module_loaded_state"
+            force: false
+          tags: [snapshot]
+
+      rescue:
+        - name: "Emit error on snapshot failure"
+          debug:
+            msg:
+              - "<result>"
+              - "ERROR: disable_kernel_module failed"
+              - "</result>"
+          tags: [always]
+        - name: "Force fail on snapshot failure"
+          fail:
+            msg: "Snapshot failed"
+          tags: [always]
+
+  tasks:
+    - block:
+        - name: "Validate target_server variable"
+          ansible.builtin.assert:
+            that:
+              - target_server is defined
+              - target_server | length > 0
+              - target_server != ""
+            fail_msg: "target_server must be provided and not empty"
+          tags: [execute]
+
+        - name: "Req 02 - Initialize default output facts"
+          ansible.builtin.set_fact:
+            _module_found: false
+            _config_updated: false
+            _module_unloaded: false
+            _loaded_before: false
+            _status_message: "Module not available or built‑in, no remediation necessary."
+            _conf_path: "{{ conf_path }}"
+          tags: [execute]
+
+        - name: "Req 03 - Find kernel module files on disk"
+          ansible.builtin.find:
+            paths: /lib/modules
+            patterns: "{{ kernel_module_name }}.ko*"
+            file_type: file
+            recurse: yes
+          register: _module_files
+          tags: [execute]
+
+        - name: "Req 04 - Set module found flag based on search results"
+          ansible.builtin.set_fact:
+            _module_found: "{{ _module_files.matched > 0 }}"
+          tags: [execute]
+
+        - block:
+            - name: "Req 05 - Ensure install /bin/false line in modprobe.d"
+              ansible.builtin.lineinfile:
+                path: "{{ _conf_path }}"
+                line: "install {{ kernel_module_name }} /bin/false"
+                create: true
+                mode: "0644"
+              register: _install_result
+              tags: [execute]
+
+            - name: "Req 06 - Ensure blacklist line in modprobe.d"
+              ansible.builtin.lineinfile:
+                path: "{{ _conf_path }}"
+                line: "blacklist {{ kernel_module_name }}"
+                create: true
+                mode: "0644"
+              register: _blacklist_result
+              tags: [execute]
+
+            - name: "Req 07 - Check if the module is currently loaded"
+              ansible.builtin.shell: "set -o pipefail && lsmod | grep -q '^{{ kernel_module_name }} '"
+              args:
+                executable: /bin/bash
+              register: _lsmod_result
+              failed_when: false
+              changed_when: false
+              tags: [execute]
+
+            - name: "Req 08 - Derive loaded flag from lsmod result"
+              ansible.builtin.set_fact:
+                _loaded_before: "{{ _lsmod_result.rc == 0 }}"
+              tags: [execute]
+
+            - block:
+                - name: "Req 09 - Unload the module (never fails)"
+                  ansible.builtin.shell: "set -o pipefail && modprobe -r {{ kernel_module_name }} 2>/dev/null || rmmod {{ kernel_module_name }} 2>/dev/null || true"
+                  args:
+                    executable: /bin/bash
+                  register: _unload_result
+                  failed_when: false
+                  changed_when: false
+                  tags: [execute]
+              when: _loaded_before | bool
+              tags: [execute]
+
+            - name: "Verify module is not loaded after remediation"
+              ansible.builtin.shell: "set -o pipefail && lsmod | grep -q '^{{ kernel_module_name }} '"
+              args:
+                executable: /bin/bash
+              register: _verify_result
+              failed_when: false
+              changed_when: false
+              tags: [execute]
+
+            - name: "Req 10 - Assemble final output variables"
+              ansible.builtin.set_fact:
+                _config_updated: "{{ _install_result.changed or _blacklist_result.changed }}"
+                _module_unloaded: "{{ (_unload_result | default({'rc': 1})).rc == 0 }}"
+                _module_found: true
+                _status_message: "Module disabled successfully{{ ' (verified)' if _verify_result.rc != 0 else ' (verification failed)' }}"
+              tags: [execute]
+          when: _module_found | bool
+          tags: [execute]
+
+        - name: "Req 11 - Emit final result block"
+          ansible.builtin.debug:
+            msg:
+              - "<result>"
+              - "module_found: {{ _module_found }}"
+              - "loaded_before: {{ _loaded_before }}"
+              - "module_unloaded: {{ _module_unloaded }}"
+              - "config_updated: {{ _config_updated }}"
+              - "status_message: {{ _status_message }}"
+              - "</result>"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Check if config backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/{{ kernel_module_name }}.conf.orig"
+          register: _restore_conf_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Overwrite config with original if backup exists"
+          ansible.builtin.copy:
+            src: "{{ backup_dir }}/{{ kernel_module_name }}.conf.orig"
+            dest: "{{ conf_path }}"
+            remote_src: true
+          when: _restore_conf_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read existence marker"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/conf_existed"
+          register: _restore_existed
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove config if it was created by remediation"
+          ansible.builtin.file:
+            path: "{{ conf_path }}"
+            state: absent
+          when:
+            - _restore_existed.content is defined
+            - (_restore_existed.content | b64decode | trim) == 'False'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read saved module loaded state"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/module_loaded_state"
+          register: _restore_mod_state
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Reload module if it was previously loaded"
+          ansible.builtin.shell: "set -o pipefail && modprobe {{ kernel_module_name }} 2>/dev/null || true"
+          args:
+            executable: /bin/bash
+          when:
+            - _restore_mod_state.content is defined
+            - (_restore_mod_state.content | b64decode | trim) == 'loaded'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
+
+      rescue:
+        - name: "Emit error on execute failure"
+          debug:
+            msg:
+              - "<result>"
+              - "ERROR: disable_kernel_module failed"
+              - "</result>"
+          tags: [always]
+        - name: "Force fail on execute failure"
+          fail:
+            msg: "Execution failed"
+          tags: [always]
