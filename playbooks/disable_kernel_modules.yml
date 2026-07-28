@@ -1,0 +1,221 @@
+---
+- name: "SOP playbook 'disable_kernel_modules' (ACTION — changes system state): Disables specified kernel modules on managed Linux hosts by unloading them (if loaded) and adding install and blacklist directives to configuration files under /etc/modprobe.d/. Processes a comma-separated list of module names."
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    playbook_name: "disable_kernel_modules"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    target_server: ""          # required, no default (sentinel rejected by assert)
+    module_list: "gfs2"        # default
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ target_server }}"
+      tags: [snapshot]
+
+    - name: "Snapshot - Backup modprobe.d directory"
+      shell: |
+        set -o pipefail && mkdir -p "{{ backup_dir }}/modprobe_d_orig"
+        cp -a /etc/modprobe.d/. "{{ backup_dir }}/modprobe_d_orig/" 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: "{{ target_server }}"
+      tags: [snapshot]
+
+    - name: "Snapshot - Record module load states"
+      ansible.builtin.shell: |
+        set -o pipefail
+        for mod in {{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | join(' ') }}; do
+          if lsmod | grep -q "^$mod "; then
+            echo "loaded" > "{{ backup_dir }}/module_state_$mod"
+          else
+            echo "not_loaded" > "{{ backup_dir }}/module_state_$mod"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: "{{ target_server }}"
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Validate required variable target_server is not empty"
+          ansible.builtin.assert:
+            that:
+              - target_server != ''
+            fail_msg: "target_server must be provided and must not be empty"
+          tags: [execute]
+
+        - name: "Step-01 - Parse module list"
+          ansible.builtin.set_fact:
+            _module_list: "{{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | list }}"
+            _module_list_str: "{{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | join(' ') }}"
+          tags: [execute]
+
+        - name: "Ensure /etc/modprobe.d directory exists"
+          ansible.builtin.file:
+            path: /etc/modprobe.d
+            state: directory
+            mode: '0755'
+          delegate_to: "{{ target_server }}"
+          tags: [execute]
+
+        - name: "Step-02 - Remediate kernel modules"
+          ansible.builtin.shell: |
+            set -o pipefail
+            MODULES="{{ _module_list_str }}"
+            for MOD in $MODULES; do
+              actions=""
+              error_str=""
+              if lsmod | grep -q "^$MOD "; then
+                if /usr/sbin/modprobe -r "$MOD" 2>/dev/null; then
+                  actions="${actions}unloaded"
+                else
+                  error_str="unload_failed"
+                  status="failure"
+                fi
+              fi
+              CONF="/etc/modprobe.d/${MOD}.conf"
+              if ! grep -q "^install $MOD /bin/false$" "$CONF" 2>/dev/null; then
+                echo "install $MOD /bin/false" >> "$CONF" || {
+                  error_str="${error_str},config_write_failed"; status="failure"; }
+                if [ -n "$actions" ]; then actions="${actions},"; fi
+                actions="${actions}install_added"
+              fi
+              if ! grep -q "^blacklist $MOD$" "$CONF" 2>/dev/null; then
+                echo "blacklist $MOD" >> "$CONF" || {
+                  error_str="${error_str},config_write_failed"; status="failure"; }
+                if [ -n "$actions" ]; then actions="${actions},"; fi
+                actions="${actions}blacklist_added"
+              fi
+              [ -z "$status" ] && status="success"
+              echo "module:$MOD status:$status actions:${actions:-none} error:${error_str:-none}"
+            done
+          args:
+            executable: /bin/bash
+          register: _remediation_result
+          failed_when: false
+          changed_when: false
+          delegate_to: "{{ target_server }}"
+          tags: [execute]
+
+        - name: "Step-03 - Parse per-module results"
+          ansible.builtin.set_fact:
+            _module_results: "{{ _remediation_result.stdout_lines | map('regex_replace',
+                 'module:(\\S+) status:(\\S+) actions:(\\S+) error:(.*)', '{\"name\": \"\\1\", \"status\": \"\\2\", \"actions\": \"\\3\", \"error\": \"\\4\"}'
+               ) | map('from_json') | list }}"
+          tags: [execute]
+
+        - name: "Step-03 - Normalise actions and error fields"
+          ansible.builtin.set_fact:
+            _module_results: >-
+              {{ _module_results | map('combine', {'actions': (ansible_item.actions | split(',') if ansible_item.actions != 'none' else []), 'error': ('' if ansible_item.error == 'none' else ansible_item.error)}) | list }}
+          loop: "{{ _module_results }}"
+          loop_control:
+            loop_var: ansible_item
+          tags: [execute]
+
+        - name: "Step-03 - Compute initial success flag"
+          ansible.builtin.set_fact:
+            _all_succeeded: "{{ not ( _module_results | selectattr('status', 'equalto', 'failure') | list | length > 0 ) }}"
+          tags: [execute]
+
+        - name: "Verify kernel modules disabled"
+          ansible.builtin.shell: |
+            set -o pipefail
+            FAILED=0
+            for mod in {{ _module_list_str }}; do
+              if lsmod | grep -q "^$mod "; then
+                echo "module:$mod status:failure actions:verify error:module_still_loaded"
+                FAILED=1
+              else
+                CONF="/etc/modprobe.d/${mod}.conf"
+                missing=""
+                grep -q "^install $mod /bin/false$" "$CONF" 2>/dev/null || missing="$missing,install_missing"
+                grep -q "^blacklist $mod$" "$CONF" 2>/dev/null || missing="$missing,blacklist_missing"
+                if [ -n "$missing" ]; then
+                  echo "module:$mod status:failure actions:verify error:config_missing${missing}"
+                  FAILED=1
+                else
+                  echo "module:$mod status:success actions:verify error:none"
+                fi
+              fi
+            done
+            [ $FAILED -ne 0 ] && echo "VERIFY_FAILED"
+          args:
+            executable: /bin/bash
+          register: _verify_output
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ target_server }}"
+          tags: [execute]
+
+        - name: "Determine verification result"
+          set_fact:
+            _verify_ok: "{{ 'VERIFY_FAILED' not in _verify_output.stdout }}"
+          tags: [execute]
+
+        - name: "Final overall success flag"
+          set_fact:
+            _all_succeeded: "{{ _all_succeeded and _verify_ok }}"
+          tags: [execute]
+
+        - name: "Step-04 - Emit result block"
+          debug:
+            msg:
+              - "<result>"
+              - "all_succeeded: {{ _all_succeeded }}"
+              - "modules: {{ _module_results }}"
+              - "</result>"
+          tags: [execute]
+
+      rescue:
+        - name: "Step-05 - Emit error block"
+          debug:
+            msg:
+              - "<result>"
+              - "ERROR: disable_kernel_modules failed"
+              - "</result>"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Restore modprobe.d from backup"
+          shell: |
+            set -o pipefail && if [ -d "{{ backup_dir }}/modprobe_d_orig" ]; then
+              rm -f /etc/modprobe.d/*.conf
+              cp -a "{{ backup_dir }}/modprobe_d_orig/." /etc/modprobe.d/ 2>/dev/null || true
+            fi
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ target_server }}"
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Reload modules if previously loaded"
+          shell: |
+            set -o pipefail && for mod in {{ module_list.split(',') | map('trim') | reject('equalto', '') | join(' ') }}; do
+              state_file="{{ backup_dir }}/module_state_$mod"
+              if [ -f "$state_file" ] && grep -q 'loaded' "$state_file"; then
+                /usr/sbin/modprobe "$mod" 2>/dev/null || true
+              fi
+            done
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ target_server }}"
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          delegate_to: "{{ target_server }}"
+          failed_when: false
+          tags: [restore]
