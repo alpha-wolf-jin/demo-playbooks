@@ -2,16 +2,14 @@
 - name: "SOP playbook 'disable_kernel_modules' (ACTION — changes system state): Disables specified kernel modules on managed Linux hosts by unloading them (if loaded) and adding install and blacklist directives to configuration files under /etc/modprobe.d/. Processes a comma-separated list of module names."
   hosts: "{{ target_server if target_server != '' else 'localhost' }}"
   become: yes
-  become_user: root
   gather_facts: false
   vars:
-    target_server: ""
-    module_list: "gfs2"
     playbook_name: "disable_kernel_modules"
     backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    target_server: ""
+    module_list: "gfs2"
 
   pre_tasks:
-    # === SNAPSHOT (tag: snapshot) ===
     - name: "Snapshot - Create backup directory"
       ansible.builtin.file:
         path: "{{ backup_dir }}"
@@ -19,139 +17,124 @@
         mode: '0700'
       tags: [snapshot]
 
-    - name: "Snapshot - Save original modprobe.d file list"
-      ansible.builtin.shell: |
-        set -o pipefail && find /etc/modprobe.d/ -maxdepth 1 -type f -name '*.conf' 2>/dev/null || true
-      args:
-        executable: /bin/bash
-      register: _snap_conf_files
-      changed_when: false
-      tags: [snapshot]
-
-    - name: "Snapshot - Write file list to backup"
-      ansible.builtin.copy:
-        content: "{{ _snap_conf_files.stdout | default('') }}"
-        dest: "{{ backup_dir }}/modprobe_d_filelist"
-      tags: [snapshot]
-
-    - name: "Snapshot - Backup modprobe.d conf files"
-      ansible.builtin.shell: |
-        set -o pipefail && mkdir -p "{{ backup_dir }}/modprobe_d" && cp /etc/modprobe.d/*.conf "{{ backup_dir }}/modprobe_d/" 2>/dev/null || true
-      args:
-        executable: /bin/bash
-      failed_when: false
-      tags: [snapshot]
-
-    - name: "Snapshot - Record loaded modules for target modules"
+    - name: "Snapshot - Backup /etc/modprobe.d/ directory"
       ansible.builtin.shell: |
         set -o pipefail
-        for mod in {{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | join(' ') }}; do
-          if lsmod | grep -q "^${mod} "; then
-            echo "$mod"
-          fi
-        done
+        if [ -d /etc/modprobe.d ]; then
+          cp -a /etc/modprobe.d/ {{ backup_dir }}/modprobe.d.backup
+        fi
       args:
         executable: /bin/bash
-      register: _snap_loaded
-      changed_when: false
       failed_when: false
+      changed_when: false
       tags: [snapshot]
 
-    - name: "Snapshot - Save loaded modules list"
-      ansible.builtin.copy:
-        content: "{{ _snap_loaded.stdout | default('') }}"
-        dest: "{{ backup_dir }}/loaded_modules"
+    - name: "Snapshot - Record initial module load state"
+      ansible.builtin.shell: |
+        set -o pipefail
+        mod={{ item }}
+        if lsmod | grep -q "^$mod "; then
+          echo "loaded" > "{{ backup_dir }}/module_state_$mod"
+        else
+          echo "not_loaded" > "{{ backup_dir }}/module_state_$mod"
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ module_list.split(',') | map('trim') | reject('equalto', '') | list }}"
+      changed_when: false
+      failed_when: false
       tags: [snapshot]
 
   tasks:
     - block:
-        # === EXECUTE (tag: execute) ===
-        - name: "Req 1 - Validate required input target_server is not empty"
+        - name: "Validate required variable target_server is not empty"
           ansible.builtin.assert:
-            that: target_server != ''
+            that:
+              - "target_server != ''"
             fail_msg: "target_server must be provided and must not be empty"
           tags: [execute]
 
-        - name: "Req 2 - Parse input module list"
+        - name: "Step-01 - Parse input module list"
           ansible.builtin.set_fact:
             _module_list: "{{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | list }}"
             _module_list_str: "{{ (module_list | default('gfs2')).split(',') | map('trim') | reject('equalto', '') | join(' ') }}"
           tags: [execute]
 
-        - name: "Req 3 - Remediate kernel modules"
+        - name: "Step-02 - Remediate kernel modules"
           ansible.builtin.shell: |
             set -o pipefail
             for mod in {{ _module_list_str }}; do
               actions=""
-              err=""
-              status=""
+              error=""
+              status="success"
               # Unload if loaded
-              if lsmod | grep -q "^${mod} "; then
-                if modprobe -r "$mod" 2>/dev/null; then
-                  actions="${actions}unload"
+              if lsmod | grep -q "^$mod "; then
+                if modprobe -r $mod 2>/dev/null; then
+                  actions="$actions,unloaded"
                 else
-                  err="unload_failed;"
                   status="failure"
+                  error="$error,unload_failed"
+                  actions="$actions,unload_failed"
                 fi
-              fi
-              # Write install and blacklist directives
-              conf="/etc/modprobe.d/${mod}.conf"
-              echo "install ${mod} /bin/false" > "$conf" 2>/dev/null
-              if [ $? -ne 0 ]; then
-                err="${err}install_write_failed;"
-                [ "$status" != "failure" ] && status="failure"
               else
-                [ -n "$actions" ] && actions="${actions},"
-                actions="${actions}install"
+                actions="$actions,already_unloaded"
               fi
-              echo "blacklist ${mod}" >> "$conf" 2>/dev/null
-              if [ $? -ne 0 ]; then
-                err="${err}blacklist_write_failed;"
-                [ "$status" != "failure" ] && status="failure"
+              # Ensure install directive
+              conf_file="/etc/modprobe.d/$mod.conf"
+              if ! grep -q "^install $mod /bin/false$" "$conf_file" 2>/dev/null; then
+                echo "install $mod /bin/false" >> "$conf_file" && actions="$actions,install_added" || { status="failure"; error="$error,install_fail"; }
               else
-                [ -n "$actions" ] && actions="${actions},"
-                actions="${actions}blacklist"
+                actions="$actions,install_exists"
               fi
-              # Final status check
-              if [ "$status" != "failure" ]; then
-                if lsmod | grep -q "^${mod} "; then
-                  status="failure"
-                  err="${err}still_loaded;"
-                else
-                  status="success"
-                fi
+              # Ensure blacklist
+              if ! grep -q "^blacklist $mod$" "$conf_file" 2>/dev/null; then
+                echo "blacklist $mod" >> "$conf_file" && actions="$actions,blacklist_added" || { status="failure"; error="$error,blacklist_fail"; }
+              else
+                actions="$actions,blacklist_exists"
               fi
-              err="${err%;}"
-              [ -z "$err" ] && err=""
-              echo "module:$mod status:$status actions:$actions error:$err"
+              # Final verification: module not loaded and config contains both lines
+              if lsmod | grep -q "^$mod "; then
+                status="failure"
+                error="$error,still_loaded"
+              fi
+              if ! grep -q "^install $mod /bin/false$" "$conf_file" 2>/dev/null || ! grep -q "^blacklist $mod$" "$conf_file" 2>/dev/null; then
+                status="failure"
+                error="$error,config_missing"
+              fi
+              # Trim leading comma
+              actions="${actions#,}"
+              error="${error#,}"
+              echo "module:$mod status:$status actions:$actions error:$error"
             done
           args:
             executable: /bin/bash
           register: _remediation_result
+          changed_when: false
           failed_when: false
-          changed_when: true
           tags: [execute]
 
-        - name: "Req 4 - Parse raw per-module results"
+        - name: "Step-03 - Parse per-module results"
           ansible.builtin.set_fact:
-            _module_results_raw: |
-              {{ _remediation_result.stdout_lines | default([])
-                 | map('regex_replace', '^module:(\S+) status:(\S+) actions:(\S*) error:(.*)$', '{"name":"\g<1>","status":"\g<2>","actions_str":"\g<3>","error":"\g<4>"}')
-                 | map('from_json')
-                 | list }}
+            _module_results: |
+              {%- set ns = namespace(results=[]) -%}
+              {%- for line in _remediation_result.stdout_lines -%}
+              {%-   set parts = line | regex_replace('^module:(\S+) status:(\S+) actions:(.*) error:(.*)$', '\g<1>|||\g<2>|||\g<3>|||\g<4>') | split('|||') -%}
+              {%-   set name = parts[0] | trim -%}
+              {%-   set status = parts[1] | trim -%}
+              {%-   set actions_str = parts[2] | trim -%}
+              {%-   set error_val = parts[3] | trim -%}
+              {%-   set actions_list = actions_str.split(',') | map('trim') | reject('equalto', '') | list -%}
+              {%-   set ns.results = ns.results + [{'name': name, 'status': status, 'actions': actions_list, 'error': error_val}] -%}
+              {%- endfor -%}
+              {{ ns.results }}
           tags: [execute]
 
-        - name: "Req 4 - Convert actions and build final module list"
+        - name: "Step-03b - Derive overall success flag"
           ansible.builtin.set_fact:
-            _module_results: "{%- set out = [] %}{%- for item in _module_results_raw %}{%- set acts = (item.actions_str.split(',') | map('trim') | reject('equalto', '') | list) if item.actions_str else [] %}{{- out.append(dict(name=item.name, status=item.status, actions=acts, error=item.error)) -}}{%- endfor %}{{ out }}"
+            _all_succeeded: "{{ (_module_results | selectattr('status', 'equalto', 'failure') | list | length) == 0 }}"
           tags: [execute]
 
-        - name: "Req 4 - Determine overall success"
-          ansible.builtin.set_fact:
-            _all_succeeded: "{{ not _module_results | selectattr('status', 'equalto', 'failure') | list | length > 0 }}"
-          tags: [execute]
-
-        - name: "Req 5 - Emit result block"
+        - name: "Step-04 - Emit result block (success)"
           ansible.builtin.debug:
             msg: |
               <result>
@@ -161,78 +144,55 @@
           tags: [execute]
 
       rescue:
-        - name: "Req 6 - Emit error block and fail"
+        - name: "Step-05 - Emit error block"
           ansible.builtin.debug:
             msg: |
               <result>
-              ERROR: disable_kernel_modules failed on {{ inventory_hostname }}
+              ERROR: disable_kernel_modules failed. Host: {{ inventory_hostname }} Reason: {{ ansible_failed_task.name | default('unknown') }} - {{ ansible_failed_result.msg | default('No message') }}
               </result>
-        - ansible.builtin.fail:
-            msg: "Playbook failed, see error above"
+          failed_when: false
+
+        - name: "Fail the playbook"
+          ansible.builtin.fail:
+            msg: "disable_kernel_modules failed"
 
       always:
-        # === RESTORE (tag: restore) ===
-        - name: "Restore - Read original modprobe.d file list"
-          ansible.builtin.slurp:
-            src: "{{ backup_dir }}/modprobe_d_filelist"
-          register: _restore_orig_files
+        - name: "Restore - Check if modprobe backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/modprobe.d.backup"
+          register: _restore_modprobe_backup
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Find current modprobe.d conf files"
-          ansible.builtin.shell: |
-            set -o pipefail && find /etc/modprobe.d/ -maxdepth 1 -type f -name '*.conf' 2>/dev/null || true
-          args:
-            executable: /bin/bash
-          register: _restore_curr_files
-          changed_when: false
-          failed_when: false
-          when: _restore_orig_files.content is defined
-          tags: [restore]
-
-        - name: "Restore - Delete files added during execution"
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop: >-
-            {{
-              (_restore_curr_files.stdout_lines | default([]))
-              | difference((_restore_orig_files.content | default('') | b64decode).splitlines())
-            }}
-          when:
-            - _restore_orig_files.content is defined
-            - _restore_curr_files.stdout_lines is defined
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Restore original modprobe.d conf files"
-          ansible.builtin.shell: |
-            set -o pipefail && if [ -d "{{ backup_dir }}/modprobe_d" ]; then cp "{{ backup_dir }}/modprobe_d"/*.conf /etc/modprobe.d/ 2>/dev/null || true; fi
-          args:
-            executable: /bin/bash
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Read saved loaded modules list"
-          ansible.builtin.slurp:
-            src: "{{ backup_dir }}/loaded_modules"
-          register: _restore_loaded
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Reload previously loaded modules"
+        - name: "Restore - Restore /etc/modprobe.d/ from backup"
           ansible.builtin.shell: |
             set -o pipefail
-            while IFS= read -r mod; do
-              modprobe "$mod" 2>/dev/null || true
-            done <<< "$(echo "{{ _restore_loaded.content | default('') | b64decode }}")"
+            rm -rf /etc/modprobe.d/*
+            cp -a {{ backup_dir }}/modprobe.d.backup/* /etc/modprobe.d/ 2>/dev/null || true
           args:
             executable: /bin/bash
-          when: _restore_loaded.content is defined and (_restore_loaded.content | b64decode | trim) | length > 0
+          when:
+            - _restore_modprobe_backup.stat.exists | default(false)
+            - _restore_modprobe_backup.stat.isdir | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Remove backup directory"
+        - name: "Restore - Reload modules that were originally loaded"
+          ansible.builtin.shell: |
+            set -o pipefail
+            mod={{ item }}
+            if [ -f "{{ backup_dir }}/module_state_$mod" ] && [ "$(cat {{ backup_dir }}/module_state_$mod)" = "loaded" ]; then
+              modprobe $mod 2>/dev/null || true
+            fi
+          args:
+            executable: /bin/bash
+          loop: "{{ module_list.split(',') | map('trim') | reject('equalto', '') | list }}"
+          when:
+            - _restore_modprobe_backup.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Clean up backup directory"
           ansible.builtin.file:
             path: "{{ backup_dir }}"
             state: absent
