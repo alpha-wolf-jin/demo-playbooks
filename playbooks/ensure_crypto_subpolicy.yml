@@ -1,394 +1,284 @@
 ---
-- name: "SOP playbook 'ensure_crypto_subpolicy' (ACTION — changes system state): Ensures a specified crypto subpolicy module (.pmod) exists with required lines and the system-wide crypto policy includes it. Creates/modifies the file and applies the policy if necessary, then reboots."
+- name: "SOP playbook 'ensure_crypto_subpolicy' - Ensures a crypto subpolicy module exists and is applied"
   hosts: "{{ target_server if target_server != '' else 'localhost' }}"
   become: yes
   gather_facts: false
   vars:
     playbook_name: "ensure_crypto_subpolicy"
     backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
-    target_server: ""  # required, overridden by extra_vars
+    # Required input variables
+    target_server: ""               # MUST be provided via extra_vars
     crypto_policy: "DEFAULT"
     subpolicy_name: "NO-SHA1"
     subpolicy_lines: "hash = -SHA1,sign = -*-SHA1,sha1_in_certs = 0"
-    subpolicy_file: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
-    policy_config_file: "/etc/crypto-policies/config"
-    modules_dir: "/etc/crypto-policies/policies/modules"
-    newline: "\n"   # real newline character used to avoid literal \n in file content
 
   pre_tasks:
-    - block:
-        - name: "Validate target_server is provided"
-          ansible.builtin.assert:
-            that:
-              - target_server != ''
-            fail_msg: "target_server must be provided and not empty"
-          tags: [snapshot]
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
 
-        - name: "Snapshot - Create backup directory"
-          ansible.builtin.file:
-            path: "{{ backup_dir }}"
-            state: directory
-            mode: '0700'
-          tags: [snapshot]
+    - name: "Snapshot - Check if subpolicy file exists"
+      ansible.builtin.stat:
+        path: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
+      register: _snap_stat
+      tags: [snapshot]
 
-        - name: "Snapshot - Record file list in crypto modules directory"
-          ansible.builtin.shell: "set -o pipefail && find \"{{ modules_dir }}\" -maxdepth 1 -type f 2>/dev/null || true"
-          args:
-            executable: /bin/bash
-          register: _snap_modules_files
-          changed_when: false
-          tags: [snapshot]
+    - name: "Snapshot - Backup subpolicy file if it exists"
+      ansible.builtin.copy:
+        src: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
+        dest: "{{ backup_dir }}/{{ subpolicy_name }}.pmod"
+        remote_src: true
+        force: false
+      when: _snap_stat.stat.exists
+      failed_when: false
+      tags: [snapshot]
 
-        - name: "Snapshot - Save modules file list"
-          ansible.builtin.copy:
-            content: "{{ _snap_modules_files.stdout | default('') }}"
-            dest: "{{ backup_dir }}/modules.filelist"
-            force: false
-          tags: [snapshot]
+    - name: "Snapshot - Record whether subpolicy file existed"
+      ansible.builtin.copy:
+        content: "{{ _snap_stat.stat.exists }}"
+        dest: "{{ backup_dir }}/file_existed"
+        force: false
+      tags: [snapshot]
 
-        - name: "Snapshot - Check if subpolicy file exists"
-          ansible.builtin.stat:
-            path: "{{ subpolicy_file }}"
-          register: _snap_subpolicy_stat
-          tags: [snapshot]
+    - name: "Snapshot - Get current crypto policy"
+      ansible.builtin.command: update-crypto-policies --show
+      register: _snap_policy
+      changed_when: false
+      tags: [snapshot]
 
-        - name: "Snapshot - Backup subpolicy file if exists"
-          ansible.builtin.copy:
-            src: "{{ subpolicy_file }}"
-            dest: "{{ backup_dir }}/subpolicy.pmod.orig"
-            remote_src: true
-            force: false
-          when: _snap_subpolicy_stat.stat.exists | default(false)
-          tags: [snapshot]
-
-        - name: "Snapshot - Record whether subpolicy file existed"
-          ansible.builtin.copy:
-            content: "{{ _snap_subpolicy_stat.stat.exists | default(false) }}"
-            dest: "{{ backup_dir }}/subpolicy_existed"
-            force: false
-          tags: [snapshot]
-
-        - name: "Snapshot - Check if crypto policy config exists"
-          ansible.builtin.stat:
-            path: "{{ policy_config_file }}"
-          register: _snap_config_stat
-          tags: [snapshot]
-
-        - name: "Snapshot - Backup crypto policy config if exists"
-          ansible.builtin.copy:
-            src: "{{ policy_config_file }}"
-            dest: "{{ backup_dir }}/config.orig"
-            remote_src: true
-            force: false
-          when: _snap_config_stat.stat.exists | default(false)
-          tags: [snapshot]
-
-        - name: "Snapshot - Get current crypto policy"
-          ansible.builtin.command: update-crypto-policies --show
-          register: _snap_policy_show
-          changed_when: false
-          tags: [snapshot]
-
-        - name: "Snapshot - Save current policy string"
-          ansible.builtin.copy:
-            content: "{{ _snap_policy_show.stdout | trim }}"
-            dest: "{{ backup_dir }}/current_policy.txt"
-            force: false
-          tags: [snapshot]
-
-      rescue:
-        - name: "Emit error block on snapshot failure"
-          ansible.builtin.debug:
-            msg: |
-              <result>
-              ERROR: ensure_crypto_subpolicy failed
-              </result>
-          failed_when: false
+    - name: "Snapshot - Save current crypto policy"
+      ansible.builtin.copy:
+        content: "{{ _snap_policy.stdout | trim }}"
+        dest: "{{ backup_dir }}/policy.orig"
+        force: false
+      tags: [snapshot]
 
   tasks:
     - block:
-        - name: "Validate target_server is provided (execute)"
+        - name: "Validate inputs - assert target_server is provided"
           ansible.builtin.assert:
             that:
               - target_server != ''
-            fail_msg: "target_server must be provided"
+            fail_msg: "target_server must be provided and must not be empty"
           tags: [execute]
 
-        - name: "Req 02 - Gather subpolicy file stat"
+        - name: "Step 01 - Gather subpolicy file stat"
           ansible.builtin.stat:
-            path: "{{ subpolicy_file }}"
+            path: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
           register: _file_stat
           tags: [execute]
 
-        - name: "Req 03 - Initialize file needs create flag"
+        - name: "Compute expected lines from subpolicy_lines"
+          ansible.builtin.set_fact:
+            _expected_lines: "{{ subpolicy_lines.split(',') | map('trim') | select() | list | sort }}"
+          tags: [execute]
+
+        - name: "Step 02 - Initialize file-needs-create flag to false"
           ansible.builtin.set_fact:
             _file_needs_create: false
           tags: [execute]
 
-        - name: "Req 04 (step-03) - Decide if subpolicy file exists"
-          ansible.builtin.set_fact:
-            _file_exists: "{{ _file_stat.stat.exists }}"
+        - name: "Step 03 - Does the subpolicy file exist? (branch to step 04 if TRUE, step 05 if FALSE)"
+          ansible.builtin.meta: noop
+          when: _file_stat.stat.exists
           tags: [execute]
 
-        - name: "Req 05 (step-04) - Read existing subpolicy file"
+        - name: "Step 04 - Read existing subpolicy file (if exists)"
           ansible.builtin.slurp:
-            src: "{{ subpolicy_file }}"
+            src: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
           register: _file_content_raw
-          when: _file_exists
+          when: _file_stat.stat.exists
           tags: [execute]
 
-        - name: "Req 06 (step-05) - Set file needs create to true (file missing)"
+        - name: "Step 05 - Set file-needs-create to true (file does not exist)"
           ansible.builtin.set_fact:
             _file_needs_create: true
-          when: not _file_exists
+          when: not _file_stat.stat.exists
           tags: [execute]
 
-        - name: "Req 07 (step-06) - Compare file content with expected lines"
+        - name: "Step 06 - Compare file content with expected lines (if file exists)"
           ansible.builtin.set_fact:
-            _expected_lines: "{{ subpolicy_lines.split(',') | map('trim') | list }}"
-            _content_lines: "{{ (_file_content_raw.content | b64decode).splitlines() | map('trim') | select() | list }}"
-          when: _file_exists
+            _file_content_lines: >-
+              {{ (_file_content_raw.content | b64decode).splitlines()
+                 | map('trim') | select() | list | sort }}
+            _file_content_match: >-
+              {{ ( (_file_content_raw.content | b64decode).splitlines()
+                   | map('trim') | select() | list | sort ) == _expected_lines }}
+            _file_needs_create: >-
+              {{ _file_needs_create or
+                 ( (_file_content_raw.content | b64decode).splitlines()
+                   | map('trim') | select() | list | sort ) != _expected_lines }}
+          when:
+            - _file_content_raw.content is defined
           tags: [execute]
 
-        - name: "Req 07 (step-06) - Determine content match"
-          ansible.builtin.set_fact:
-            _file_content_match: "{{ (_content_lines | sort) == (_expected_lines | sort) }}"
-          when: _file_exists
-          tags: [execute]
-
-        - name: "Req 07 (step-06) - Update create flag based on content match"
-          ansible.builtin.set_fact:
-            _file_needs_create: "{{ true if not _file_content_match else _file_needs_create }}"
-          when: _file_exists
-          tags: [execute]
-
-        - name: "Req 08 (step-07) - Get current system-wide crypto policy"
+        - name: "Step 07 - Get current system-wide crypto policy"
           ansible.builtin.command: update-crypto-policies --show
           register: _current_policy_raw
+          changed_when: false
           tags: [execute]
 
-        - name: "Req 09 (step-08) - Check if subpolicy already applied"
+        - name: "Step 08 - Check if subpolicy is already applied"
           ansible.builtin.set_fact:
-            _policy_already_applied: "{{ subpolicy_name in _current_policy_raw.stdout.split(':') | map('trim') | list }}"
+            _policy_already_applied: "{{ subpolicy_name in _current_policy_raw.stdout.split(':') }}"
           tags: [execute]
 
-        - name: "Req 10 (step-09) - Aggregate pre-checks"
+        - name: "Step 09 - Aggregate pre-checks"
           ansible.builtin.set_fact:
             _file_needs_create: "{{ _file_needs_create }}"
             _policy_already_applied: "{{ _policy_already_applied }}"
           tags: [execute]
 
-        - name: "Initialize action flags"
+        - name: "Step 10 - Are both file and policy already correct? (set skip flag)"
           ansible.builtin.set_fact:
-            _file_created: false
-            _policy_applied: false
+            _skip_actions: "{{ not _file_needs_create and _policy_already_applied }}"
           tags: [execute]
 
-        - name: "Req 11 (step-10) - Decide if both file and policy already correct"
-          ansible.builtin.set_fact:
-            _skip_all: "{{ _file_needs_create == false and _policy_already_applied }}"
-          tags: [execute]
-
-        - name: "Req 17 (step-16) - Emit success result block (no changes needed)"
-          ansible.builtin.debug:
-            msg: |
-              <result>
-              file_status: {{ 'created' if _file_created else 'already present' }}
-              policy_status: {{ 'applied' if _policy_applied else 'already in effect' }}
-              </result>
-          when: _skip_all
-          tags: [execute]
-
-        - name: "Actions when file needs creation or policy not applied"
+        - name: "Steps 11-15 - Action block when changes are needed"
+          when: not _skip_actions
           block:
-            - name: "Ensure crypto subpolicy directory exists"
+            - name: "Step 11 - Ensure subpolicy directory exists"
               ansible.builtin.file:
-                path: "{{ modules_dir }}"
+                path: "/etc/crypto-policies/policies/modules"
                 state: directory
                 mode: '0755'
               tags: [execute]
 
-            - name: "Req 12 (step-11) - Write subpolicy .pmod file"
+            - name: "Step 11 - Write subpolicy .pmod file"
               ansible.builtin.copy:
-                content: "{{ subpolicy_lines.split(',') | map('trim') | join(newline) }}"
-                dest: "{{ subpolicy_file }}"
+                content: "{{ subpolicy_lines.split(',') | map('trim') | join('\n') }}\n"
+                dest: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
+                owner: root
+                group: root
                 mode: '0644'
-              register: _copy_result
               tags: [execute]
 
-            - name: "Req 13 (step-12) - Mark file creation performed"
+            - name: "Step 12 - Mark file creation performed"
               ansible.builtin.set_fact:
                 _file_created: true
-              when: _copy_result.changed | default(false)
               tags: [execute]
 
-            - name: "Req 14 (step-13) - Apply system-wide crypto policy"
+            - name: "Step 13 - Apply system-wide crypto policy"
               ansible.builtin.command: "update-crypto-policies --set {{ crypto_policy }}:{{ subpolicy_name }}"
-              register: _apply_result
-              changed_when: false
               tags: [execute]
 
-            - name: "Req 15 (step-14) - Mark policy application performed"
+            - name: "Step 14 - Mark policy application performed"
               ansible.builtin.set_fact:
                 _policy_applied: true
               tags: [execute]
 
-            - name: "Req 16 (step-15) - Reboot the server"
+            - name: "Step 15 - Reboot the server"
               ansible.builtin.reboot:
-                reboot_timeout: 300
+                reboot_timeout: 180
               tags: [execute]
 
-            - name: "Verify subpolicy file content"
-              ansible.builtin.slurp:
-                src: "{{ subpolicy_file }}"
-              register: _verify_file_content
-              tags: [execute]
+        - name: "Verify subpolicy file exists after execution"
+          ansible.builtin.stat:
+            path: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
+          register: _verify_file_stat
+          tags: [execute]
 
-            - name: "Compare actual file content with expected lines"
-              ansible.builtin.set_fact:
-                _expected_verify_lines: "{{ subpolicy_lines.split(',') | map('trim') | sort | list }}"
-                _actual_verify_lines: "{{ (_verify_file_content.content | b64decode).splitlines() | map('trim') | select() | sort | list }}"
-              tags: [execute]
+        - name: "Verify subpolicy file content"
+          ansible.builtin.slurp:
+            src: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
+          register: _verify_slurp
+          when: _verify_file_stat.stat.exists
+          tags: [execute]
 
-            - name: "Check if file content matches expected"
-              ansible.builtin.set_fact:
-                _file_content_verify_match: "{{ _actual_verify_lines == _expected_verify_lines }}"
-              tags: [execute]
+        - name: "Verify subpolicy is applied in crypto policy"
+          ansible.builtin.command: update-crypto-policies --show
+          register: _verify_policy_raw
+          changed_when: false
+          tags: [execute]
 
-            - name: "Update file created flag based on verification"
-              ansible.builtin.set_fact:
-                _file_created: "{{ _file_created and _file_content_verify_match }}"
-              tags: [execute]
+        - name: "Set verification facts"
+          ansible.builtin.set_fact:
+            _file_correct: >-
+              {{ _verify_file_stat.stat.exists
+                 and ( (_verify_slurp.content | b64decode).splitlines()
+                       | map('trim') | select() | list | sort ) == _expected_lines }}
+            _policy_correct: "{{ subpolicy_name in _verify_policy_raw.stdout.split(':') }}"
+          tags: [execute]
 
-            - name: "Verify crypto policy includes subpolicy"
-              ansible.builtin.command: update-crypto-policies --show
-              register: verify_policy
-              failed_when: "subpolicy_name not in verify_policy.stdout"
-              changed_when: false
-              tags: [execute]
+        - name: "Assert that subpolicy and policy are correct"
+          ansible.builtin.assert:
+            that:
+              - _file_correct | bool
+              - _policy_correct | bool
+            fail_msg: "Subpolicy or crypto policy verification failed"
+            success_msg: "Verification succeeded - subpolicy and policy are correct"
+          tags: [execute]
 
-            - name: "Update policy applied flag with verification outcome"
-              ansible.builtin.set_fact:
-                _policy_applied: "{{ _policy_applied and subpolicy_name in verify_policy.stdout }}"
-              tags: [execute]
-
-            - name: "Req 17 (step-16) - Emit success result block"
-              ansible.builtin.debug:
-                msg: |
-                  <result>
-                  file_status: {{ 'created' if _file_created else 'already present' }}
-                  policy_status: {{ 'applied' if _policy_applied else 'already in effect' }}
-                  </result>
-              tags: [execute]
-
-          when: not _skip_all
+        - name: "Step 16 - Emit success result block"
+          ansible.builtin.debug:
+            msg:
+              - "<result>"
+              - "file_status: {{ 'created' if _file_created | default(false) else 'already present' }}"
+              - "policy_status: {{ 'applied' if _policy_applied | default(false) else 'already in effect' }}"
+              - "</result>"
           tags: [execute]
 
       rescue:
-        - name: "Emit error block on execute failure"
+        - name: "Step 17 - Emit error and fail"
           ansible.builtin.debug:
-            msg: |
-              <result>
-              ERROR: ensure_crypto_subpolicy failed
-              </result>
-          failed_when: false
+            msg:
+              - "<result>"
+              - "ERROR: ensure_crypto_subpolicy failed"
+              - "</result>"
 
       always:
-        - name: "Restore - Read original modules file list"
-          ansible.builtin.slurp:
-            src: "{{ backup_dir }}/modules.filelist"
-          register: _restore_modules_filelist
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Find current modules files"
-          ansible.builtin.shell: "set -o pipefail && find \"{{ modules_dir }}\" -maxdepth 1 -type f 2>/dev/null || true"
-          args:
-            executable: /bin/bash
-          register: _restore_modules_current
-          changed_when: false
-          failed_when: false
-          when: _restore_modules_filelist.content is defined
-          tags: [restore]
-
-        - name: "Restore - Delete modules files added during execution"
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop: >-
-            {{
-              (_restore_modules_current.stdout_lines | default([]))
-              | difference((_restore_modules_filelist.content | default('') | b64decode).splitlines())
-            }}
-          when:
-            - _restore_modules_filelist.content is defined
-            - _restore_modules_current.stdout_lines is defined
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Read subpolicy existence marker"
-          ansible.builtin.slurp:
-            src: "{{ backup_dir }}/subpolicy_existed"
-          register: _restore_subpolicy_existed
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Remove subpolicy file if it was created"
-          ansible.builtin.file:
-            path: "{{ subpolicy_file }}"
-            state: absent
-          when:
-            - _restore_subpolicy_existed.content is defined
-            - (_restore_subpolicy_existed.content | b64decode | trim) == 'False'
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Restore subpolicy file if existed"
-          ansible.builtin.copy:
-            src: "{{ backup_dir }}/subpolicy.pmod.orig"
-            dest: "{{ subpolicy_file }}"
-            remote_src: true
-          when:
-            - _restore_subpolicy_existed.content is defined
-            - (_restore_subpolicy_existed.content | b64decode | trim) == 'True'
-          failed_when: false
-          tags: [restore]
-
-        - name: "Restore - Check if config backup exists"
+        - name: "Restore - Check if subpolicy backup exists"
           ansible.builtin.stat:
-            path: "{{ backup_dir }}/config.orig"
-          register: _restore_config_backup_stat
+            path: "{{ backup_dir }}/{{ subpolicy_name }}.pmod"
+          register: _restore_file_check
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Restore crypto policy config file"
+        - name: "Restore - Restore subpolicy file from backup"
           ansible.builtin.copy:
-            src: "{{ backup_dir }}/config.orig"
-            dest: "{{ policy_config_file }}"
+            src: "{{ backup_dir }}/{{ subpolicy_name }}.pmod"
+            dest: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
             remote_src: true
-          when: _restore_config_backup_stat.stat.exists | default(false)
+          when: _restore_file_check.stat.exists | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Read saved policy string"
+        - name: "Restore - Read existence marker"
           ansible.builtin.slurp:
-            src: "{{ backup_dir }}/current_policy.txt"
-          register: _restore_saved_policy
+            src: "{{ backup_dir }}/file_existed"
+          register: _restore_existed
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove subpolicy file if it was created by this playbook"
+          ansible.builtin.file:
+            path: "/etc/crypto-policies/policies/modules/{{ subpolicy_name }}.pmod"
+            state: absent
+          when:
+            - _restore_existed.content is defined
+            - (_restore_existed.content | b64decode | trim) == 'False'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read original crypto policy"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/policy.orig"
+          register: _restore_policy_content
           failed_when: false
           tags: [restore]
 
         - name: "Restore - Apply original crypto policy"
-          ansible.builtin.shell: "update-crypto-policies --set {{ _restore_saved_policy.content | b64decode | trim }}"
-          args:
-            executable: /bin/bash
-          register: _restore_policy_result
+          ansible.builtin.shell: "update-crypto-policies --set {{ _restore_policy_content.content | b64decode | trim }}"
           when:
-            - _restore_saved_policy.content is defined
-            - _restore_saved_policy.content | b64decode | trim | length > 0
+            - _restore_policy_content.content is defined
+            - (_restore_policy_content.content | b64decode | trim) | length > 0
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Clean up backup directory"
+        - name: "Restore - Remove backup directory"
           ansible.builtin.file:
             path: "{{ backup_dir }}"
             state: absent
