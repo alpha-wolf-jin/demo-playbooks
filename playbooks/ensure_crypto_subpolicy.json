@@ -1,0 +1,382 @@
+{
+  "tool_name": "ensure_crypto_subpolicy",
+  "version": "1.0",
+  "title": "Ensure crypto subpolicy and system-wide policy",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Ensures a specified crypto subpolicy module (.pmod) exists with required lines and the system-wide crypto policy includes it. Creates/modifies the file and applies the policy if necessary, then reboots.",
+  "aap_template": "ensure_crypto_subpolicy++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP address of the target Linux server."
+      },
+      {
+        "name": "crypto_policy",
+        "type": "string",
+        "required": false,
+        "default": "DEFAULT",
+        "unit": null,
+        "description": "The system‑wide crypto policy to apply (e.g. DEFAULT)."
+      },
+      {
+        "name": "subpolicy_name",
+        "type": "string",
+        "required": false,
+        "default": "NO-SHA1",
+        "unit": null,
+        "description": "Name of the subpolicy module (without .pmod extension)."
+      },
+      {
+        "name": "subpolicy_lines",
+        "type": "string",
+        "required": false,
+        "default": "hash = -SHA1,sign = -*-SHA1,sha1_in_certs = 0",
+        "unit": null,
+        "description": "Comma‑separated list of lines to write into the .pmod file. Example: 'hash = -SHA1,sign = -*-SHA1,sha1_in_certs = 0'."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Reports the status of the subpolicy file and the crypto policy after execution.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "file_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Whether the subpolicy file was created or was already present. One of 'created' or 'already present'."
+      },
+      {
+        "name": "policy_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Whether the crypto policy was applied or was already in effect. One of 'applied' or 'already in effect'."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather subpolicy file stat",
+      "function": "Check if the subpolicy .pmod file already exists.",
+      "module": "ansible.builtin.stat",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "subpolicy_name"
+        ]
+      },
+      "stores": [
+        "_file_stat"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Initialize file‑needs‑create flag",
+      "function": "Set the default assumption that the file does not need to be created.",
+      "input": {},
+      "computations": {
+        "_file_needs_create": "false"
+      },
+      "stores": [
+        "_file_needs_create"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Does the subpolicy file exist?",
+      "function": "Branch on whether the .pmod file already exists on disk.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_file_stat"
+        ]
+      },
+      "condition": "Subpolicy file already exists.",
+      "on_pass": "step-04",
+      "on_fail": "step-05"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Read existing subpolicy file",
+      "function": "Slurp the content of the existing .pmod file for comparison.",
+      "module": "ansible.builtin.slurp",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_pmod_file"
+        ]
+      },
+      "stores": [
+        "_file_content_raw"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Set file‑needs‑create to true",
+      "function": "Mark that the file must be created because it does not exist.",
+      "input": {},
+      "computations": {
+        "_file_needs_create": "true"
+      },
+      "stores": [
+        "_file_needs_create"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Compare file content with expected lines",
+      "function": "Decode the slurped file, split into lines, and compare with the expected subpolicy lines. Update _file_needs_create if content differs.",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_file_content_raw"
+        ]
+      },
+      "computations": {
+        "_file_content_match": "Decode _file_content_raw.content from base64, split into lines, strip whitespace, and compare sorted list with sorted _expected_lines. True if they match exactly.",
+        "_file_needs_create": "True if _file_content_match is false, otherwise keep the current _file_needs_create value."
+      },
+      "stores": [
+        "_file_content_match",
+        "_file_needs_create"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "collect",
+      "name": "Get current system-wide crypto policy",
+      "function": "Run update-crypto-policies --show to capture the currently active policy string.",
+      "module": "ansible.builtin.command",
+      "input": {},
+      "stores": [
+        "_current_policy_raw"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Check if subpolicy is already applied",
+      "function": "Parse the output of update-crypto-policies --show and determine whether the subpolicy_name already appears in the colon‑separated policy list.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "subpolicy_name"
+        ],
+        "from": "playbook_input.parameters"
+      },
+      "computations": {
+        "_policy_already_applied": "True if subpolicy_name is present in the colon‑separated list obtained from _current_policy_raw.stdout."
+      },
+      "stores": [
+        "_policy_already_applied"
+      ],
+      "on_success": "step-09"
+    },
+    {
+      "id": "step-09",
+      "type": "transform",
+      "name": "Aggregate pre-checks",
+      "function": "Combine the file creation need and policy applied status into a single set for the following decision.",
+      "input": {},
+      "computations": {
+        "_file_needs_create": "{{ _file_needs_create }}",
+        "_policy_already_applied": "{{ _policy_already_applied }}"
+      },
+      "stores": [
+        "_file_needs_create",
+        "_policy_already_applied"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "decide",
+      "name": "Are both file and policy already correct?",
+      "function": "If the subpolicy file is already correct and the policy already includes the subpolicy, skip all remaining actions and emit the result immediately.",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_file_needs_create",
+          "_policy_already_applied"
+        ]
+      },
+      "condition": "Both the subpolicy file is correct (_file_needs_create is false) and the system-wide crypto policy already includes the subpolicy (_policy_already_applied is true).",
+      "on_pass": "step-16",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "action",
+      "name": "Write subpolicy .pmod file",
+      "function": "Create or overwrite the subpolicy .pmod file with the required lines, creating parent directories if needed.",
+      "module": "ansible.builtin.copy",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "_file_content"
+        ],
+        "from": "step-02"
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-12",
+      "type": "transform",
+      "name": "Mark file creation performed",
+      "function": "Record that the subpolicy file was created or updated.",
+      "input": {},
+      "computations": {
+        "_file_created": "true"
+      },
+      "stores": [
+        "_file_created"
+      ],
+      "on_success": "step-13"
+    },
+    {
+      "id": "step-13",
+      "type": "action",
+      "name": "Apply system-wide crypto policy",
+      "function": "Execute update-crypto-policies --set to activate the crypto policy with the subpolicy.",
+      "module": "ansible.builtin.command",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "crypto_policy",
+          "subpolicy_name"
+        ]
+      },
+      "idempotent": false,
+      "stores": [],
+      "on_success": "step-14"
+    },
+    {
+      "id": "step-14",
+      "type": "transform",
+      "name": "Mark policy application performed",
+      "function": "Record that the crypto policy was applied.",
+      "input": {},
+      "computations": {
+        "_policy_applied": "true"
+      },
+      "stores": [
+        "_policy_applied"
+      ],
+      "on_success": "step-15"
+    },
+    {
+      "id": "step-15",
+      "type": "action",
+      "name": "Reboot the server",
+      "function": "Reboot the target server to make the new crypto policy effective for running services.",
+      "module": "ansible.builtin.reboot",
+      "input": {},
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-16"
+    },
+    {
+      "id": "step-16",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the final result with file and policy status.",
+      "output_fields": {
+        "file_status": "{{ 'created' if _file_created else 'already present' }}",
+        "policy_status": "{{ 'applied' if _policy_applied else 'already in effect' }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-17",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook rescue block on any task failure. Prints the Required Error Output Format block and fails.",
+      "error_message": "ERROR: ensure_crypto_subpolicy failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-17",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Check subpolicy file existence, compare content, and verify current crypto policy status.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07",
+        "step-08",
+        "step-09",
+        "step-10"
+      ]
+    },
+    {
+      "name": "Apply changes",
+      "description": "Create/modify the subpolicy file, apply the crypto policy, and reboot the server.",
+      "steps": [
+        "step-11",
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-15"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the final structured result to the caller.",
+      "steps": [
+        "step-16"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-17"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "03be3d34c0ab52c424809843f4c60cfe6c1664ba98b48bef16d99a2892888a89",
+    "saved_at": "2026-07-29T06:45:55+00:00",
+    "saved_by": "admin",
+    "revision": 2
+  }
+}
