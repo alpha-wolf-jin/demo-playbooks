@@ -1,0 +1,50 @@
+---
+- name: "SOP playbook 'ensure_pam_unix_no_nullok' (DATA COLLECTOR — read-only): Audit a Linux server to verify that pam_unix.so entries in the fixed PAM files password-auth and system-auth do not contain the nullok argument."
+  hosts: "{{ target_server if target_server != '' else 'localhost' }}"
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    target_server: ""   # overridden by extra_vars at runtime
+
+  tasks:
+    - block:
+        - name: "Req 1 - Validate target_server is not empty"
+          ansible.builtin.assert:
+            that:
+              - target_server != ''
+            fail_msg: "target_server must be provided via extra_vars and must not be empty"
+
+        - name: "Req 2 - [step-01] Gather pam_unix.so lines from PAM files"
+          ansible.builtin.shell: |
+            grep 'pam_unix\.so' /etc/pam.d/password-auth /etc/pam.d/system-auth
+          args:
+            executable: /bin/bash
+          register: _grep_raw
+          failed_when: false
+          changed_when: false
+
+        - name: "Req 3 - [step-02] Extract lines and determine compliance"
+          ansible.builtin.set_fact:
+            _grep_lines: "{{ _grep_raw.stdout_lines }}"
+            _compliant: "{{ not (_grep_raw.stdout_lines | select('search', 'nullok') | list | length > 0) }}"
+
+        - name: "Req 4 - [step-03] Emit audit result"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              compliant: {{ _compliant }}
+              message: {{ 'Compliant: PASS' if _compliant else 'Compliant: FAIL – nullok present' }}
+              </result>
+
+      rescue:
+        - name: "Req 5 - [step-04] Emit error result and fail"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: ensure_pam_unix_no_nullok failed on {{ inventory_hostname }} - {{ ansible_failed_task.name | default('Unknown task') }}: {{ ansible_failed_result.msg | default('No message') }}
+              </result>
+
+        - name: "Force playbook failure"
+          ansible.builtin.fail:
+            msg: "Playbook terminated due to failure"
