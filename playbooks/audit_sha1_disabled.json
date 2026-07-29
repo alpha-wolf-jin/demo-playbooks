@@ -1,0 +1,168 @@
+{
+  "tool_name": "audit_sha1_disabled",
+  "version": "1.0",
+  "title": "Audit SHA-1 disabled in crypto policy",
+  "role": "collect",
+  "effect": "transient",
+  "description": "Runs two compliance checks on the target server to verify that SHA‑1 hash and signature support has been disabled in the system crypto policy, and reports an overall PASS or FAIL status.",
+  "aap_template": "audit_sha1_disabled++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP address of the Linux server to audit."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Overall compliance result",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "compliance_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "PASS if all SHA‑1 checks pass, FAIL otherwise."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Run SHA1 hash/sign audit",
+      "function": "Execute the awk command to check if SHA1 appears uncommented in any hash or sign line of the crypto policy. No output means the setting is disabled.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "parameters": {
+        "cmd": "set -o pipefail; awk -F= '($1~/(hash|sign)/ && $2~/SHA1/ && $2!~/^\\s*\\-\\s*([^#\\n\\r]+)?SHA1/){print}' /etc/crypto-policies/state/CURRENT.pol"
+      },
+      "stores": [
+        "_hash_sign_output"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-02",
+      "type": "collect",
+      "name": "Run sha1_in_certs audit",
+      "function": "Execute the grep command to verify the sha1_in_certs line is set to 0 in the crypto policy. The command always succeeds (exit 0) and captures the output.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "parameters": {
+        "cmd": "set -o pipefail; grep -Psi -- '^\\h*sha1_in_certs\\h*=\\h*' /etc/crypto-policies/state/CURRENT.pol || true"
+      },
+      "stores": [
+        "_sha1_in_certs_output"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "transform",
+      "name": "Determine overall compliance",
+      "function": "Evaluate the collected outputs to decide if both checks pass and set the overall PASS/FAIL status.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_hash_sign_output"
+        ]
+      },
+      "additional_inputs": [
+        {
+          "source": "step-02",
+          "fields": [
+            "_sha1_in_certs_output"
+          ]
+        }
+      ],
+      "computations": {
+        "_hash_sign_non_compliant": "True if _hash_sign_output.stdout is not empty.",
+        "_sha1_in_certs_non_compliant": "True if _sha1_in_certs_output.stdout does not contain 'sha1_in_certs = 0' after trimming whitespace.",
+        "_overall_status": "PASS if both _hash_sign_non_compliant and _sha1_in_certs_non_compliant are false; otherwise FAIL."
+      },
+      "stores": [
+        "_overall_status"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "emit",
+      "name": "Emit compliance result",
+      "function": "Output the overall PASS/FAIL compliance status.",
+      "output_fields": {
+        "compliance_status": "{{ _overall_status }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-05",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the error message and fails the play.",
+      "error_message": "ERROR: sha1_audit failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-05",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Execute the two SHA‑1 audit commands on the target server.",
+      "steps": [
+        "step-01",
+        "step-02"
+      ]
+    },
+    {
+      "name": "Analysis",
+      "description": "Derive the overall compliance status from the audit command outputs.",
+      "steps": [
+        "step-03"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the PASS/FAIL result to the caller.",
+      "steps": [
+        "step-04"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-05"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "dd0cfd626c0ecc0dd7fe141f5fb8e59dc96d371d3ad27915a4d02264166974a9",
+    "saved_at": "2026-07-29T04:02:28+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
