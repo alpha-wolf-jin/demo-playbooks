@@ -1,0 +1,140 @@
+{
+  "tool_name": "ensure_pam_unix_no_nullok",
+  "version": "1.0",
+  "title": "Ensure pam_unix does not include nullok",
+  "role": "collect",
+  "effect": "transient",
+  "description": "Audit a Linux server to verify that pam_unix.so entries in the fixed PAM files password-auth and system-auth do not contain the nullok argument.",
+  "aap_template": "ensure_pam_unix_no_nullok++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The Linux server to audit."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "The emit step's <result> block contains the overall compliance result.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "compliant",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "False if the nullok argument is present on any pam_unix.so line, true otherwise."
+      },
+      {
+        "name": "message",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Human-readable compliance status message."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather pam_unix.so lines",
+      "function": "Run a grep command to capture all lines matching the pam_unix.so pattern in the fixed files /etc/pam.d/password-auth and /etc/pam.d/system-auth.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_grep_raw"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Check for nullok argument",
+      "function": "Examine the collected lines and determine whether any of them contain the word 'nullok'. Set _compliant to true only if no line includes nullok.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_grep_raw"
+        ]
+      },
+      "computations": {
+        "_grep_lines": "Extract stdout_lines from _grep_raw.",
+        "_compliant": "True if no line in _grep_lines contains the string 'nullok', false otherwise."
+      },
+      "stores": [
+        "_grep_lines",
+        "_compliant"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "emit",
+      "name": "Emit audit result",
+      "function": "Print the compliance result. The output includes a boolean compliant flag and a human-readable PASS/FAIL message.",
+      "output_fields": {
+        "compliant": "{{ _compliant }}",
+        "message": "{{ 'Compliant: PASS' if _compliant else 'Compliant: FAIL – nullok present' }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-04",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: ensure_pam_unix_no_nullok failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-04",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Data collection",
+      "description": "Gather the pam_unix.so configuration lines from both PAM files.",
+      "steps": [
+        "step-01"
+      ]
+    },
+    {
+      "name": "Analysis and reporting",
+      "description": "Check the collected lines for the nullok argument and emit the compliance result.",
+      "steps": [
+        "step-02",
+        "step-03"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-04"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "38437a570b0ad79085f2364e0f710e9e21d3f7081097648cd66e1f48f9198fee",
+    "saved_at": "2026-07-29T15:39:49+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
