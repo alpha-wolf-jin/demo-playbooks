@@ -4,7 +4,7 @@
   "title": "Ensure pam_unix does not include nullok",
   "role": "collect",
   "effect": "transient",
-  "description": "Audit a Linux server to verify that pam_unix.so entries in the fixed PAM files password-auth and system-auth do not contain the nullok argument.",
+  "description": "Verifies that the pam_unix.so module in the active PAM configuration's system-auth and password-auth files does not contain the nullok argument without the without-nullok placeholder.",
   "aap_template": "ensure_pam_unix_no_nullok++Default",
   "organization": "Default",
   "execution_target": "managed_host",
@@ -21,12 +21,12 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The Linux server to audit."
+        "description": "Hostname or IP of the target Linux server."
       }
     ]
   },
   "playbook_output": {
-    "description": "The emit step's <result> block contains the overall compliance result.",
+    "description": "Audit result: whether the system is compliant and list of any violations found.",
     "output_wrapper": "<result>...</result>",
     "fields": [
       {
@@ -34,14 +34,14 @@
         "type": "boolean",
         "nullable": false,
         "required_by_sop": true,
-        "description": "False if the nullok argument is present on any pam_unix.so line, true otherwise."
+        "description": "True if no nullok violations were found, false otherwise."
       },
       {
-        "name": "message",
-        "type": "string",
+        "name": "violations",
+        "type": "list",
         "nullable": false,
-        "required_by_sop": false,
-        "description": "Human-readable compliance status message."
+        "required_by_sop": true,
+        "description": "List of violation objects, each containing 'file' (system-auth or password-auth) and 'line' (the full matched line)."
       }
     ]
   },
@@ -49,52 +49,107 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Gather pam_unix.so lines",
-      "function": "Run a grep command to capture all lines matching the pam_unix.so pattern in the fixed files /etc/pam.d/password-auth and /etc/pam.d/system-auth.",
-      "module": "ansible.builtin.shell",
+      "name": "Read authselect.conf",
+      "function": "Retrieve the contents of /etc/authselect/authselect.conf to obtain the active profile name.",
+      "module": "ansible.builtin.slurp",
       "input": {
         "source": "playbook_input.parameters",
         "fields": []
       },
       "stores": [
-        "_grep_raw"
+        "_authselect_conf_b64"
       ],
       "on_success": "step-02"
     },
     {
       "id": "step-02",
       "type": "transform",
-      "name": "Check for nullok argument",
-      "function": "Examine the collected lines and determine whether any of them contain the word 'nullok'. Set _compliant to true only if no line includes nullok.",
+      "name": "Extract profile and compute PAM directory",
+      "function": "Decode the authselect.conf content, extract the first line as the profile name, and determine the base directory for PAM files based on the profile type.",
       "input": {
         "source": "step-01",
         "fields": [
-          "_grep_raw"
+          "_authselect_conf_b64"
         ]
       },
       "computations": {
-        "_grep_lines": "Extract stdout_lines from _grep_raw.",
-        "_compliant": "True if no line in _grep_lines contains the string 'nullok', false otherwise."
+        "_profile": "{{ (_authselect_conf_b64 | b64decode).splitlines() | first | trim }}",
+        "_pam_dir": "Set to '/etc/authselect/{{ _profile }}/' if _profile starts with 'custom/', otherwise '/etc/pam.d/'."
       },
       "stores": [
-        "_grep_lines",
-        "_compliant"
+        "_profile",
+        "_pam_dir"
       ],
       "on_success": "step-03"
     },
     {
       "id": "step-03",
+      "type": "collect",
+      "name": "Read system-auth file",
+      "function": "Retrieve the contents of the system-auth file from the appropriate PAM directory.",
+      "module": "ansible.builtin.slurp",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_pam_dir"
+        ]
+      },
+      "stores": [
+        "_system_auth_b64"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Read password-auth file",
+      "function": "Retrieve the contents of the password-auth file from the appropriate PAM directory.",
+      "module": "ansible.builtin.slurp",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_pam_dir"
+        ]
+      },
+      "stores": [
+        "_password_auth_b64"
+      ],
+      "on_success": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Parse files and find nullok violations",
+      "function": "Decode both file contents, then search each line for occurrences of 'pam_unix.so' containing 'nullok' but NOT containing the placeholder '{if not \"without-nullok\":nullok}'. Assemble a list of violation objects.",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_password_auth_b64"
+        ]
+      },
+      "computations": {
+        "_violations": "From the decoded lines of system-auth and password-auth, find every line that contains 'pam_unix.so' and 'nullok' but does not contain '{if not \"without-nullok\":nullok}'. For each such line, record an object with 'file' set to 'system-auth' or 'password-auth' and 'line' set to the full line text.",
+        "_compliant": "True if the _violations list is empty, false otherwise."
+      },
+      "stores": [
+        "_violations",
+        "_compliant"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
       "type": "emit",
-      "name": "Emit audit result",
-      "function": "Print the compliance result. The output includes a boolean compliant flag and a human-readable PASS/FAIL message.",
+      "name": "Emit compliance result",
+      "function": "Print the Required Output Format <result> block containing the overall compliance status and the list of detected violations.",
       "output_fields": {
         "compliant": "{{ _compliant }}",
-        "message": "{{ 'Compliant: PASS' if _compliant else 'Compliant: FAIL – nullok present' }}"
+        "violations": "{{ _violations }}"
       },
       "on_success": "end"
     },
     {
-      "id": "step-04",
+      "id": "step-07",
       "type": "abort",
       "name": "Emit error and fail",
       "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
@@ -103,37 +158,52 @@
     }
   ],
   "error_handling": {
-    "abort_step_id": "step-04",
+    "abort_step_id": "step-07",
     "no_silent_exit": true
   },
   "timeout_seconds": 300,
   "phases": [
     {
-      "name": "Data collection",
-      "description": "Gather the pam_unix.so configuration lines from both PAM files.",
+      "name": "Pre-checks",
+      "description": "Read authselect.conf and determine the active PAM directory.",
       "steps": [
-        "step-01"
+        "step-01",
+        "step-02"
       ]
     },
     {
-      "name": "Analysis and reporting",
-      "description": "Check the collected lines for the nullok argument and emit the compliance result.",
+      "name": "Data collection",
+      "description": "Read the system-auth and password-auth files from the correct location.",
       "steps": [
-        "step-02",
-        "step-03"
+        "step-03",
+        "step-04"
+      ]
+    },
+    {
+      "name": "Analysis",
+      "description": "Parse the file contents and identify nullok violations.",
+      "steps": [
+        "step-05"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured audit result.",
+      "steps": [
+        "step-06"
       ]
     },
     {
       "name": "Error handling",
       "description": "Reached when any step fails; records failure and halts execution.",
       "steps": [
-        "step-04"
+        "step-07"
       ]
     }
   ],
   "meta": {
-    "content_sha256": "38437a570b0ad79085f2364e0f710e9e21d3f7081097648cd66e1f48f9198fee",
-    "saved_at": "2026-07-29T15:39:49+00:00",
+    "content_sha256": "98a7523778f63f3fd99979f269119d20ba40cbfe8f2cf3b7b7ef2fe69bdfd094",
+    "saved_at": "2026-07-30T04:53:11+00:00",
     "saved_by": "admin",
     "revision": 1
   }
