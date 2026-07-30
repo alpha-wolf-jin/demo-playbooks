@@ -4,84 +4,123 @@
   connection: local
   gather_facts: false
   vars:
-    playbook_name: "ensure_aap_inventory_with_hosts"
-    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
     aap_gateway_ip: ""
     aap_username: ""
     aap_password: ""
     organization_name: ""
     inventory_name: ""
     hosts_list: ""
+    playbook_name: "ensure_aap_inventory_with_hosts"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
 
   pre_tasks:
-    # === SNAPSHOT (tag: snapshot) ===
     - name: "Snapshot - Create backup directory"
       ansible.builtin.file:
         path: "{{ backup_dir }}"
         state: directory
-        mode: "0700"
+        mode: '0700'
       tags: [snapshot]
 
-    - name: "Snapshot - Check if organization exists"
+    - name: "Snapshot - Look up organization"
       ansible.builtin.set_fact:
-        _snap_org_exists: "{{ query('ansible.controller.controller_api', 'organizations',
-                               host=aap_gateway_ip,
-                               username=aap_username,
-                               password=aap_password,
-                               verify_ssl=false,
-                               query_params={'name': organization_name},
-                               return_all=true) | flatten | length > 0 }}"
+        _snap_org_result: >-
+          {{ query('ansible.controller.controller_api', 'organizations',
+               host=aap_gateway_ip,
+               username=aap_username,
+               password=aap_password,
+               verify_ssl=false,
+               query_params={'name': organization_name},
+               return_all=true) | flatten }}
       tags: [snapshot]
 
-    - name: "Snapshot - Save organization existence"
+    - name: "Snapshot - Set organization facts"
+      ansible.builtin.set_fact:
+        _snap_org_exists: "{{ _snap_org_result | length > 0 }}"
+        _snap_org_id: "{{ (_snap_org_result | first).id if _snap_org_result | length > 0 else '' }}"
+      tags: [snapshot]
+
+    - name: "Snapshot - Save organization existence marker"
       ansible.builtin.copy:
-        content: "{{ _snap_org_exists }}"
-        dest: "{{ backup_dir }}/org_existed"
+        content: "{{ _snap_org_exists | string | lower }}"
+        dest: "{{ backup_dir }}/org_existed.txt"
         force: false
       tags: [snapshot]
 
-    - name: "Snapshot - Check if inventory exists"
-      ansible.builtin.set_fact:
-        _snap_inv_exists: "{{ query('ansible.controller.controller_api', 'inventories',
-                               host=aap_gateway_ip,
-                               username=aap_username,
-                               password=aap_password,
-                               verify_ssl=false,
-                               query_params={'name': inventory_name, 'organization__name': organization_name},
-                               return_all=true) | flatten | length > 0 }}"
+    - name: "Snapshot - Save organization ID if exists"
+      ansible.builtin.copy:
+        content: "{{ _snap_org_id }}"
+        dest: "{{ backup_dir }}/org_id.txt"
+        force: false
+      when: _snap_org_exists
       tags: [snapshot]
 
-    - name: "Snapshot - Save inventory existence"
+    - name: "Snapshot - Inventory facts default (not exists)"
+      ansible.builtin.set_fact:
+        _snap_inv_exists: false
+        _snap_inv_id: ""
+        _snap_host_list: []
+      tags: [snapshot]
+
+    - block:
+        - name: "Snapshot - Look up inventory"
+          ansible.builtin.set_fact:
+            _snap_inv_result: >-
+              {{ query('ansible.controller.controller_api', 'inventories',
+                   host=aap_gateway_ip,
+                   username=aap_username,
+                   password=aap_password,
+                   verify_ssl=false,
+                   query_params={'name': inventory_name, 'organization': _snap_org_id},
+                   return_all=true) | flatten }}
+          when: _snap_org_exists
+
+        - name: "Snapshot - Set inventory existence facts"
+          ansible.builtin.set_fact:
+            _snap_inv_exists: "{{ _snap_inv_result | length > 0 }}"
+            _snap_inv_id: "{{ (_snap_inv_result | first).id if _snap_inv_result | length > 0 else '' }}"
+          when: _snap_org_exists
+      when: _snap_org_exists
+      tags: [snapshot]
+
+    - name: "Snapshot - Save inventory existence marker"
       ansible.builtin.copy:
-        content: "{{ _snap_inv_exists }}"
-        dest: "{{ backup_dir }}/inv_existed"
+        content: "{{ _snap_inv_exists | string | lower }}"
+        dest: "{{ backup_dir }}/inv_existed.txt"
         force: false
       tags: [snapshot]
 
-    - name: "Snapshot - Get list of hosts in inventory if it exists"
-      ansible.builtin.set_fact:
-        _snap_hosts_list: "{{ query('ansible.controller.controller_api', 'hosts',
-                               host=aap_gateway_ip,
-                               username=aap_username,
-                               password=aap_password,
-                               verify_ssl=false,
-                               query_params={'inventory__name': inventory_name, 'organization__name': organization_name},
-                               return_all=true) | flatten | map(attribute='name') | list }}"
-      when: _snap_inv_exists | bool
+    - name: "Snapshot - Save inventory ID if exists"
+      ansible.builtin.copy:
+        content: "{{ _snap_inv_id }}"
+        dest: "{{ backup_dir }}/inv_id.txt"
+        force: false
+      when: _snap_inv_exists
       tags: [snapshot]
 
-    - name: "Snapshot - Save hosts list"
+    - name: "Snapshot - Look up hosts in inventory"
+      ansible.builtin.set_fact:
+        _snap_host_list: >-
+          {{ query('ansible.controller.controller_api', 'hosts',
+               host=aap_gateway_ip,
+               username=aap_username,
+               password=aap_password,
+               verify_ssl=false,
+               query_params={'inventory': _snap_inv_id},
+               return_all=true) | flatten | map(attribute='name') | list }}
+      when: _snap_inv_exists
+      tags: [snapshot]
+
+    - name: "Snapshot - Save host list"
       ansible.builtin.copy:
-        content: "{{ _snap_hosts_list | to_json }}"
-        dest: "{{ backup_dir }}/hosts_list.json"
+        content: "{{ _snap_host_list | to_nice_json }}"
+        dest: "{{ backup_dir }}/host_list.json"
         force: false
-      when: _snap_inv_exists | bool
+      when: _snap_inv_exists
       tags: [snapshot]
 
   tasks:
     - block:
-        # === EXECUTE (tag: execute) ===
-        - name: "Validate required variables"
+        - name: "Assert required variables"
           ansible.builtin.assert:
             that:
               - aap_gateway_ip | length > 0
@@ -90,34 +129,27 @@
               - organization_name | length > 0
               - inventory_name | length > 0
               - hosts_list | length > 0
+            fail_msg: "All required variables must be provided"
           tags: [execute]
 
-        # step-01
         - name: "Req 2 - Parse hosts list"
           ansible.builtin.set_fact:
             _hosts: "{{ (hosts_list | default('')).split(',') | map('trim') | reject('equalto', '') | list }}"
           tags: [execute]
 
-        # step-02
         - name: "Req 3 - Look up organization"
           ansible.builtin.set_fact:
-            _org_lookup: "{{ query('ansible.controller.controller_api', 'organizations',
-                               host=aap_gateway_ip,
-                               username=aap_username,
-                               password=aap_password,
-                               verify_ssl=false,
-                               query_params={'name': organization_name},
-                               return_all=true) | flatten }}"
+            _org_lookup: >-
+              {{ query('ansible.controller.controller_api', 'organizations',
+                   host=aap_gateway_ip,
+                   username=aap_username,
+                   password=aap_password,
+                   verify_ssl=false,
+                   query_params={'name': organization_name},
+                   return_all=true) | flatten }}
           tags: [execute]
 
-        # step-03
-        - name: "Req 4 - Check if organization exists"
-          ansible.builtin.set_fact:
-            _org_exists: "{{ _org_lookup | length > 0 }}"
-          tags: [execute]
-
-        # step-04
-        - name: "Req 5 - Create organization"
+        - name: "Req 5 - Create organization if not exists"
           ansible.controller.organization:
             name: "{{ organization_name }}"
             state: present
@@ -126,40 +158,35 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           register: _org_created
-          when: not _org_exists
+          when: _org_lookup | length == 0
           tags: [execute]
 
-        # step-05
         - name: "Req 6 - Set organization ID"
           ansible.builtin.set_fact:
-            _org_id: "{{ _org_lookup[0].id if _org_exists else _org_created.id }}"
+            _org_id: "{{ (_org_lookup | first).id if _org_lookup | length > 0 else (_org_created | default({})).get('id', '') }}"
           tags: [execute]
 
-        # step-06
         - name: "Req 7 - Fetch all inventories"
           ansible.builtin.set_fact:
-            _all_inventories: "{{ query('ansible.controller.controller_api', 'inventories',
-                                    host=aap_gateway_ip,
-                                    username=aap_username,
-                                    password=aap_password,
-                                    verify_ssl=false,
-                                    return_all=true) | flatten }}"
+            _all_inventories: >-
+              {{ query('ansible.controller.controller_api', 'inventories',
+                   host=aap_gateway_ip,
+                   username=aap_username,
+                   password=aap_password,
+                   verify_ssl=false,
+                   return_all=true) | flatten }}
           tags: [execute]
 
-        # step-07
         - name: "Req 8 - Filter inventory by name and organization"
           ansible.builtin.set_fact:
-            _existing_inventory: "{{ _all_inventories | selectattr('name', 'equalto', inventory_name) | selectattr('organization', 'equalto', _org_id) | list }}"
+            _existing_inventory: >-
+              {{ _all_inventories
+                 | selectattr('name', 'equalto', inventory_name)
+                 | selectattr('organization', 'equalto', _org_id | int)
+                 | list }}
           tags: [execute]
 
-        # step-08
-        - name: "Req 9 - Check if inventory exists"
-          ansible.builtin.set_fact:
-            _inv_exists: "{{ _existing_inventory | length > 0 }}"
-          tags: [execute]
-
-        # step-09
-        - name: "Req 10 - Create inventory"
+        - name: "Req 10 - Create inventory if not exists"
           ansible.controller.inventory:
             name: "{{ inventory_name }}"
             organization: "{{ organization_name }}"
@@ -169,16 +196,14 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           register: _inventory_created
-          when: not _inv_exists
+          when: _existing_inventory | length == 0
           tags: [execute]
 
-        # step-10
         - name: "Req 11 - Set inventory ID"
           ansible.builtin.set_fact:
-            _inventory_id: "{{ _existing_inventory[0].id if _inv_exists else _inventory_created.id }}"
+            _inventory_id: "{{ (_existing_inventory | first).id if _existing_inventory | length > 0 else (_inventory_created | default({})).get('id', '') }}"
           tags: [execute]
 
-        # step-11
         - name: "Req 12 - Ensure hosts present"
           ansible.controller.host:
             name: "{{ item }}"
@@ -189,32 +214,52 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           loop: "{{ _hosts }}"
-          ignore_errors: true
           register: _host_results
+          ignore_errors: true
           tags: [execute]
 
-        # step-12
         - name: "Req 13 - Summarize host results"
           ansible.builtin.set_fact:
-            _added_hosts: "{{ _host_results.results | selectattr('changed', 'equalto', true) | rejectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
-            _skipped_hosts: "{{ _host_results.results | selectattr('changed', 'equalto', false) | rejectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
-            _failed_hosts: "{{ _host_results.results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
+            _added_hosts: >-
+              {{ _host_results.results
+                 | selectattr('changed')
+                 | rejectattr('failed')
+                 | map(attribute='item')
+                 | list }}
+            _skipped_hosts: >-
+              {{ _host_results.results
+                 | rejectattr('changed')
+                 | rejectattr('failed')
+                 | map(attribute='item')
+                 | list }}
+            _failed_hosts: >-
+              {{ _host_results.results
+                 | selectattr('failed')
+                 | map(attribute='item')
+                 | list }}
           tags: [execute]
 
-        # VERIFY
-        - name: "Verify - Query hosts in inventory"
+        - name: "Req 19 - Verify hosts present in inventory"
           ansible.builtin.set_fact:
-            _queried_hosts: "{{ query('ansible.controller.controller_api', 'hosts',
-                                   host=aap_gateway_ip,
-                                   username=aap_username,
-                                   password=aap_password,
-                                   verify_ssl=false,
-                                   query_params={'inventory': _inventory_id},
-                                   return_all=true) | flatten | map(attribute='name') | list }}"
+            _queried_hosts: >-
+              {{ query('ansible.controller.controller_api', 'hosts',
+                   host=aap_gateway_ip,
+                   username=aap_username,
+                   password=aap_password,
+                   verify_ssl=false,
+                   query_params={'inventory': _inventory_id},
+                   return_all=true) | flatten | map(attribute='name') | list }}
           tags: [execute]
 
-        # step-13 (emit success)
-        - name: "Req 14 - Emit result"
+        - name: "Verify desired hosts are present"
+          ansible.builtin.assert:
+            that:
+              - (_hosts | difference(_queried_hosts | default([])) | length) == 0
+            fail_msg: "Verification failed. Missing hosts: {{ _hosts | difference(_queried_hosts) | join(', ') }}"
+            success_msg: "All hosts verified present in inventory."
+          tags: [execute]
+
+        - name: "Req 14 - Emit success result"
           ansible.builtin.debug:
             msg: |
               <result>
@@ -223,20 +268,46 @@
               added_hosts: {{ _added_hosts }}
               skipped_hosts: {{ _skipped_hosts }}
               failed_hosts: {{ _failed_hosts }}
-              verified_hosts: {{ _queried_hosts }}
               </result>
           tags: [execute]
 
+      rescue:
+        - name: "Req 15 - Emit error result"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: ensure_aap_inventory_with_hosts failed
+              </result>
+        - name: "Fail the play"
+          ansible.builtin.fail:
+            msg: "ensure_aap_inventory_with_hosts failed"
+
       always:
-        # === RESTORE (tag: restore) ===
-        - name: "Restore - Read organization existence"
-          ansible.builtin.slurp:
-            src: "{{ backup_dir }}/org_existed"
-          register: _restore_org_existed
+        # ---- Restore phase: rollback changes made by the playbook ----
+        - name: "Restore - Check if backup directory exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}"
+          register: _restore_dir_check
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Delete organization if created by us"
+        - name: "Restore - Check if org existed marker exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/org_existed.txt"
+          register: _restore_org_marker_check
+          when: _restore_dir_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read org existed marker"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/org_existed.txt"
+          register: _restore_org_marker_content
+          when: _restore_org_marker_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Delete organization if it did not exist before"
           ansible.controller.organization:
             name: "{{ organization_name }}"
             state: absent
@@ -245,19 +316,28 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           when:
-            - _restore_org_existed.content is defined
-            - (_restore_org_existed.content | b64decode | trim) == 'False'
+            - _restore_org_marker_content.content is defined
+            - (_restore_org_marker_content.content | b64decode | trim) == 'false'
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Read inventory existence"
+        - name: "Restore - Check if inv existed marker exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/inv_existed.txt"
+          register: _restore_inv_marker_check
+          when: _restore_org_marker_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read inv existed marker"
           ansible.builtin.slurp:
-            src: "{{ backup_dir }}/inv_existed"
-          register: _restore_inv_existed
+            src: "{{ backup_dir }}/inv_existed.txt"
+          register: _restore_inv_marker_content
+          when: _restore_inv_marker_check.stat.exists | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Delete inventory if created by us"
+        - name: "Restore - Delete inventory if it did not exist before and org existed"
           ansible.controller.inventory:
             name: "{{ inventory_name }}"
             organization: "{{ organization_name }}"
@@ -267,47 +347,69 @@
             controller_password: "{{ aap_password }}"
             validate_certs: false
           when:
-            - _restore_inv_existed.content is defined
-            - (_restore_inv_existed.content | b64decode | trim) == 'False'
+            - _restore_inv_marker_content.content is defined
+            - (_restore_inv_marker_content.content | b64decode | trim) == 'false'
+            - (_restore_org_marker_content.content | default('') | b64decode | trim) == 'true'
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Initialize hosts lists"
-          ansible.builtin.set_fact:
-            _restore_current_hosts: []
-            _orig_hosts_list_restore: []
+        - name: "Restore - Check if host list backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/host_list.json"
+          register: _restore_hostlist_check
+          when: _restore_org_marker_check.stat.exists | default(false)
+          failed_when: false
           tags: [restore]
 
-        - name: "Restore - Read original hosts list"
+        - name: "Restore - Read original host list"
           ansible.builtin.slurp:
-            src: "{{ backup_dir }}/hosts_list.json"
-          register: _restore_orig_hosts
+            src: "{{ backup_dir }}/host_list.json"
+          register: _restore_hostlist_content
+          when: _restore_hostlist_check.stat.exists | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Parse original hosts list"
+        - name: "Restore - Look up inventory ID for restore"
           ansible.builtin.set_fact:
-            _orig_hosts_list_restore: "{{ _restore_orig_hosts.content | b64decode | from_json }}"
-          when:
-            - _restore_orig_hosts.content is defined
+            _restore_inv_id: >-
+              {{ (query('ansible.controller.controller_api', 'inventories',
+                    host=aap_gateway_ip,
+                    username=aap_username,
+                    password=aap_password,
+                    verify_ssl=false,
+                    query_params={'name': inventory_name, 'organization__name': organization_name},
+                    return_all=true) | flatten | first).id | default('') }}
+          when: _restore_hostlist_check.stat.exists | default(false)
+          failed_when: false
           tags: [restore]
 
         - name: "Restore - Get current hosts in inventory"
           ansible.builtin.set_fact:
-            _restore_current_hosts: "{{ query('ansible.controller.controller_api', 'hosts',
-                                          host=aap_gateway_ip,
-                                          username=aap_username,
-                                          password=aap_password,
-                                          verify_ssl=false,
-                                          query_params={'inventory__name': inventory_name, 'organization__name': organization_name},
-                                          return_all=true) | flatten | map(attribute='name') | list }}"
+            _restore_current_hosts: >-
+              {{ query('ansible.controller.controller_api', 'hosts',
+                   host=aap_gateway_ip,
+                   username=aap_username,
+                   password=aap_password,
+                   verify_ssl=false,
+                   query_params={'inventory': _restore_inv_id},
+                   return_all=true) | flatten | map(attribute='name') | list }}
           when:
-            - _restore_inv_existed.content is defined
-            - (_restore_inv_existed.content | b64decode | trim) == 'True'
+            - _restore_hostlist_check.stat.exists | default(false)
+            - _restore_inv_id | default('') | length > 0
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Remove hosts added during execution"
+        - name: "Restore - Compute hosts to delete"
+          ansible.builtin.set_fact:
+            _restore_hosts_to_delete: >-
+              {{ (_restore_current_hosts | default([]))
+                 | difference((_restore_hostlist_content.content | b64decode | from_json | default([]))) }}
+          when:
+            - _restore_hostlist_check.stat.exists | default(false)
+            - _restore_inv_id | default('') | length > 0
+          tags: [restore]
+
+        - name: "Restore - Delete added hosts"
           ansible.controller.host:
             name: "{{ item }}"
             inventory: "{{ inventory_name }}"
@@ -316,11 +418,8 @@
             controller_username: "{{ aap_username }}"
             controller_password: "{{ aap_password }}"
             validate_certs: false
-          loop: "{{ _restore_current_hosts | difference(_orig_hosts_list_restore) }}"
-          when:
-            - _restore_inv_existed.content is defined
-            - (_restore_inv_existed.content | b64decode | trim) == 'True'
-            - _restore_orig_hosts.content is defined
+          loop: "{{ _restore_hosts_to_delete | default([]) }}"
+          when: _restore_hosts_to_delete | default([]) | length > 0
           failed_when: false
           tags: [restore]
 
@@ -328,18 +427,6 @@
           ansible.builtin.file:
             path: "{{ backup_dir }}"
             state: absent
+          when: _restore_dir_check.stat.exists | default(false)
           failed_when: false
           tags: [restore]
-
-      rescue:
-        # step-14 (error path)
-        - name: "Req 15 - Emit error result"
-          ansible.builtin.debug:
-            msg: |
-              <result>
-              ERROR: ensure_aap_inventory_with_hosts failed
-              </result>
-
-        - name: "Fail the play"
-          ansible.builtin.fail:
-            msg: "ensure_aap_inventory_with_hosts failed"
