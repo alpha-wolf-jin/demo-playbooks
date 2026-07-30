@@ -2,81 +2,72 @@
 - name: "SOP playbook 'ensure_pam_unix_no_nullok' (DATA COLLECTOR — read-only): Verifies that the pam_unix.so module in the active PAM configuration's system-auth and password-auth files does not contain the nullok argument without the without-nullok placeholder."
   hosts: "{{ target_server if target_server != '' else 'localhost' }}"
   become: yes
-  become_user: root
   gather_facts: false
   vars:
-    target_server: ""   # required, overridden by extra_vars at runtime
+    target_server: ""   # Required; override via extra_vars
 
   tasks:
-    - name: "Req 1 - Validate target_server is not empty"
-      ansible.builtin.assert:
-        that:
-          - target_server != ''
-        fail_msg: "target_server must be provided via extra_vars and must not be empty"
-
     - block:
-        - name: "Req 2 - [step-01] Read authselect.conf"
+        - name: "Validate required variable target_server is provided"
+          ansible.builtin.assert:
+            that: "{{ target_server != '' }}"
+            fail_msg: "target_server must be provided and not empty"
+
+        - name: "Req 2 - Read authselect configuration file"
           ansible.builtin.slurp:
             src: /etc/authselect/authselect.conf
           register: _authselect_conf_b64
-          failed_when: false
 
-        - name: "Req 3a - Extract profile name"
+        - name: "Req 3 - Extract authselect profile name"
           ansible.builtin.set_fact:
-            _profile: "{{ ((_authselect_conf_b64.content | default('') | b64decode).splitlines() | first | default('') | trim) }}"
+            _profile: "{{ (_authselect_conf_b64.content | default('') | b64decode).splitlines() | first | trim }}"
 
-        - name: "Req 3b - Determine PAM directory"
+        - name: "Req 3 - Compute PAM directory"
           ansible.builtin.set_fact:
             _pam_dir: "{{ '/etc/authselect/' ~ _profile ~ '/' if _profile.startswith('custom/') else '/etc/pam.d/' }}"
 
-        - name: "Req 4 - [step-03] Read system-auth file"
+        - name: "Req 4 - Read system-auth PAM file"
           ansible.builtin.slurp:
             src: "{{ _pam_dir }}system-auth"
           register: _system_auth_b64
-          failed_when: false
 
-        - name: "Req 5 - [step-04] Read password-auth file"
+        - name: "Req 5 - Read password-auth PAM file"
           ansible.builtin.slurp:
             src: "{{ _pam_dir }}password-auth"
           register: _password_auth_b64
-          failed_when: false
 
-        - name: "Req 6 - Decode file contents"
+        - name: "Req 6 - Find nullok violations in system-auth"
           ansible.builtin.set_fact:
             _system_auth_str: "{{ _system_auth_b64.content | default('') | b64decode }}"
-            _password_auth_str: "{{ _password_auth_b64.content | default('') | b64decode }}"
-
-        - name: "Req 7 - Find system-auth nullok violations"
-          ansible.builtin.set_fact:
             _sys_violations: >-
-              {{ _system_auth_str.splitlines()
+              {{ (_system_auth_b64.content | default('') | b64decode).splitlines()
                  | reject('eq', '')
-                 | select('search', 'pam_unix\.so')
+                 | select('search', 'pam_unix\\.so')
                  | select('search', 'nullok')
-                 | reject('search', '\{if not "without-nullok":nullok\}')
+                 | reject('search', '\\{if not "without-nullok":nullok\\}')
                  | map('regex_replace', '^.*$', '{"file": "system-auth", "line": "\g<0>"}')
                  | map('from_json')
                  | list }}
 
-        - name: "Req 8 - Find password-auth nullok violations"
+        - name: "Req 6 - Find nullok violations in password-auth"
           ansible.builtin.set_fact:
+            _password_auth_str: "{{ _password_auth_b64.content | default('') | b64decode }}"
             _pw_violations: >-
-              {{ _password_auth_str.splitlines()
+              {{ (_password_auth_b64.content | default('') | b64decode).splitlines()
                  | reject('eq', '')
-                 | select('search', 'pam_unix\.so')
+                 | select('search', 'pam_unix\\.so')
                  | select('search', 'nullok')
-                 | reject('search', '\{if not "without-nullok":nullok\}')
+                 | reject('search', '\\{if not "without-nullok":nullok\\}')
                  | map('regex_replace', '^.*$', '{"file": "password-auth", "line": "\g<0>"}')
                  | map('from_json')
                  | list }}
 
-        # Fix: avoid circular reference – compute _compliant directly from the source lists
-        - name: "Req 9 - Combine violations and set compliance"
+        - name: "Req 6 - Combine violations and compute compliance"
           ansible.builtin.set_fact:
             _violations: "{{ _sys_violations + _pw_violations }}"
             _compliant: "{{ (_sys_violations + _pw_violations) | length == 0 }}"
 
-        - name: "Req 10 - [step-06] Emit compliance result"
+        - name: "Req 7 - Emit compliance result"
           ansible.builtin.debug:
             msg: |
               <result>
@@ -85,13 +76,13 @@
               </result>
 
       rescue:
-        - name: "Req 11 - [step-07] Emit error result and fail"
+        - name: "Req 8 - Emit error result"
           ansible.builtin.debug:
             msg: |
               <result>
-              ERROR: ensure_pam_unix_no_nullok failed on {{ inventory_hostname }} - {{ ansible_failed_task.name | default('unknown') }}: {{ ansible_failed_result.msg | default('No error message') }}
+              ERROR: ensure_pam_unix_no_nullok failed on {{ inventory_hostname }} - {{ ansible_failed_task.name | default('unknown task') }}: {{ ansible_failed_result.msg | default('No error message') }}
               </result>
 
-        - name: "Force playbook failure"
+        - name: "Req 8 - Force failure"
           ansible.builtin.fail:
             msg: "Playbook terminated due to failure"
