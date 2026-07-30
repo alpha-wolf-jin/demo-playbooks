@@ -1,0 +1,529 @@
+{
+  "tool_name": "rhel_patch",
+  "version": "1.0",
+  "title": "RHEL Patch with Pre/Post Health Checks",
+  "role": "action",
+  "effect": "transient",
+  "description": "Updates all packages on a RHEL server, reboots, and validates memory, disk space, and running services before and after the patch.",
+  "aap_template": "rhel_patch++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "connection": "ssh",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Target RHEL server hostname or IP address."
+      },
+      {
+        "name": "min_free_memory_gb",
+        "type": "integer",
+        "required": false,
+        "default": 2,
+        "unit": "GB",
+        "description": "Minimum required free memory in GB before and after patching."
+      },
+      {
+        "name": "min_free_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": 5,
+        "unit": "GB",
+        "description": "Minimum required free disk space in GB per filesystem before and after patching."
+      },
+      {
+        "name": "fs_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "/boot,/iso",
+        "unit": null,
+        "description": "Comma-separated list of mount points to exclude from disk space checks."
+      },
+      {
+        "name": "fs_type_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "devtmpfs,tmpfs,iso9660,cgroup2",
+        "unit": null,
+        "description": "Comma-separated list of filesystem types to exclude from disk space checks."
+      },
+      {
+        "name": "msg",
+        "type": "string",
+        "required": false,
+        "default": "Ansible Reboot After Patching",
+        "unit": null,
+        "description": "Message to display to users before reboot."
+      },
+      {
+        "name": "reboot_timeout",
+        "type": "integer",
+        "required": false,
+        "default": 120,
+        "unit": "seconds",
+        "description": "Maximum seconds to wait for machine to reboot and respond to a test command."
+      },
+      {
+        "name": "package_name",
+        "type": "string",
+        "required": false,
+        "default": "*",
+        "unit": null,
+        "description": "Package name(s) to update. Use '*' to update all packages."
+      },
+      {
+        "name": "package_state",
+        "type": "string",
+        "required": false,
+        "default": "latest",
+        "unit": null,
+        "description": "Desired state of the package(s). Use 'latest' to update to the newest available version."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Structured report of patching steps and results.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "overall_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Overall status - always 'SUCCESS' when this report is emitted."
+      },
+      {
+        "name": "pre_memory_free_gb",
+        "type": "float",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Free memory in GB before patching."
+      },
+      {
+        "name": "pre_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Pre-patch disk check status (always 'ok' if report emitted)."
+      },
+      {
+        "name": "update_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Package update status (always 'ok' if report emitted)."
+      },
+      {
+        "name": "reboot_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Reboot status (always 'ok' if report emitted)."
+      },
+      {
+        "name": "post_memory_free_gb",
+        "type": "float",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Free memory in GB after patching."
+      },
+      {
+        "name": "post_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Post-patch disk check status (always 'ok' if report emitted)."
+      },
+      {
+        "name": "pre_running_services_count",
+        "type": "integer",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Number of running services before patching."
+      },
+      {
+        "name": "post_running_services_count",
+        "type": "integer",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "Number of running services after patching."
+      },
+      {
+        "name": "service_mismatches",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": false,
+        "description": "List of differing services between pre and post patch (descriptive strings)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather pre-patch system facts",
+      "function": "Collect memory and mount facts from the target using ansible.builtin.setup.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_pre_facts_raw"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-17"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Extract pre-patch memory and filter mounts",
+      "function": "Compute free memory in GB and filter out excluded filesystems/mounts from the mount data.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_pre_facts_raw"
+        ]
+      },
+      "computations": {
+        "_pre_memory_free_gb": "{{ (ansible_facts.memory_mb.real.free / 1024) | round(2) }}",
+        "_pre_mounts_filtered": "Filter ansible_facts.mounts to exclude mounts where mount is in fs_exclude_list (after splitting and trimming) or where fstype is in fs_type_exclude_list (after splitting and trimming). Keep mount, size_available, fstype."
+      },
+      "stores": [
+        "_pre_memory_free_gb",
+        "_pre_mounts_filtered"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Check pre-patch free memory",
+      "function": "Abort if free memory is below the threshold; otherwise continue to disk check.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_pre_memory_free_gb"
+        ]
+      },
+      "condition": "Pre-patch free memory (GB) is below min_free_memory_gb.",
+      "on_pass": "step-17",
+      "on_fail": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "decide",
+      "name": "Check pre-patch disk space",
+      "function": "Abort if any filtered mount has available space below the threshold; otherwise continue to service collection.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_pre_mounts_filtered"
+        ]
+      },
+      "condition": "At least one mount point in the pre-patch filtered mount list has available space below min_free_disk_gb GB.",
+      "on_pass": "step-17",
+      "on_fail": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "collect",
+      "name": "Collect pre-patch running services",
+      "function": "Gather running systemd services before patching.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_pre_service_facts_raw"
+      ],
+      "on_success": "step-06",
+      "on_fail": "step-17"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Extract pre-patch service list and count",
+      "function": "Extract the list of running service names and compute the count.",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "_pre_service_facts_raw"
+        ]
+      },
+      "computations": {
+        "_pre_running_services": "Get list of service names where state is 'running' from _pre_service_facts_raw.services, sorted ascending.",
+        "_pre_running_services_count": "Number of running services (length of the list)."
+      },
+      "stores": [
+        "_pre_running_services",
+        "_pre_running_services_count"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Update all packages",
+      "function": "Apply all available package updates using the idempotent package module.",
+      "module": "ansible.builtin.package",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "package_name",
+          "package_state"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_update_result"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-17"
+    },
+    {
+      "id": "step-08",
+      "type": "action",
+      "name": "Reboot the server",
+      "function": "Reboot the target server and wait for it to come back online.",
+      "module": "ansible.builtin.reboot",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "msg",
+          "reboot_timeout"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_reboot_result"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-17"
+    },
+    {
+      "id": "step-09",
+      "type": "collect",
+      "name": "Gather post-patch system facts",
+      "function": "Collect memory and mount facts after the reboot.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_post_facts_raw"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "transform",
+      "name": "Extract post-patch memory and filter mounts",
+      "function": "Compute free memory in GB and filter out excluded filesystems/mounts from the post-reboot data.",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_post_facts_raw"
+        ]
+      },
+      "computations": {
+        "_post_memory_free_gb": "{{ (ansible_facts.memory_mb.real.free / 1024) | round(2) }}",
+        "_post_mounts_filtered": "Filter ansible_facts.mounts to exclude mounts where mount is in fs_exclude_list (after splitting and trimming) or where fstype is in fs_type_exclude_list (after splitting and trimming). Keep mount, size_available, fstype."
+      },
+      "stores": [
+        "_post_memory_free_gb",
+        "_post_mounts_filtered"
+      ],
+      "on_success": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "decide",
+      "name": "Check post-patch free memory",
+      "function": "Abort if free memory is below the threshold; otherwise continue to disk check.",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_post_memory_free_gb"
+        ]
+      },
+      "condition": "Post-patch free memory (GB) is below min_free_memory_gb.",
+      "on_pass": "step-17",
+      "on_fail": "step-12"
+    },
+    {
+      "id": "step-12",
+      "type": "decide",
+      "name": "Check post-patch disk space",
+      "function": "Abort if any filtered mount has available space below the threshold; otherwise continue to service collection.",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_post_mounts_filtered"
+        ]
+      },
+      "condition": "At least one mount point in the post-patch filtered mount list has available space below min_free_disk_gb GB.",
+      "on_pass": "step-17",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-13",
+      "type": "collect",
+      "name": "Collect post-patch running services",
+      "function": "Gather running systemd services after patching.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_post_service_facts_raw"
+      ],
+      "on_success": "step-14"
+    },
+    {
+      "id": "step-14",
+      "type": "transform",
+      "name": "Extract post-patch service list and count",
+      "function": "Extract the list of running service names and compute the count.",
+      "input": {
+        "source": "step-13",
+        "fields": [
+          "_post_service_facts_raw"
+        ]
+      },
+      "computations": {
+        "_post_running_services": "Get list of service names where state is 'running' from _post_service_facts_raw.services, sorted ascending.",
+        "_post_running_services_count": "Number of running services (length of the list)."
+      },
+      "stores": [
+        "_post_running_services",
+        "_post_running_services_count"
+      ],
+      "on_success": "step-15"
+    },
+    {
+      "id": "step-15",
+      "type": "transform",
+      "name": "Compare service lists",
+      "function": "Find services present in only one of the pre or post lists.",
+      "input": {
+        "source": "step-14",
+        "fields": [
+          "_post_running_services"
+        ]
+      },
+      "computations": {
+        "_service_mismatches": "Compute symmetric difference between _pre_running_services and _post_running_services, producing a list of descriptive strings (e.g., 'only in pre: serviceX', 'only in post: serviceY')."
+      },
+      "stores": [
+        "_service_mismatches"
+      ],
+      "on_success": "step-16"
+    },
+    {
+      "id": "step-16",
+      "type": "emit",
+      "name": "Emit success report",
+      "function": "Print the structured post-patch report.",
+      "output_fields": {
+        "overall_status": "\"SUCCESS\"",
+        "pre_memory_free_gb": "{{ _pre_memory_free_gb }}",
+        "pre_disk_status": "\"ok\"",
+        "update_status": "\"ok\"",
+        "reboot_status": "\"ok\"",
+        "post_memory_free_gb": "{{ _post_memory_free_gb }}",
+        "post_disk_status": "\"ok\"",
+        "pre_running_services_count": "{{ _pre_running_services_count }}",
+        "post_running_services_count": "{{ _post_running_services_count }}",
+        "service_mismatches": "{{ _service_mismatches }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-17",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: rhel_patch failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-17",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 600,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Validate memory, disk space, and capture running services before updating.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06"
+      ]
+    },
+    {
+      "name": "Update",
+      "description": "Apply all package updates.",
+      "steps": [
+        "step-07"
+      ]
+    },
+    {
+      "name": "Reboot",
+      "description": "Reboot the server and wait for it to return.",
+      "steps": [
+        "step-08"
+      ]
+    },
+    {
+      "name": "Post-checks",
+      "description": "Re-validate memory, disk space, and compare running services after the patch.",
+      "steps": [
+        "step-09",
+        "step-10",
+        "step-11",
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-15"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final report to the caller.",
+      "steps": [
+        "step-16"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-17"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "31361de7931ccf6ea7bb640abb1ad231ba3d85758ba17f02606120e322ec7596",
+    "saved_at": "2026-07-25T15:48:04+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
