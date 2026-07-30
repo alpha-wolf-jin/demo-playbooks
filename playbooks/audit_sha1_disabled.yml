@@ -1,50 +1,43 @@
 ---
 - name: "SOP playbook 'audit_sha1_disabled' (DATA COLLECTOR — read-only): Runs two compliance checks on the target server to verify that SHA‑1 hash and signature support has been disabled in the system crypto policy, and reports an overall PASS or FAIL status."
   hosts: "{{ target_server if target_server != '' else 'localhost' }}"
-  become: true
+  become: yes
+  become_user: root
   gather_facts: false
   vars:
-    target_server: ""   # overridden by extra_vars at runtime; sentinel for validation
-
+    target_server: ""
+    crypto_policy_file: "/etc/crypto-policies/state/CURRENT.pol"
   tasks:
     - block:
-        - name: "Validate required variable target_server is not empty"
+        - name: "Req 1 - Validate target_server is provided"
           ansible.builtin.assert:
             that:
-              - target_server != ''
+              - target_server != ""
             fail_msg: "target_server must be provided and must not be empty"
 
         - name: "Req 2 - Run SHA1 hash/sign audit"
           ansible.builtin.shell: |
-            set -o pipefail && awk -F= '($1~/(hash|sign)/ && $2~/SHA1/ && $2!~/^\s*-\s*([^#\n\r]+)?SHA1/){print}' /etc/crypto-policies/state/CURRENT.pol
+            set -o pipefail && awk '/^(hash|sign)\s*=\s*/ && /SHA1/ && !/-\s*SHA1/' {{ crypto_policy_file }}
           args:
             executable: /bin/bash
           register: _hash_sign_output
-          failed_when: false
           changed_when: false
+          failed_when: false
 
         - name: "Req 3 - Run sha1_in_certs audit"
           ansible.builtin.shell: |
-            grep -E '^[[:space:]]*sha1_in_certs[[:space:]]*=[[:space:]]*0[[:space:]]*$' /etc/crypto-policies/state/CURRENT.pol
+            grep -E '^\s*sha1_in_certs\s*=\s*0\s*$' {{ crypto_policy_file }}
           args:
             executable: /bin/bash
           register: _sha1_in_certs_output
-          failed_when: false
           changed_when: false
-
-        - name: "Req 4 - Determine SHA1 hash/sign non-compliant"
-          ansible.builtin.set_fact:
-            _hash_sign_non_compliant: "{{ (_hash_sign_output.stdout | default('') | trim | length > 0) | bool }}"
-
-        - name: "Req 4 - Determine sha1_in_certs non-compliant"
-          ansible.builtin.set_fact:
-            _sha1_in_certs_non_compliant: >-
-              {{ not (_sha1_in_certs_output.stdout | default('') | trim == 'sha1_in_certs = 0') }}
+          failed_when: false
 
         - name: "Req 4 - Determine overall compliance"
           ansible.builtin.set_fact:
-            _overall_status: >-
-              {{ 'PASS' if (not _hash_sign_non_compliant) and (not _sha1_in_certs_non_compliant) else 'FAIL' }}
+            _hash_sign_non_compliant: "{{ _hash_sign_output.stdout | default('') | trim | length > 0 }}"
+            _sha1_in_certs_non_compliant: "{{ 'sha1_in_certs = 0' not in _sha1_in_certs_output.stdout | default('') | trim }}"
+            _overall_status: "{{ 'PASS' if not ((_hash_sign_output.stdout | default('') | trim | length > 0) or ('sha1_in_certs = 0' not in _sha1_in_certs_output.stdout | default('') | trim)) else 'FAIL' }}"
 
         - name: "Req 5 - Emit compliance result"
           ansible.builtin.debug:
@@ -54,9 +47,12 @@
               </result>
 
       rescue:
-        - name: "Req 6 - Emit error block"
+        - name: "Emit error block on failure"
           ansible.builtin.debug:
             msg: |
               <result>
-              ERROR: sha1_audit failed
+              ERROR: sha1_audit failed on {{ inventory_hostname }}
               </result>
+        - name: "Fail the playbook"
+          ansible.builtin.fail:
+            msg: "Error encountered during sha1 audit."
