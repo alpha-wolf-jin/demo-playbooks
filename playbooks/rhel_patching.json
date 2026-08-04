@@ -223,12 +223,15 @@
         ]
       },
       "computations": {
-        "_disk_issues_pre": "Parse each line of _df_raw_pre.stdout_lines into mount point, avail_bytes, fstype; exclude mounts in fs_exclude_list and fstypes in fs_type_exclude_list; keep entries where avail_bytes < min_free_disk_gb * 1024^3; store the list of mount points and their available GB."
+        "_disk_issues_pre": "Parse each line of _df_raw_pre.stdout_lines into {mount, avail_bytes, fstype}; exclude mounts in fs_exclude_list and fstypes in fs_type_exclude_list; keep entries where avail_bytes < min_free_disk_gb * 1024^3; store as a list of dicts, each with keys 'mount' (str) and 'avail_gb' (float, avail_bytes / 1024^3 rounded to 2 dp)."
       },
       "stores": [
         "_disk_issues_pre"
       ],
-      "on_success": "step-06"
+      "on_success": "step-06",
+      "stores_schema": {
+        "_disk_issues_pre": "list[dict] \u2014 each entry has keys 'mount' (str, mount point) and 'avail_gb' (float, available space in GB)"
+      }
     },
     {
       "id": "step-06",
@@ -384,32 +387,42 @@
     },
     {
       "id": "step-15",
-      "type": "decide",
-      "name": "Check post-patch memory against threshold",
-      "function": "Verify that free memory after patching still meets the requirement.",
+      "type": "transform",
+      "name": "Compute post-patch memory threshold flag",
+      "function": "Set a boolean indicating whether post-patch free memory is below the minimum threshold.",
       "input": {
         "source": "step-14",
         "fields": [
-          "_post_mem_free_mb"
+          "_post_mem_free_mb",
+          "min_free_mem_gb"
         ]
       },
-      "condition": "Free memory (MB) is below the threshold.",
-      "on_pass": "step-16",
-      "on_fail": "step-16"
+      "computations": {
+        "_post_mem_below_threshold": "{{ _post_mem_free_mb | int < (min_free_mem_gb | int * 1024) }}"
+      },
+      "stores": [
+        "_post_mem_below_threshold"
+      ],
+      "stores_schema": {
+        "_post_mem_below_threshold": "bool \u2014 True when free memory is below the threshold"
+      },
+      "on_success": "step-16"
     },
     {
       "id": "step-16",
       "type": "transform",
       "name": "Record post-patch memory status",
-      "function": "Store a PASS status message with post-patch memory figures.",
+      "function": "Store a PASS or WARN status message based on whether post-patch memory meets the threshold.",
       "input": {
-        "source": "playbook_input.parameters",
+        "source": "step-15",
         "fields": [
+          "_post_mem_free_mb",
+          "_post_mem_below_threshold",
           "min_free_mem_gb"
         ]
       },
       "computations": {
-        "_post_mem_status": "PASS: {{ _post_mem_free_mb }} MB free, threshold {{ min_free_mem_gb }} GB"
+        "_post_mem_status": "{{ 'WARN: ' ~ _post_mem_free_mb ~ ' MB free is below threshold ' ~ min_free_mem_gb ~ ' GB' if _post_mem_below_threshold | bool else 'PASS: ' ~ _post_mem_free_mb ~ ' MB free, threshold ' ~ min_free_mem_gb ~ ' GB' }}"
       },
       "stores": [
         "_post_mem_status"
@@ -445,41 +458,53 @@
         ]
       },
       "computations": {
-        "_disk_issues_post": "Parse each line of _df_raw_post.stdout_lines; apply the same exclusion logic as in pre-check; keep entries where avail_bytes < min_free_disk_gb * 1024^3."
+        "_disk_issues_post": "Parse each line of _df_raw_post.stdout_lines into {mount, avail_bytes, fstype}; apply the same exclusion logic as step-05; keep entries where avail_bytes < min_free_disk_gb * 1024^3; store as a list of dicts with keys 'mount' (str) and 'avail_gb' (float, avail_bytes / 1024^3 rounded to 2 dp)."
       },
       "stores": [
         "_disk_issues_post"
       ],
-      "on_success": "step-19"
+      "on_success": "step-19",
+      "stores_schema": {
+        "_disk_issues_post": "list[dict] \u2014 each entry has keys 'mount' (str, mount point) and 'avail_gb' (float, available space in GB)"
+      }
     },
     {
       "id": "step-19",
-      "type": "decide",
-      "name": "Check post-patch disk space",
-      "function": "Determine whether any monitored filesystem is now below the free-space threshold.",
+      "type": "transform",
+      "name": "Compute post-patch disk space flag",
+      "function": "Set a boolean indicating whether any monitored filesystem is below the free-space threshold after patching.",
       "input": {
         "source": "step-18",
         "fields": [
           "_disk_issues_post"
         ]
       },
-      "condition": "At least one filesystem has insufficient free disk space.",
-      "on_pass": "step-20",
-      "on_fail": "step-20"
+      "computations": {
+        "_post_disk_issues_exist": "{{ _disk_issues_post | length > 0 }}"
+      },
+      "stores": [
+        "_post_disk_issues_exist"
+      ],
+      "stores_schema": {
+        "_post_disk_issues_exist": "bool \u2014 True when at least one filesystem is below the threshold"
+      },
+      "on_success": "step-20"
     },
     {
       "id": "step-20",
       "type": "transform",
       "name": "Record post-patch disk status",
-      "function": "Store a PASS message for the post-patch disk check.",
+      "function": "Store a PASS or WARN status message based on whether post-patch disk space meets the threshold.",
       "input": {
-        "source": "playbook_input.parameters",
+        "source": "step-19",
         "fields": [
+          "_disk_issues_post",
+          "_post_disk_issues_exist",
           "min_free_disk_gb"
         ]
       },
       "computations": {
-        "_post_disk_status": "PASS: all monitored filesystems have >= {{ min_free_disk_gb }} GB free"
+        "_post_disk_status": "If _post_disk_issues_exist is True, set to 'WARN: insufficient disk on <comma-separated mount names from _disk_issues_post>'; otherwise set to 'PASS: all monitored filesystems have >= <min_free_disk_gb> GB free'."
       },
       "stores": [
         "_post_disk_status"
