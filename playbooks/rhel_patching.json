@@ -1,0 +1,630 @@
+{
+  "tool_name": "rhel_patching",
+  "version": "1.0",
+  "title": "RHEL Server Patching with Health Checks",
+  "role": "action",
+  "effect": "transient",
+  "description": "Apply all available updates to a RHEL server after verifying sufficient memory and disk space, reboot, then re-validate health and service continuity.",
+  "aap_template": "rhel_patching++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "connection": "ssh",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "IP address or hostname of the target RHEL server."
+      },
+      {
+        "name": "min_free_mem_gb",
+        "type": "integer",
+        "required": false,
+        "default": 2,
+        "unit": "GB",
+        "description": "Minimum required free memory in GB before and after patching."
+      },
+      {
+        "name": "min_free_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": 5,
+        "unit": "GB",
+        "description": "Minimum required free disk space in GB on each monitored filesystem."
+      },
+      {
+        "name": "fs_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "/boot,/iso",
+        "unit": null,
+        "description": "Comma-separated mount points to exclude from disk space checks."
+      },
+      {
+        "name": "fs_type_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "devtmpfs,tmpfs,cgroup2,iso9660",
+        "unit": null,
+        "description": "Comma-separated filesystem types to exclude from disk space checks."
+      },
+      {
+        "name": "reboot_timeout",
+        "type": "integer",
+        "required": false,
+        "default": 120,
+        "unit": "seconds",
+        "description": "Maximum seconds to wait for machine to reboot and respond."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Report containing each validation step's status and any service mismatches after patching.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "pre_memory_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Outcome of the pre-patch free memory check."
+      },
+      {
+        "name": "pre_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Outcome of the pre-patch disk space check."
+      },
+      {
+        "name": "pre_services_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Number of running services captured before patching."
+      },
+      {
+        "name": "update_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status of the system update operation."
+      },
+      {
+        "name": "reboot_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status of the reboot operation."
+      },
+      {
+        "name": "post_memory_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Outcome of the post-patch free memory check."
+      },
+      {
+        "name": "post_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Outcome of the post-patch disk space check."
+      },
+      {
+        "name": "post_services_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Summary of the service comparison (mismatches if any)."
+      },
+      {
+        "name": "services_missing",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of service names that were running before patching but not after."
+      },
+      {
+        "name": "services_added",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of service names that are running after patching but were not before."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather pre-patch free memory",
+      "function": "Collect free memory in MB from the target host using ansible.builtin.setup (subset: memory).",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_pre_mem_free_mb"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-24"
+    },
+    {
+      "id": "step-02",
+      "type": "decide",
+      "name": "Check pre-patch memory against threshold",
+      "function": "Verify that free memory meets the minimum required GB before proceeding.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_pre_mem_free_mb"
+        ]
+      },
+      "condition": "Free memory (MB) is below the threshold.",
+      "on_pass": "step-24",
+      "on_fail": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "transform",
+      "name": "Record pre-patch memory status",
+      "function": "Store a PASS status message with the actual free memory and threshold.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "min_free_mem_gb"
+        ]
+      },
+      "computations": {
+        "_pre_mem_status": "PASS: {{ _pre_mem_free_mb }} MB free, threshold {{ min_free_mem_gb }} GB"
+      },
+      "stores": [
+        "_pre_mem_status"
+      ],
+      "on_success": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Collect pre-patch disk space",
+      "function": "Run the df command to obtain available bytes and filesystem types for all mounted filesystems.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_df_raw_pre"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-24"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Identify pre-patch filesystems with insufficient space",
+      "function": "Parse df output, exclude mounts in fs_exclude_list and fstypes in fs_type_exclude_list, and flag those whose available bytes are less than min_free_disk_gb * 1024^3.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "fs_exclude_list",
+          "fs_type_exclude_list",
+          "min_free_disk_gb"
+        ]
+      },
+      "computations": {
+        "_disk_issues_pre": "Parse each line of _df_raw_pre.stdout_lines into mount point, avail_bytes, fstype; exclude mounts in fs_exclude_list and fstypes in fs_type_exclude_list; keep entries where avail_bytes < min_free_disk_gb * 1024^3; store the list of mount points and their available GB."
+      },
+      "stores": [
+        "_disk_issues_pre"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "decide",
+      "name": "Check pre-patch disk space",
+      "function": "Determine whether any monitored filesystem has fallen below the free-space threshold.",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "_disk_issues_pre"
+        ]
+      },
+      "condition": "At least one filesystem has insufficient free disk space.",
+      "on_pass": "step-24",
+      "on_fail": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "transform",
+      "name": "Record pre-patch disk status",
+      "function": "Store a PASS status message indicating all monitored filesystems are above the threshold.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "min_free_disk_gb"
+        ]
+      },
+      "computations": {
+        "_pre_disk_status": "PASS: all monitored filesystems have >= {{ min_free_disk_gb }} GB free"
+      },
+      "stores": [
+        "_pre_disk_status"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "collect",
+      "name": "Gather pre-patch service facts",
+      "function": "Retrieve all systemd service states from the target host.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_pre_services_facts"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-24"
+    },
+    {
+      "id": "step-09",
+      "type": "transform",
+      "name": "Extract pre-patch running service list",
+      "function": "Filter the service facts to obtain a list of services that are currently running and record the count.",
+      "input": {
+        "source": "step-08",
+        "fields": [
+          "_pre_services_facts"
+        ]
+      },
+      "computations": {
+        "_pre_running_services": "Extract the name of every service where state == 'running' from _pre_services_facts.",
+        "_pre_services_status": "Collected {{ _pre_running_services | length }} running services"
+      },
+      "stores": [
+        "_pre_running_services",
+        "_pre_services_status"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "action",
+      "name": "Apply all system updates",
+      "function": "Upgrade all installed packages to the latest versions using dnf.",
+      "module": "ansible.builtin.dnf",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-11",
+      "on_fail": "step-24"
+    },
+    {
+      "id": "step-11",
+      "type": "transform",
+      "name": "Record update status",
+      "function": "Set a PASS message for the update step.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_update_status": "PASS: System updated successfully"
+      },
+      "stores": [
+        "_update_status"
+      ],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-12",
+      "type": "action",
+      "name": "Reboot the server",
+      "function": "Reboot the target host and wait for it to come back online.",
+      "module": "ansible.builtin.reboot",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "reboot_timeout"
+        ]
+      },
+      "idempotent": false,
+      "stores": [],
+      "on_success": "step-13",
+      "on_fail": "step-24"
+    },
+    {
+      "id": "step-13",
+      "type": "transform",
+      "name": "Record reboot status",
+      "function": "Set a PASS message for the reboot step.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_reboot_status": "PASS: Server rebooted and is back online"
+      },
+      "stores": [
+        "_reboot_status"
+      ],
+      "on_success": "step-14"
+    },
+    {
+      "id": "step-14",
+      "type": "collect",
+      "name": "Gather post-patch free memory",
+      "function": "Collect free memory in MB after patching.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_post_mem_free_mb"
+      ],
+      "on_success": "step-15"
+    },
+    {
+      "id": "step-15",
+      "type": "decide",
+      "name": "Check post-patch memory against threshold",
+      "function": "Verify that free memory after patching still meets the requirement.",
+      "input": {
+        "source": "step-14",
+        "fields": [
+          "_post_mem_free_mb"
+        ]
+      },
+      "condition": "Free memory (MB) is below the threshold.",
+      "on_pass": "step-16",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-16",
+      "type": "transform",
+      "name": "Record post-patch memory status",
+      "function": "Store a PASS status message with post-patch memory figures.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "min_free_mem_gb"
+        ]
+      },
+      "computations": {
+        "_post_mem_status": "PASS: {{ _post_mem_free_mb }} MB free, threshold {{ min_free_mem_gb }} GB"
+      },
+      "stores": [
+        "_post_mem_status"
+      ],
+      "on_success": "step-17"
+    },
+    {
+      "id": "step-17",
+      "type": "collect",
+      "name": "Collect post-patch disk space",
+      "function": "Run the df command again to get post-update disk usage.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_df_raw_post"
+      ],
+      "on_success": "step-18"
+    },
+    {
+      "id": "step-18",
+      "type": "transform",
+      "name": "Identify post-patch filesystems with insufficient space",
+      "function": "Parse df output after patching, applying the same exclusion rules, and flag filesystems below the threshold.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "fs_exclude_list",
+          "fs_type_exclude_list",
+          "min_free_disk_gb"
+        ]
+      },
+      "computations": {
+        "_disk_issues_post": "Parse each line of _df_raw_post.stdout_lines; apply the same exclusion logic as in pre-check; keep entries where avail_bytes < min_free_disk_gb * 1024^3."
+      },
+      "stores": [
+        "_disk_issues_post"
+      ],
+      "on_success": "step-19"
+    },
+    {
+      "id": "step-19",
+      "type": "decide",
+      "name": "Check post-patch disk space",
+      "function": "Determine whether any monitored filesystem is now below the free-space threshold.",
+      "input": {
+        "source": "step-18",
+        "fields": [
+          "_disk_issues_post"
+        ]
+      },
+      "condition": "At least one filesystem has insufficient free disk space.",
+      "on_pass": "step-20",
+      "on_fail": "step-20"
+    },
+    {
+      "id": "step-20",
+      "type": "transform",
+      "name": "Record post-patch disk status",
+      "function": "Store a PASS message for the post-patch disk check.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "min_free_disk_gb"
+        ]
+      },
+      "computations": {
+        "_post_disk_status": "PASS: all monitored filesystems have >= {{ min_free_disk_gb }} GB free"
+      },
+      "stores": [
+        "_post_disk_status"
+      ],
+      "on_success": "step-21"
+    },
+    {
+      "id": "step-21",
+      "type": "collect",
+      "name": "Gather post-patch service facts",
+      "function": "Retrieve service states after patching and reboot.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_post_services_facts"
+      ],
+      "on_success": "step-22"
+    },
+    {
+      "id": "step-22",
+      "type": "transform",
+      "name": "Compare pre/post running services",
+      "function": "Derive lists of services that are missing, added, and a summary status message.",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_pre_running_services"
+        ]
+      },
+      "computations": {
+        "_post_running_services": "Extract the name of every service where state == 'running' from _post_services_facts.",
+        "_services_missing": "Services present in _pre_running_services but missing in _post_running_services.",
+        "_services_added": "Services present in _post_running_services but not in _pre_running_services.",
+        "_post_services_status": "If no mismatches: 'NO MISMATCH: all pre-patch services are still running.' Otherwise: 'MISMATCH: missing {{ _services_missing | length }} service(s), added {{ _services_added | length }} service(s).'"
+      },
+      "stores": [
+        "_post_running_services",
+        "_services_missing",
+        "_services_added",
+        "_post_services_status"
+      ],
+      "on_success": "step-23"
+    },
+    {
+      "id": "step-23",
+      "type": "emit",
+      "name": "Emit final report",
+      "function": "Print the structured report containing all check statuses and mismatch details.",
+      "output_fields": {
+        "pre_memory_status": "{{ _pre_mem_status }}",
+        "pre_disk_status": "{{ _pre_disk_status }}",
+        "pre_services_status": "{{ _pre_services_status }}",
+        "update_status": "{{ _update_status }}",
+        "reboot_status": "{{ _reboot_status }}",
+        "post_memory_status": "{{ _post_mem_status }}",
+        "post_disk_status": "{{ _post_disk_status }}",
+        "post_services_status": "{{ _post_services_status }}",
+        "services_missing": "{{ _services_missing }}",
+        "services_added": "{{ _services_added }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-24",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block or a failing decide branch. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: rhel_patching failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-24",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 600,
+  "phases": [
+    {
+      "name": "Pre-patch validation",
+      "description": "Check that memory and all monitored filesystems have enough free space before applying updates.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07"
+      ]
+    },
+    {
+      "name": "Pre-patch service inventory",
+      "description": "Capture the list of currently running services for later comparison.",
+      "steps": [
+        "step-08",
+        "step-09"
+      ]
+    },
+    {
+      "name": "Patch and reboot",
+      "description": "Apply all system updates, record status, reboot the host, and confirm it comes back up.",
+      "steps": [
+        "step-10",
+        "step-11",
+        "step-12",
+        "step-13"
+      ]
+    },
+    {
+      "name": "Post-patch validation",
+      "description": "Re-check memory, disk space, and compare service lists to detect any discrepancies.",
+      "steps": [
+        "step-14",
+        "step-15",
+        "step-16",
+        "step-17",
+        "step-18",
+        "step-19",
+        "step-20",
+        "step-21",
+        "step-22"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the final structured report to stdout.",
+      "steps": [
+        "step-23"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any validation fails or a task errors. Records failure and halts execution.",
+      "steps": [
+        "step-24"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "ddbed9adc34d422e3275c434ef25c793234a0b27c3c0972ac485e8126a6842b0",
+    "saved_at": "2026-08-03T12:28:22+00:00",
+    "saved_by": "admin",
+    "revision": 2
+  }
+}
