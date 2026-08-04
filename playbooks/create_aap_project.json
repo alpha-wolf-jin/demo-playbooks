@@ -1,0 +1,347 @@
+{
+  "tool_name": "create_aap_project",
+  "version": "1.0",
+  "title": "Create AAP Git Project",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Idempotently create an AAP Git project in a given organization, creating the organization if it does not exist. If the project already exists, stop and report that it exists without error.",
+  "aap_template": "create_aap_project++Default",
+  "organization": "Default",
+  "execution_target": "controller",
+  "connection": {
+    "hosts": "localhost",
+    "connection": "local",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "aap_gateway_ip",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "IP or hostname of the AAP controller API endpoint."
+      },
+      {
+        "name": "aap_username",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Username for authenticating to the AAP controller."
+      },
+      {
+        "name": "aap_password",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Password for the AAP controller user."
+      },
+      {
+        "name": "organization_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the organization in which to create the project."
+      },
+      {
+        "name": "project_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the project to create."
+      },
+      {
+        "name": "git_url",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Git repository URL for the project."
+      },
+      {
+        "name": "update_revision_on_launch",
+        "type": "string",
+        "required": false,
+        "default": "false",
+        "unit": null,
+        "description": "Whether to update the revision on launch ('true' or 'false')."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "What the emit step's <result> block contains",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "message",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status message describing the project creation outcome."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "transform",
+      "name": "Prepare variables from inputs",
+      "function": "Copy playbook input parameters into intermediate variables for reuse throughout the playbook and convert update_revision_on_launch to a boolean.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "organization_name",
+          "project_name",
+          "git_url",
+          "update_revision_on_launch"
+        ]
+      },
+      "computations": {
+        "_aap_host": "{{ aap_gateway_ip }}",
+        "_aap_user": "{{ aap_username }}",
+        "_aap_pass": "{{ aap_password }}",
+        "_org_name": "{{ organization_name }}",
+        "_proj_name": "{{ project_name }}",
+        "_git_url": "{{ git_url }}",
+        "_update_rev_bool": "{{ update_revision_on_launch | bool }}"
+      },
+      "stores": [
+        "_aap_host",
+        "_aap_user",
+        "_aap_pass",
+        "_org_name",
+        "_proj_name",
+        "_git_url",
+        "_update_rev_bool"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "collect",
+      "name": "Look up organization",
+      "function": "Query the AAP controller API for an organization matching the given name.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_org_name",
+          "_aap_host",
+          "_aap_user",
+          "_aap_pass"
+        ]
+      },
+      "stores": [
+        "_org_lookup"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Does the organization exist?",
+      "function": "Branch on whether the organization lookup found a matching result.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_org_lookup"
+        ]
+      },
+      "condition": "The organization lookup returned at least one result.",
+      "on_pass": "step-05",
+      "on_fail": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Create the organization",
+      "function": "Create the organization using the idempotent ansible.controller.organization module.",
+      "module": "ansible.controller.organization",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_org_name",
+          "_aap_host",
+          "_aap_user",
+          "_aap_pass"
+        ]
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-05",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-05",
+      "type": "collect",
+      "name": "Look up project",
+      "function": "Query the AAP controller API for a project with the given name inside the organization.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_proj_name",
+          "_org_name",
+          "_aap_host",
+          "_aap_user",
+          "_aap_pass"
+        ]
+      },
+      "stores": [
+        "_proj_lookup"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "decide",
+      "name": "Does the project already exist?",
+      "function": "Branch on whether the project lookup returned a result.",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "_proj_lookup"
+        ]
+      },
+      "condition": "The project lookup returned at least one result.",
+      "on_pass": "step-08",
+      "on_fail": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Create the project",
+      "function": "Create the Git project using the idempotent ansible.controller.project module.",
+      "module": "ansible.controller.project",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_proj_name",
+          "_org_name",
+          "_git_url",
+          "_update_rev_bool",
+          "_aap_host",
+          "_aap_user",
+          "_aap_pass"
+        ]
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-09",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Set already exists message",
+      "function": "Build a status message indicating the project already exists.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_proj_name"
+        ]
+      },
+      "computations": {
+        "_result_message": "\"Project {{ _proj_name }} already exists.\""
+      },
+      "stores": [
+        "_result_message"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-09",
+      "type": "transform",
+      "name": "Set created message",
+      "function": "Build a status message indicating the project was created successfully.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_proj_name"
+        ]
+      },
+      "computations": {
+        "_result_message": "\"Project {{ _proj_name }} created successfully.\""
+      },
+      "stores": [
+        "_result_message"
+      ],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "emit",
+      "name": "Emit result",
+      "function": "Print the Required Output Format <result> block containing the status message.",
+      "output_fields": {
+        "message": "{{ _result_message }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-11",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: create_aap_project failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-11",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Prepare inputs and ensure the target organization exists.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Check for an existing project and create it if missing.",
+      "steps": [
+        "step-05",
+        "step-06",
+        "step-07"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Build the final status message and emit it.",
+      "steps": [
+        "step-08",
+        "step-09",
+        "step-10"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-11"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "2820fc96858900e33d4ea6f043b0f7e75822f18bc377a13b1a71ccb1d644314d",
+    "saved_at": "2026-07-22T14:24:32+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
