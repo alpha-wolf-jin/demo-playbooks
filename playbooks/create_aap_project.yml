@@ -187,12 +187,6 @@
           when: not _proj_exists
           tags: [execute]
 
-        - name: "Req step-09 - Append verification to created message"
-          ansible.builtin.set_fact:
-            _result_message: "{{ _result_message }} Verified: {{ _verified }}"
-          when: not _proj_exists
-          tags: [execute]
-
         - name: "Req step-08 - Set already exists message"
           ansible.builtin.set_fact:
             _result_message: "Project {{ _proj_name }} already exists."
@@ -204,6 +198,9 @@
             msg: |
               <result>
               message: {{ _result_message }}
+              {% if _verified is defined %}
+              verified: {{ _verified }}
+              {% endif %}
               </result>
           tags: [execute]
 
@@ -234,6 +231,7 @@
           failed_when: false
           tags: [restore]
 
+        # Restore: delete project first, then organization, to maintain referential integrity
         - name: "Restore - Delete project if newly created"
           ansible.controller.project:
             name: "{{ project_name }}"
