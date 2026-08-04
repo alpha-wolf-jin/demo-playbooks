@@ -154,31 +154,49 @@
           when: not _proj_exists
           tags: [execute]
 
-        - name: "Req step-08 - Set already exists message"
+        - name: "Req step-09 - Set created message"
           ansible.builtin.set_fact:
-            _result_message: "Project {{ _proj_name }} already exists."
-          when: _proj_exists
+            _result_message: "Project {{ _proj_name }} created successfully."
+          when: not _proj_exists
           tags: [execute]
 
-        - name: "Verify - Project existence after creation"
+        - name: "Verify - Look up project after creation"
+          ansible.builtin.set_fact:
+            _verified_proj_list: >-
+              {{ lookup('ansible.controller.controller_api', 'projects',
+                    host=_aap_host,
+                    username=_aap_user,
+                    password=_aap_pass,
+                    verify_ssl=false,
+                    query_params={'name': _proj_name, 'organization__name': _org_name},
+                    errors='warn',
+                    wantlist=True) | default([]) }}
+          when: not _proj_exists
+          tags: [execute]
+
+        - name: "Verify - Assert project exists after creation"
           ansible.builtin.assert:
-            that:
-              - >-
-                {{ query('ansible.controller.controller_api', 'projects',
-                   host=_aap_host,
-                   username=_aap_user,
-                   password=_aap_pass,
-                   verify_ssl=false,
-                   query_params={'name': _proj_name, 'organization__name': _org_name},
-                   return_all=true) | flatten | length > 0 }}
+            that: _verified_proj_list | length > 0
             fail_msg: "Verification failed: Project {{ _proj_name }} not found in organization {{ _org_name }}."
           when: not _proj_exists
           tags: [execute]
 
-        - name: "Req step-09 - Set created message"
+        - name: "Set verification result"
           ansible.builtin.set_fact:
-            _result_message: "Project {{ _proj_name }} created and verified successfully."
+            _verified: "{{ _verified_proj_list | length > 0 }}"
           when: not _proj_exists
+          tags: [execute]
+
+        - name: "Req step-09 - Append verification to created message"
+          ansible.builtin.set_fact:
+            _result_message: "{{ _result_message }} Verified: {{ _verified }}"
+          when: not _proj_exists
+          tags: [execute]
+
+        - name: "Req step-08 - Set already exists message"
+          ansible.builtin.set_fact:
+            _result_message: "Project {{ _proj_name }} already exists."
+          when: _proj_exists
           tags: [execute]
 
         - name: "Req step-10 - Emit final result"
@@ -197,7 +215,7 @@
               ERROR: create_aap_project failed
               </result>
 
-        - name: "Fail play"
+        - name: "Req step-11 - Fail play"
           ansible.builtin.fail:
             msg: "create_aap_project failed — see error result above"
 
@@ -216,7 +234,6 @@
           failed_when: false
           tags: [restore]
 
-        # Restore: delete project first, then organization, to maintain referential integrity
         - name: "Restore - Delete project if newly created"
           ansible.controller.project:
             name: "{{ project_name }}"
