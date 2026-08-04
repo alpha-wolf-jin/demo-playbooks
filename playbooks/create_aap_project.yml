@@ -1,0 +1,255 @@
+---
+- name: "SOP playbook 'create_aap_project' (ACTION — changes system state): Idempotently create an AAP Git project in a given organization, creating the organization if it does not exist. If the project already exists, stop and report that it exists without error. [target host: localhost (localhost)]"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    playbook_name: "create_aap_project"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    aap_gateway_ip: ""
+    aap_username: ""
+    aap_password: ""
+    organization_name: ""
+    project_name: ""
+    git_url: ""
+    update_revision_on_launch: "false"
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
+
+    - name: "Snapshot - Validate required variables"
+      ansible.builtin.assert:
+        that:
+          - aap_gateway_ip | length > 0
+          - aap_username | length > 0
+          - aap_password | length > 0
+          - organization_name | length > 0
+          - project_name | length > 0
+          - git_url | length > 0
+        fail_msg: "All required variables must be provided. Use -e aap_gateway_ip=... etc."
+      tags: [snapshot]
+
+    - name: "Snapshot - Check if organization exists"
+      ansible.builtin.set_fact:
+        _snap_org_exists: "{{ (query('ansible.controller.controller_api', 'organizations',
+                    host=aap_gateway_ip,
+                    username=aap_username,
+                    password=aap_password,
+                    verify_ssl=false,
+                    query_params={'name': organization_name},
+                    return_all=true) | flatten | length > 0) }}"
+      tags: [snapshot]
+
+    - name: "Snapshot - Save organization existence marker"
+      ansible.builtin.copy:
+        content: "{{ _snap_org_exists }}"
+        dest: "{{ backup_dir }}/org_existed"
+        force: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Check if project exists"
+      ansible.builtin.set_fact:
+        _snap_proj_exists: "{{ (query('ansible.controller.controller_api', 'projects',
+                    host=aap_gateway_ip,
+                    username=aap_username,
+                    password=aap_password,
+                    verify_ssl=false,
+                    query_params={'name': project_name, 'organization__name': organization_name},
+                    return_all=true) | flatten | length > 0) | default(false) }}"
+      tags: [snapshot]
+
+    - name: "Snapshot - Save project existence marker"
+      ansible.builtin.copy:
+        content: "{{ _snap_proj_exists }}"
+        dest: "{{ backup_dir }}/proj_existed"
+        force: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Req step-01 - Prepare intermediate variables"
+          ansible.builtin.set_fact:
+            _aap_host: "{{ aap_gateway_ip }}"
+            _aap_user: "{{ aap_username }}"
+            _aap_pass: "{{ aap_password }}"
+            _org_name: "{{ organization_name }}"
+            _proj_name: "{{ project_name }}"
+            _git_url: "{{ git_url }}"
+            _update_rev_bool: "{{ update_revision_on_launch | bool }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Look up organization"
+          ansible.builtin.set_fact:
+            _org_lookup: "{{ query('ansible.controller.controller_api', 'organizations',
+                          host=_aap_host,
+                          username=_aap_user,
+                          password=_aap_pass,
+                          verify_ssl=false,
+                          query_params={'name': _org_name},
+                          return_all=true) | flatten }}"
+          tags: [execute]
+
+        - name: "Req step-03 - Set organization exists flag"
+          ansible.builtin.set_fact:
+            _org_exists: "{{ _org_lookup | length > 0 }}"
+          tags: [execute]
+
+        - name: "Req step-04 - Create organization"
+          ansible.controller.organization:
+            name: "{{ _org_name }}"
+            state: present
+            controller_host: "https://{{ _aap_host }}"
+            controller_username: "{{ _aap_user }}"
+            controller_password: "{{ _aap_pass }}"
+            validate_certs: false
+          when: not _org_exists
+          tags: [execute]
+
+        - name: "Req step-05 - Look up project (org exists)"
+          ansible.builtin.set_fact:
+            _proj_lookup: "{{ query('ansible.controller.controller_api', 'projects',
+                          host=_aap_host,
+                          username=_aap_user,
+                          password=_aap_pass,
+                          verify_ssl=false,
+                          query_params={'name': _proj_name, 'organization__name': _org_name},
+                          return_all=true) | flatten }}"
+          when: _org_exists
+          tags: [execute]
+
+        - name: "Req step-05 - Look up project (org was created)"
+          ansible.builtin.set_fact:
+            _proj_lookup: "{{ query('ansible.controller.controller_api', 'projects',
+                          host=_aap_host,
+                          username=_aap_user,
+                          password=_aap_pass,
+                          verify_ssl=false,
+                          query_params={'name': _proj_name, 'organization__name': _org_name},
+                          return_all=true) | flatten }}"
+          when: not _org_exists
+          tags: [execute]
+
+        - name: "Req step-06 - Set project exists flag"
+          ansible.builtin.set_fact:
+            _proj_exists: "{{ _proj_lookup | length > 0 }}"
+          tags: [execute]
+
+        - name: "Req step-07 - Create project"
+          ansible.controller.project:
+            name: "{{ _proj_name }}"
+            organization: "{{ _org_name }}"
+            scm_type: git
+            scm_url: "{{ _git_url }}"
+            scm_update_on_launch: "{{ _update_rev_bool }}"
+            state: present
+            controller_host: "https://{{ _aap_host }}"
+            controller_username: "{{ _aap_user }}"
+            controller_password: "{{ _aap_pass }}"
+            validate_certs: false
+          when: not _proj_exists
+          tags: [execute]
+
+        - name: "Req step-08 - Set already exists message"
+          ansible.builtin.set_fact:
+            _result_message: "Project {{ _proj_name }} already exists."
+          when: _proj_exists
+          tags: [execute]
+
+        - name: "Verify - Project existence after creation"
+          ansible.builtin.assert:
+            that:
+              - >-
+                {{ query('ansible.controller.controller_api', 'projects',
+                   host=_aap_host,
+                   username=_aap_user,
+                   password=_aap_pass,
+                   verify_ssl=false,
+                   query_params={'name': _proj_name, 'organization__name': _org_name},
+                   return_all=true) | flatten | length > 0 }}
+            fail_msg: "Verification failed: Project {{ _proj_name }} not found in organization {{ _org_name }}."
+          when: not _proj_exists
+          tags: [execute]
+
+        - name: "Req step-09 - Set created message"
+          ansible.builtin.set_fact:
+            _result_message: "Project {{ _proj_name }} created and verified successfully."
+          when: not _proj_exists
+          tags: [execute]
+
+        - name: "Req step-10 - Emit final result"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              message: {{ _result_message }}
+              </result>
+          tags: [execute]
+
+      rescue:
+        - name: "Req step-11 - Emit error result"
+          ansible.builtin.debug:
+            msg: |
+              <result>
+              ERROR: create_aap_project failed
+              </result>
+
+        - name: "Fail play"
+          ansible.builtin.fail:
+            msg: "create_aap_project failed — see error result above"
+
+      always:
+        - name: "Restore - Read organization existence marker"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/org_existed"
+          register: _restore_org_existed
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read project existence marker"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/proj_existed"
+          register: _restore_proj_existed
+          failed_when: false
+          tags: [restore]
+
+        # Restore: delete project first, then organization, to maintain referential integrity
+        - name: "Restore - Delete project if newly created"
+          ansible.controller.project:
+            name: "{{ project_name }}"
+            organization: "{{ organization_name }}"
+            scm_type: git
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_username }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          when:
+            - _restore_proj_existed.content is defined
+            - (_restore_proj_existed.content | b64decode | trim) == 'False'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Delete organization if newly created"
+          ansible.controller.organization:
+            name: "{{ organization_name }}"
+            state: absent
+            controller_host: "https://{{ aap_gateway_ip }}"
+            controller_username: "{{ aap_username }}"
+            controller_password: "{{ aap_password }}"
+            validate_certs: false
+          when:
+            - _restore_org_existed.content is defined
+            - (_restore_org_existed.content | b64decode | trim) == 'False'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
