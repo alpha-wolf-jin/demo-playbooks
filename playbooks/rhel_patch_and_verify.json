@@ -1,0 +1,507 @@
+{
+  "tool_name": "rhel_patch_and_verify",
+  "version": "1.0",
+  "title": "RHEL Patching with Pre/Post Checks and Service Continuity",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Pre‑check memory and disk, snapshot running services, update all packages, reboot, post‑check memory, disk and service consistency, then emit a human‑readable summary report.",
+  "aap_template": "rhel_patch_and_verify++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP of the RHEL server to patch."
+      },
+      {
+        "name": "min_free_memory_gb",
+        "type": "integer",
+        "required": false,
+        "default": 2,
+        "unit": "GB",
+        "description": "Minimum free memory required before and after patching."
+      },
+      {
+        "name": "min_free_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": 5,
+        "unit": "GB",
+        "description": "Minimum free disk space per eligible filesystem."
+      },
+      {
+        "name": "fs_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "/boot,/iso",
+        "unit": null,
+        "description": "Comma‑separated mount points to exclude from disk checks."
+      },
+      {
+        "name": "fs_type_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "devtmpfs,tmpfs,cgroup2,iso9660",
+        "unit": null,
+        "description": "Comma‑separated filesystem types to exclude from disk checks."
+      },
+      {
+        "name": "package_name",
+        "type": "string",
+        "required": false,
+        "default": "*",
+        "unit": null,
+        "description": "Package(s) to update; use '*' for all (default)."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Human‑readable summary report.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "report",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The full human‑readable report text."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Get available free memory before update",
+      "function": "Retrieve available free memory in MB using the free command.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_free_mem_raw_pre"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Parse free memory to MB integer",
+      "function": "Convert raw shell output to an integer representing free memory in MB.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_free_mem_raw_pre"
+        ]
+      },
+      "computations": {
+        "_free_mb_pre": "{{ _free_mem_raw_pre.stdout | int }}"
+      },
+      "stores": [
+        "_free_mb_pre"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Check pre‑update free memory",
+      "function": "Determine if the available memory is below the configured minimum threshold.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_free_mb_pre"
+        ]
+      },
+      "condition": "Pre‑update free memory (MB) is below the minimum free memory threshold (GB).",
+      "on_pass": "step-21",
+      "on_fail": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Gather mount information before update",
+      "function": "Retrieve filesystem mount points, types, and available sizes using setup.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_mounts_pre"
+      ],
+      "on_success": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Identify mounts with insufficient disk space (pre‑update)",
+      "function": "Filter out excluded mounts and types, then check available space against the threshold, building a list of problematic mount points and a pass/fail flag.",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_mounts_pre"
+        ]
+      },
+      "computations": {
+        "_disk_issues_pre": "List of mount points that fail the space check after applying fs_exclude_list and fs_type_exclude_list.",
+        "_disk_pre_pass": "True if _disk_issues_pre is empty, else False."
+      },
+      "stores": [
+        "_disk_issues_pre",
+        "_disk_pre_pass"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "decide",
+      "name": "Check pre‑update disk space",
+      "function": "Branch if any examined mount point lacks sufficient free disk space.",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "_disk_pre_pass"
+        ]
+      },
+      "condition": "At least one mount point has insufficient free disk space (pre‑update check).",
+      "on_pass": "step-21",
+      "on_fail": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "collect",
+      "name": "Gather running service facts (pre‑update)",
+      "function": "Collect systemd service facts to obtain the current state of all services.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_services_dict_pre"
+      ],
+      "on_success": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Extract running service names (pre‑update)",
+      "function": "Filter the pre‑update service facts to a list of service names that are in the running state.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_services_dict_pre"
+        ]
+      },
+      "computations": {
+        "_pre_services": "List of service names with state 'running'."
+      },
+      "stores": [
+        "_pre_services"
+      ],
+      "on_success": "step-09"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Update all packages",
+      "function": "Upgrade every installed package to the latest available version.",
+      "module": "ansible.builtin.package",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "package_name"
+        ]
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "action",
+      "name": "Reboot the server",
+      "function": "Reboot the machine and wait for it to become reachable again.",
+      "module": "ansible.builtin.reboot",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "idempotent": false,
+      "stores": [],
+      "on_success": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "collect",
+      "name": "Get available free memory after update",
+      "function": "Retrieve available free memory in MB after the reboot.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_free_mem_raw_post"
+      ],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-12",
+      "type": "transform",
+      "name": "Parse post‑update free memory to MB",
+      "function": "Convert raw post‑update shell output to an integer MB value.",
+      "input": {
+        "source": "step-11",
+        "fields": [
+          "_free_mem_raw_post"
+        ]
+      },
+      "computations": {
+        "_free_mb_post": "{{ _free_mem_raw_post.stdout | int }}"
+      },
+      "stores": [
+        "_free_mb_post"
+      ],
+      "on_success": "step-13"
+    },
+    {
+      "id": "step-13",
+      "type": "transform",
+      "name": "Determine if post‑update memory passes the threshold",
+      "function": "Compute a boolean flag indicating whether post‑reboot free memory meets the required minimum.",
+      "input": {
+        "source": "step-12",
+        "fields": [
+          "_free_mb_post"
+        ]
+      },
+      "computations": {
+        "_post_mem_pass": "True if _free_mb_post >= (min_free_memory_gb * 1024), else False."
+      },
+      "stores": [
+        "_post_mem_pass"
+      ],
+      "on_success": "step-14"
+    },
+    {
+      "id": "step-14",
+      "type": "collect",
+      "name": "Gather mount information after update",
+      "function": "Retrieve filesystem mount points, types, and available sizes after the reboot.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_mounts_post"
+      ],
+      "on_success": "step-15"
+    },
+    {
+      "id": "step-15",
+      "type": "transform",
+      "name": "Identify mounts with insufficient disk space (post‑update)",
+      "function": "Re‑apply the exclusion and threshold logic against post‑reboot mounts, recording problematic mount points and a pass/fail flag.",
+      "input": {
+        "source": "step-14",
+        "fields": [
+          "_mounts_post"
+        ]
+      },
+      "computations": {
+        "_disk_issues_post": "List of mount points that fail the space check after applying fs_exclude_list and fs_type_exclude_list.",
+        "_post_disk_pass": "True if _disk_issues_post is empty, else False."
+      },
+      "stores": [
+        "_disk_issues_post",
+        "_post_disk_pass"
+      ],
+      "on_success": "step-16"
+    },
+    {
+      "id": "step-16",
+      "type": "collect",
+      "name": "Gather running service facts (post‑update)",
+      "function": "Collect systemd service facts after the reboot.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "stores": [
+        "_services_dict_post"
+      ],
+      "on_success": "step-17"
+    },
+    {
+      "id": "step-17",
+      "type": "transform",
+      "name": "Extract running service names (post‑update)",
+      "function": "Filter the post‑reboot service facts to a list of running service names.",
+      "input": {
+        "source": "step-16",
+        "fields": [
+          "_services_dict_post"
+        ]
+      },
+      "computations": {
+        "_post_services": "List of service names with state 'running'."
+      },
+      "stores": [
+        "_post_services"
+      ],
+      "on_success": "step-18"
+    },
+    {
+      "id": "step-18",
+      "type": "transform",
+      "name": "Compare pre‑ and post‑update service lists",
+      "function": "Compare the two sets of running service names, record any mismatches and a pass/fail flag.",
+      "input": {
+        "source": "step-08",
+        "fields": [
+          "_pre_services"
+        ]
+      },
+      "computations": {
+        "_services_mismatch_list": "List of service names present in one snapshot but not the other (symmetric difference).",
+        "_services_pass": "True if _services_mismatch_list is empty, else False."
+      },
+      "stores": [
+        "_services_mismatch_list",
+        "_services_pass"
+      ],
+      "on_success": "step-19"
+    },
+    {
+      "id": "step-19",
+      "type": "transform",
+      "name": "Build final human‑readable report",
+      "function": "Assemble a multi‑line report string that includes pre/post memory results, disk issue lists, service mismatch details, and the update/reboot status.",
+      "input": {
+        "source": "step-18",
+        "fields": [
+          "_post_mem_pass",
+          "_disk_issues_pre",
+          "_disk_pre_pass",
+          "_post_mem_pass",
+          "_disk_issues_post",
+          "_post_disk_pass",
+          "_pre_services",
+          "_post_services",
+          "_services_mismatch_list",
+          "_services_pass"
+        ]
+      },
+      "computations": {
+        "_report": "Construct a human‑readable summary: Pre‑update free memory check (pass/fail), Pre‑update disk check (pass/fail with list of failed mounts if any), Post‑update free memory check (pass/fail), Post‑update disk check (pass/fail with list), Pre‑update running services count, Post‑update running services count, Service mismatch (pass/fail with list if mismatch), Update status: success, Reboot status: success."
+      },
+      "stores": [
+        "_report"
+      ],
+      "on_success": "step-20"
+    },
+    {
+      "id": "step-20",
+      "type": "emit",
+      "name": "Print report and end",
+      "function": "Output the final report string in the <result> block.",
+      "output_fields": {
+        "report": "{{ _report }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-21",
+      "type": "abort",
+      "name": "Print error and fail",
+      "function": "Reached on pre‑check failure or any runtime error. Prints an error message and stops the play.",
+      "error_message": "Patching pre‑check failed or runtime error. Aborting.",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-21",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 600,
+  "phases": [
+    {
+      "name": "Pre‑update checks",
+      "description": "Validate available memory and disk space before patching; abort if thresholds are not met.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06"
+      ]
+    },
+    {
+      "name": "Pre‑update service snapshot",
+      "description": "Record the list of running services before making changes.",
+      "steps": [
+        "step-07",
+        "step-08"
+      ]
+    },
+    {
+      "name": "Update and reboot",
+      "description": "Upgrade all packages and reboot the server.",
+      "steps": [
+        "step-09",
+        "step-10"
+      ]
+    },
+    {
+      "name": "Post‑update checks",
+      "description": "Verify memory, disk space and service continuity after the reboot.",
+      "steps": [
+        "step-11",
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-15",
+        "step-16",
+        "step-17",
+        "step-18"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Assemble and emit the human‑readable summary report.",
+      "steps": [
+        "step-19",
+        "step-20"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Terminal step reached on pre‑check failure or any runtime error.",
+      "steps": [
+        "step-21"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "55e85d10c3044af3f7e0562a1f0d1fb0d585426971fb4bbd911ae0040092ac92",
+    "saved_at": "2026-08-05T12:19:09+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
