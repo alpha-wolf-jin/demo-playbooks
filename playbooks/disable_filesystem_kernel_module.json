@@ -1,0 +1,541 @@
+{
+  "tool_name": "disable_filesystem_kernel_module",
+  "version": "1.0",
+  "title": "Disable Filesystem Kernel Module",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Disable a filesystem kernel module on a managed host by unloading it if loaded and preventing future loads via modprobe.d blacklist and install /bin/false.",
+  "aap_template": "disable_filesystem_kernel_module++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The managed host to SSH into and disable the module on."
+      },
+      {
+        "name": "filesystem_module",
+        "type": "string",
+        "required": false,
+        "default": "gfs2",
+        "unit": null,
+        "description": "Name of the filesystem kernel module to disable (e.g. gfs2)."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Result of the disable operation",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "module_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The name of the filesystem module that was targeted."
+      },
+      {
+        "name": "exists",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Whether the kernel module directory was found on the system."
+      },
+      {
+        "name": "loaded",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Whether the module was loaded before remediation."
+      },
+      {
+        "name": "unload_attempted",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if an unload was attempted (module was loaded)."
+      },
+      {
+        "name": "unload_successful",
+        "type": "boolean",
+        "nullable": true,
+        "required_by_sop": true,
+        "description": "True if the unload command succeeded; null if not attempted."
+      },
+      {
+        "name": "warning",
+        "type": "string",
+        "nullable": true,
+        "required_by_sop": true,
+        "description": "Warning message if unload failed, otherwise empty or null."
+      },
+      {
+        "name": "config_created",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "True if one or more modprobe.d configuration lines were added."
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "One of 'configured', 'already_configured', or 'not_found'."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather filesystem module directory listing",
+      "function": "Find directories under /lib/modules/ matching the filesystem module path to determine if the module exists on the system.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "filesystem_module"
+        ]
+      },
+      "stores": [
+        "_module_find"
+      ],
+      "on_success": "step-02"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Determine if module exists",
+      "function": "Set _module_exists to true if the find command returned at least one directory.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_module_find"
+        ]
+      },
+      "computations": {
+        "_module_exists": "True if _module_find.stdout_lines is not empty."
+      },
+      "stores": [
+        "_module_exists"
+      ],
+      "on_success": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Does the module exist on this system?",
+      "function": "Branch based on whether the kernel module directory was found.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_module_exists"
+        ]
+      },
+      "condition": "The filesystem module directory was found (module exists).",
+      "on_pass": "step-04",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-04",
+      "type": "transform",
+      "name": "Compute underscore module name and config path",
+      "function": "Derive underscore variant of module name for modprobe commands and the full path to the .conf file.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "filesystem_module"
+        ]
+      },
+      "computations": {
+        "_modname_underscore": "Replace hyphens with underscores in filesystem_module.",
+        "_config_path": "/etc/modprobe.d/{{ filesystem_module }}.conf"
+      },
+      "stores": [
+        "_modname_underscore",
+        "_config_path"
+      ],
+      "on_success": "step-05"
+    },
+    {
+      "id": "step-05",
+      "type": "collect",
+      "name": "Check if kernel module is loaded",
+      "function": "Run lsmod and grep for the module (using its underscore name) to determine if it is currently loaded.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_modname_underscore"
+        ]
+      },
+      "stores": [
+        "_lsmod_grep"
+      ],
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Set loaded boolean",
+      "function": "Convert the lsmod grep exit code to a boolean loaded flag.",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "_lsmod_grep"
+        ]
+      },
+      "computations": {
+        "_loaded": "True if _lsmod_grep.rc equals 0."
+      },
+      "stores": [
+        "_loaded"
+      ],
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "decide",
+      "name": "Is the kernel module currently loaded?",
+      "function": "Branch on whether the module is loaded.",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_loaded"
+        ]
+      },
+      "condition": "The lsmod output indicates the module is loaded.",
+      "on_pass": "step-09",
+      "on_fail": "step-08"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Record module not loaded state",
+      "function": "Set unload variables to indicate no unload was attempted because the module was not loaded.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_unload_attempted": "false",
+        "_unload_success": "",
+        "_unload_warning": ""
+      },
+      "stores": [
+        "_unload_attempted",
+        "_unload_success",
+        "_unload_warning"
+      ],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Attempt to unload the module",
+      "function": "Try to remove the kernel module using modprobe -r and rmmod.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "filesystem_module"
+        ]
+      },
+      "idempotent": false,
+      "stores": [],
+      "on_success": "step-11",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "transform",
+      "name": "Record unload failure warning",
+      "function": "Set unload failure status and warning message when the unload command fails.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_unload_attempted": "true",
+        "_unload_success": "false",
+        "_unload_warning": "WARNING: Could not unload module (possibly in use). Blacklisting still applied."
+      },
+      "stores": [
+        "_unload_attempted",
+        "_unload_success",
+        "_unload_warning"
+      ],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-11",
+      "type": "transform",
+      "name": "Record successful unload variables",
+      "function": "Set unload success variables when the module was successfully removed.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "computations": {
+        "_unload_attempted": "true",
+        "_unload_success": "true",
+        "_unload_warning": ""
+      },
+      "stores": [
+        "_unload_attempted",
+        "_unload_success",
+        "_unload_warning"
+      ],
+      "on_success": "step-12"
+    },
+    {
+      "id": "step-12",
+      "type": "collect",
+      "name": "Check modprobe configuration for blacklist/install",
+      "function": "Run modprobe --showconfig and grep for existing blacklist and install entries for the module (using underscore name).",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_modname_underscore"
+        ]
+      },
+      "stores": [
+        "_showconfig_raw"
+      ],
+      "on_success": "step-13"
+    },
+    {
+      "id": "step-13",
+      "type": "transform",
+      "name": "Parse modprobe config presence",
+      "function": "Determine whether the blacklist line and install /bin/false line already exist.",
+      "input": {
+        "source": "step-12",
+        "fields": [
+          "_showconfig_raw"
+        ]
+      },
+      "computations": {
+        "_blacklist_present": "True if _showconfig_raw.stdout contains a line matching 'blacklist <_modname_underscore>' exactly.",
+        "_install_present": "True if contains a line matching 'install <_modname_underscore> /bin/false'."
+      },
+      "stores": [
+        "_blacklist_present",
+        "_install_present"
+      ],
+      "on_success": "step-14"
+    },
+    {
+      "id": "step-14",
+      "type": "decide",
+      "name": "Are both blacklist and install /bin/false present?",
+      "function": "Branch on whether the required configuration already exists.",
+      "input": {
+        "source": "step-13",
+        "fields": [
+          "_blacklist_present",
+          "_install_present"
+        ]
+      },
+      "condition": "Both the blacklist entry and the install /bin/false entry exist in modprobe configuration.",
+      "on_pass": "step-17",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-15",
+      "type": "action",
+      "name": "Ensure blacklist line in config",
+      "function": "Create or update the modprobe.d conf file to include the blacklist line for the module using the lineinfile module.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_config_path",
+          "_modname_underscore"
+        ]
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-16"
+    },
+    {
+      "id": "step-16",
+      "type": "action",
+      "name": "Ensure install /bin/false line in config",
+      "function": "Ensure the install /bin/false line is present in the modprobe.d conf file.",
+      "module": "ansible.builtin.lineinfile",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_config_path",
+          "_modname_underscore"
+        ]
+      },
+      "idempotent": true,
+      "stores": [],
+      "on_success": "step-17"
+    },
+    {
+      "id": "step-17",
+      "type": "transform",
+      "name": "Prepare final status summary",
+      "function": "Aggregate all collected facts into a final status, including whether configuration was newly created.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "filesystem_module"
+        ]
+      },
+      "computations": {
+        "_module_found": "{{ _module_exists }}",
+        "_module_loaded": "{{ _loaded }}",
+        "_unload_attempted_final": "{{ _unload_attempted | default(false) }}",
+        "_unload_successful_final": "{{ _unload_success | default('') }}",
+        "_warning_final": "{{ _unload_warning | default('') }}",
+        "_config_created": "True if either the blacklist or install entry was missing (i.e., not both present), false otherwise.",
+        "_status": "Set to 'not_found' if _module_exists is false, 'already_configured' if both _blacklist_present and _install_present are true, otherwise 'configured'."
+      },
+      "stores": [
+        "_module_found",
+        "_module_loaded",
+        "_unload_attempted_final",
+        "_unload_successful_final",
+        "_warning_final",
+        "_config_created",
+        "_status"
+      ],
+      "on_success": "step-19"
+    },
+    {
+      "id": "step-18",
+      "type": "transform",
+      "name": "Set module not found status",
+      "function": "Set output variables indicating the module was not found on the system.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "filesystem_module"
+        ]
+      },
+      "computations": {
+        "_module_found": "false",
+        "_module_loaded": "false",
+        "_unload_attempted_final": "false",
+        "_unload_successful_final": "false",
+        "_warning_final": "",
+        "_config_created": "false",
+        "_status": "not_found"
+      },
+      "stores": [
+        "_module_found",
+        "_module_loaded",
+        "_unload_attempted_final",
+        "_unload_successful_final",
+        "_warning_final",
+        "_config_created",
+        "_status"
+      ],
+      "on_success": "step-19"
+    },
+    {
+      "id": "step-19",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the required output format <result> block on success.",
+      "output_fields": {
+        "module_name": "{{ filesystem_module }}",
+        "exists": "{{ _module_found }}",
+        "loaded": "{{ _module_loaded }}",
+        "unload_attempted": "{{ _unload_attempted_final }}",
+        "unload_successful": "{{ _unload_successful_final }}",
+        "warning": "{{ _warning_final }}",
+        "config_created": "{{ _config_created }}",
+        "status": "{{ _status }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-20",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the required error output and fails the play.",
+      "error_message": "ERROR: disable_filesystem_kernel_module failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-20",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Gather existence and loading status of the filesystem kernel module.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03"
+      ]
+    },
+    {
+      "name": "Module unload",
+      "description": "Compute module name variants, check loaded state, and attempt to unload if necessary.",
+      "steps": [
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07",
+        "step-08",
+        "step-09",
+        "step-10",
+        "step-11"
+      ]
+    },
+    {
+      "name": "Modprobe configuration",
+      "description": "Inspect and enforce blacklist and install /bin/false entries in /etc/modprobe.d.",
+      "steps": [
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-15",
+        "step-16"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Assemble final status and emit the structured result to the caller.",
+      "steps": [
+        "step-17",
+        "step-18",
+        "step-19"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-20"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "74641f20b74ccad14fcf8ddac98c0f0af6600e80f54b9e8c8f4cb11de17654e8",
+    "saved_at": "2026-08-07T02:30:15+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
