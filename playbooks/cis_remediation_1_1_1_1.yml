@@ -4,222 +4,174 @@
   become: yes
   gather_facts: false
   vars:
+    kernel_module_name: "cramfs"
     playbook_name: "cis_1_1_1_1_remediation"
     backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
-    kernel_module_name: "cramfs"
-    script_path: "/tmp/cis_remediation_1_1_1_1.sh"
-    # Use !unsafe to prevent Jinja2 from trying to parse the bash script's special characters
-    remediation_script_content: !unsafe |
-      #!/usr/bin/env bash
-      {
-         unset a_output2; l_output3="" l_dl="" # unset arrays and clear variables
-         l_mod_name="${KERNEL_MODULE_NAME:-cramfs}" # set module name
-         l_mod_type="fs" # set module type
-         l_mod_path="$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)"
-         f_module_fix()
-         {
-            l_dl="y" # Set to ignore duplicate checks
-            a_showconfig=() # Create array with modprobe output
-            while IFS= read -r l_showconfig; do
-               a_showconfig+=("$l_showconfig")
-            done < <(modprobe --showconfig | grep -P -- '\b(install|blacklist)\h+'"${l_mod_name//-/_}"'\b')
-            if  lsmod | grep "$l_mod_name" &> /dev/null; then # Check if the module is currently loaded
-               a_output2+=(" - unloading kernel module: \"$l_mod_name\"")
-               modprobe -r "$l_mod_name" 2>/dev/null; rmmod "$l_mod_name" 2>/dev/null
-            fi
-            if ! grep -Pq -- '\binstall\h+'"${l_mod_name//-/_}"'\h+\/bin\/(true|false)\b' <<< "${a_showconfig[*]}"; then
-               a_output2+=(" - setting kernel  module: \"$l_mod_name\" to \"/bin/false\"")
-               printf '%s\n' "install $l_mod_name /bin/false" >> /etc/modprobe.d/"$l_mod_name".conf
-            fi
-            if ! grep -Pq -- '\bblacklist\h+'"${l_mod_name//-/_}"'\b' <<< "${a_showconfig[*]}"; then
-               a_output2+=(" - denylisting kernel  module: \"$l_mod_name\"")
-               printf '%s\n' "blacklist $l_mod_name" >> /etc/modprobe.d/"$l_mod_name".conf
-            fi
-         }
-         for l_mod_base_directory in $l_mod_path; do # Check if the module exists on the system
-            if [ -d "$l_mod_base_directory/${l_mod_name/-/\/}" ] && [ -n "$(ls -A $l_mod_base_directory/${l_mod_name/-/\/})" ]; then
-               l_output3="$l_output3\n  - \"$l_mod_base_directory\""
-               [[ "$l_mod_name" =~ overlay ]] && l_mod_name="${l_mod_name::-2}"
-               [ "$l_dl" != "y" ] && f_module_fix
-            else
-               echo -e " - kernel module: \"$l_mod_name\" doesn't exist in \"$l_mod_base_directory\""
-            fi
-         done
-         [ -n "$l_output3" ] && echo -e "\n\n -- INFO --\n - module: \"$l_mod_name\" exists in:$l_output3"
-         [ "${#a_output2[@]}" -gt 0 ] && printf '%s\n' "${a_output2[@]}"
-         echo -e "\n - remediation of kernel module: \"$l_mod_name\" complete\n"
-      }
+    audit_task_file: "./cis_rhel9_audit_tasks/cis_audit_1_1_1_1.yml"
 
   pre_tasks:
-    # === SNAPSHOT PHASE ===
-    - name: "Req lifecycle_snapshot - Create backup directory"
+    - name: "Req step-01 - Create backup directory"
       ansible.builtin.file:
         path: "{{ backup_dir }}"
         state: directory
         mode: '0700'
       tags: [snapshot]
 
-    - name: "Req lifecycle_snapshot - Check if modprobe config file exists"
+    - name: "Req step-01 - Check if cramfs modprobe config exists"
       ansible.builtin.stat:
-        path: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
-      register: config_stat
+        path: "/etc/modprobe.d/cramfs.conf"
+      register: _sg_cramfs_conf
       tags: [snapshot]
 
-    - name: "Req lifecycle_snapshot - Backup modprobe config file if exists"
+    - name: "Req step-01 - Backup cramfs modprobe config if present"
       ansible.builtin.copy:
-        src: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
-        dest: "{{ backup_dir }}/{{ kernel_module_name }}.conf.present"
-        remote_src: yes
-      when: config_stat.stat.exists
+        src: "/etc/modprobe.d/cramfs.conf"
+        dest: "{{ backup_dir }}/cramfs.conf.present"
+        remote_src: true
+      when: _sg_cramfs_conf.stat.exists
       tags: [snapshot]
 
-    - name: "Req lifecycle_snapshot - Mark modprobe config file as absent if not exists"
+    - name: "Req step-01 - Mark cramfs modprobe config as absent"
       ansible.builtin.copy:
         content: "absent"
-        dest: "{{ backup_dir }}/{{ kernel_module_name }}.conf.absent"
-      when: not config_stat.stat.exists
-      tags: [snapshot]
-
-    - name: "Req lifecycle_snapshot - Check if {{ kernel_module_name }} module is loaded"
-      ansible.builtin.shell: set -o pipefail && lsmod | grep -q "^{{ kernel_module_name }} "
-      args:
-        executable: /bin/bash
-      register: module_loaded
-      failed_when: false
-      changed_when: false
-      tags: [snapshot]
-
-    - name: "Req lifecycle_snapshot - Save module loaded state"
-      ansible.builtin.copy:
-        content: "{{ 'yes' if module_loaded.rc == 0 else 'no' }}"
-        dest: "{{ backup_dir }}/{{ kernel_module_name }}_loaded.state"
+        dest: "{{ backup_dir }}/cramfs.conf.absent"
+      when: not _sg_cramfs_conf.stat.exists
       tags: [snapshot]
 
   tasks:
-    - block:   # === EXECUTE PHASE ===
-        - name: "Req cramfs_remediate - Deploy remediation script"
+    - block:
+        - name: "Req step-02 - Deploy remediation script"
           ansible.builtin.copy:
-            # content is AnsibleUnsafeText, no Jinja2 rendering
-            content: "{{ remediation_script_content }}"
-            dest: "{{ script_path }}"
+            dest: "/tmp/remediate_cramfs.sh"
             mode: '0700'
+            content: |
+              {% raw %}
+              #!/usr/bin/env bash
+              {
+                 unset a_output2; l_output3="" l_dl="" # unset arrays and clear variables
+                 l_mod_name="cramfs" # set module name
+                 l_mod_type="fs" # set module type
+                 l_mod_path="$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)"
+                 f_module_fix()
+                 {
+                    l_dl="y" # Set to ignore duplicate checks
+                    a_showconfig=() # Create array with modprobe output
+                    while IFS= read -r l_showconfig; do
+                       a_showconfig+=("$l_showconfig")
+                    done < <(modprobe --showconfig | grep -P -- '\b(install|blacklist)\h+'"${l_mod_name//-/_}"'\b')
+                    if  lsmod | grep "$l_mod_name" &> /dev/null; then # Check if the module is currently loaded
+                       a_output2+=(" - unloading kernel module: \"$l_mod_name\"")
+                       modprobe -r "$l_mod_name" 2>/dev/null; rmmod "$l_mod_name" 2>/dev/null
+                    fi
+                    if ! grep -Pq -- '\binstall\h+'"${l_mod_name//- /_}"'\h+\/bin\/(true|false)\b' <<< "${a_showconfig[*]}"; then
+                       a_output2+=(" - setting kernel  module: \"$l_mod_name\" to \"/bin/false\"")
+                       printf '%s\n' "install $l_mod_name /bin/false" >> /etc/modprobe.d/"$l_mod_name".conf
+                    fi
+                    if ! grep -Pq -- '\bblacklist\h+'"${l_mod_name//-/_}"'\b' <<< "${a_showconfig[*]}"; then
+                       a_output2+=(" - denylisting kernel  module: \"$l_mod_name\"")
+                       printf '%s\n' "blacklist $l_mod_name" >> /etc/modprobe.d/"$l_mod_name".conf
+                    fi
+                 }
+                 for l_mod_base_directory in $l_mod_path; do # Check if the module exists on the system
+                    if [ -d "$l_mod_base_directory/${l_mod_name/-/\/}" ] && [ -n "$(ls -A $l_mod_base_directory/${l_mod_name/-/\/})" ]; then
+                       l_output3="$l_output3\n  - \"$l_mod_base_directory\""
+                       [[ "$l_mod_name" =~ overlay ]] && l_mod_name="${l_mod_name::-2}"
+                       [ "$l_dl" != "y" ] && f_module_fix
+                    else
+                       echo -e " - kernel module: \"$l_mod_name\" doesn't exist in \"$l_mod_base_directory\""
+                    fi
+                 done
+                 [ -n "$l_output3" ] && echo -e "\n\n -- INFO --\n - module: \"$l_mod_name\" exists in:$l_output3"
+                 [ "${#a_output2[@]}" -gt 0 ] && printf '%s\n' "${a_output2[@]}"
+                 echo -e "\n - remediation of kernel module: \"$l_mod_name\" complete\n"
+              }
+              {% endraw %}
+          failed_when: false
           tags: [execute]
 
-        - name: "Req cramfs_remediate - Execute remediation script"
-          ansible.builtin.shell: "/bin/bash {{ script_path }}"
+        - name: "Req step-03 - Execute remediation script"
+          ansible.builtin.shell: /bin/bash /tmp/remediate_cramfs.sh
           args:
             executable: /bin/bash
-          environment:
-            KERNEL_MODULE_NAME: "{{ kernel_module_name }}"
-          register: remediate_result
+          register: _remediate_result
           failed_when: false
           changed_when: false
           tags: [execute]
 
-        - name: "Req cramfs_verify - Verify module is not loaded and config is correct"
-          ansible.builtin.shell: |
-            set -o pipefail
-            if lsmod | grep -q "^{{ kernel_module_name }} "; then
-              echo "MODULE_LOADED"
-              exit 1
-            fi
-            if modinfo "{{ kernel_module_name }}" &>/dev/null; then
-              # Module is available, config file is required
-              if [ -f "/etc/modprobe.d/{{ kernel_module_name }}.conf" ]; then
-                if grep -q "install {{ kernel_module_name }} /bin/false" "/etc/modprobe.d/{{ kernel_module_name }}.conf" && \
-                   grep -q "blacklist {{ kernel_module_name }}" "/etc/modprobe.d/{{ kernel_module_name }}.conf"; then
-                  echo "COMPLIANT"
-                  exit 0
-                else
-                  echo "CONFIG_INCOMPLETE"
-                  exit 1
-                fi
-              else
-                echo "CONFIG_FILE_MISSING"
-                exit 1
-              fi
-            else
-              # Module not available, system is compliant without config
-              echo "COMPLIANT (module not present)"
-              exit 0
-            fi
-          args:
-            executable: /bin/bash
-          register: verify_result
+        - name: "Req step-08 - Check if CIS audit task file exists on controller"
+          ansible.builtin.stat:
+            path: "{{ audit_task_file }}"
+          delegate_to: localhost
+          run_once: true
+          register: _audit_task_stat
           failed_when: false
-          changed_when: false
           tags: [execute]
 
-        - name: "Req cramfs_result - Set cis_result fact"
+        - name: "Req step-09 - Set cis_result to ERROR when audit file missing"
           ansible.builtin.set_fact:
-            cis_result: "{{ 'PASS' if verify_result.rc == 0 else 'FAIL' }}"
+            cis_result: "ERROR"
+          when: not _audit_task_stat.stat.exists
           tags: [execute]
 
-        - name: "Generate remediation report"
-          debug:
+        - name: "Req step-09 - Fail with a clear message when audit file is missing"
+          ansible.builtin.fail:
+            msg: "Audit task file not found: {{ audit_task_file }}. Run the CIS audit pipeline first (Full or Build-only mode for the audit spec)."
+          when: not _audit_task_stat.stat.exists
+          delegate_to: localhost
+          run_once: true
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-10 - Run CIS audit tasks to verify compliance"
+          ansible.builtin.include_tasks:
+            file: "{{ audit_task_file }}"
+          when: _audit_task_stat.stat.exists
+          tags: [execute]
+
+        - name: "Req step-11 - Store final remediation result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ cis_result | default('ERROR') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-11 - Generate remediation report"
+          ansible.builtin.debug:
             msg:
-              - "REMEDIATION REPORT"
-              - "========================================================"
-              - "CIS checkpoint 1.1.1.1: Ensure cramfs kernel module is not available"
-              - ""
-              - "Remediation script exit code: {{ remediate_result.rc }}"
-              - "Remediation output: {{ remediate_result.stdout | default('') }}"
-              - ""
-              - "Verification result: {{ verify_result.stdout | default('') | trim }}"
-              - "Overall result: {{ cis_result }}"
-              - "========================================================"
+              - "REMEDIATION RESULT: {{ cis_result }}"
           tags: [execute]
 
-      always:   # === RESTORE PHASE ===
-        - name: "Req lifecycle_restore - Check if backup of config file exists"
+      always:
+        - name: "Req step-12 - Check if modprobe config backup exists (present)"
           ansible.builtin.stat:
-            path: "{{ backup_dir }}/{{ kernel_module_name }}.conf.present"
-          register: restore_config_present
+            path: "{{ backup_dir }}/cramfs.conf.present"
+          register: _restore_present
           failed_when: false
           tags: [restore]
 
-        - name: "Req lifecycle_restore - Restore config file from backup"
+        - name: "Req step-12 - Restore /etc/modprobe.d/cramfs.conf from backup"
           ansible.builtin.copy:
-            src: "{{ backup_dir }}/{{ kernel_module_name }}.conf.present"
-            dest: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
-            remote_src: yes
-          when: restore_config_present.stat.exists
+            src: "{{ backup_dir }}/cramfs.conf.present"
+            dest: "/etc/modprobe.d/cramfs.conf"
+            remote_src: true
+          when: _restore_present.stat.exists | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Req lifecycle_restore - Check if config file was absent before remediation"
+        - name: "Req step-12 - Check if modprobe config was absent before remediation"
           ansible.builtin.stat:
-            path: "{{ backup_dir }}/{{ kernel_module_name }}.conf.absent"
-          register: restore_config_absent
+            path: "{{ backup_dir }}/cramfs.conf.absent"
+          register: _restore_absent
           failed_when: false
           tags: [restore]
 
-        - name: "Req lifecycle_restore - Delete config file if it was absent before"
+        - name: "Req step-12 - Delete modprobe config if it was created by remediation"
           ansible.builtin.file:
-            path: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
+            path: "/etc/modprobe.d/cramfs.conf"
             state: absent
-          when: restore_config_absent.stat.exists
+          when: _restore_absent.stat.exists | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Req lifecycle_restore - Read module loaded state"
-          ansible.builtin.slurp:
-            src: "{{ backup_dir }}/{{ kernel_module_name }}_loaded.state"
-          register: module_state_slurp
-          failed_when: false
-          tags: [restore]
-
-        - name: "Req lifecycle_restore - Reload module if it was loaded before remediation"
-          ansible.builtin.shell: "modprobe {{ kernel_module_name }}"
-          args:
-            executable: /bin/bash
-          when:
-            - module_state_slurp.content is defined
-            - (module_state_slurp.content | b64decode | trim) == 'yes'
-          failed_when: false
-          tags: [restore]
-
-        - name: "Req lifecycle_restore - Remove backup directory"
+        - name: "Req step-12 - Remove backup directory"
           ansible.builtin.file:
             path: "{{ backup_dir }}"
             state: absent
