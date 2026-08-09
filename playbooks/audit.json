@@ -75,7 +75,8 @@
       "stores": [
         "_audit_output"
       ],
-      "on_success": "step-02"
+      "on_success": "step-02",
+      "on_fail": "step-06"
     },
     {
       "id": "step-02",
@@ -98,7 +99,7 @@
     },
     {
       "id": "step-03",
-      "type": "action",
+      "type": "transform",
       "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Se",
       "function": "3. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
       "module": "ansible.builtin.set_fact",
@@ -115,7 +116,7 @@
     },
     {
       "id": "step-04",
-      "type": "action",
+      "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this fo",
       "function": "4. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.1.1\nReference: CIS Benchmark checkpoint 1.1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
@@ -149,7 +150,7 @@
   "phases": [
     {
       "name": "Data Collection",
-      "description": "Execute audit commands on the target host.",
+      "description": "Execute read-only commands on the target host.",
       "steps": [
         "step-01"
       ]
@@ -159,14 +160,14 @@
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
         "step-02",
-        "step-03",
-        "step-04"
+        "step-03"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
+        "step-04",
         "step-05"
       ]
     },
