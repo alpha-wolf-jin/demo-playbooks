@@ -4,34 +4,30 @@
   become: yes
   gather_facts: false
   vars:
-    checkpoint_id: "cis_1_1_1_1"
-    state_guard_dir: "/usr/local/bin/cis/.cis_state_guard/{{ checkpoint_id }}"
-    state_guard_flag: "{{ state_guard_dir }}/checkpoint.flag"
-    req_01: "Run the provided remediation script to fix Ensure cramfs kernel module is not available"
-    req_02: "VERIFY: Run audit check to confirm Ensure cramfs kernel module is not available is properly configured. Expected result: System is compliant"
-    req_03: "Store the final remediation result in a variable named 'cis_result'"
-    req_04: "Generate remediation report"
-    remediate_script_path: "/tmp/remediate_cramfs.sh"
-    remediate_script_content: |
-      {% raw %}
+    playbook_name: "cis_1_1_1_1_remediation"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    kernel_module_name: "cramfs"
+    script_path: "/tmp/cis_remediation_1_1_1_1.sh"
+    # Use !unsafe to prevent Jinja2 from trying to parse the bash script's special characters
+    remediation_script_content: !unsafe |
       #!/usr/bin/env bash
       {
-         unset a_output2; l_output3="" l_dl=""
-         l_mod_name="cramfs"
-         l_mod_type="fs"
+         unset a_output2; l_output3="" l_dl="" # unset arrays and clear variables
+         l_mod_name="${KERNEL_MODULE_NAME:-cramfs}" # set module name
+         l_mod_type="fs" # set module type
          l_mod_path="$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)"
          f_module_fix()
          {
-            l_dl="y"
-            a_showconfig=()
+            l_dl="y" # Set to ignore duplicate checks
+            a_showconfig=() # Create array with modprobe output
             while IFS= read -r l_showconfig; do
                a_showconfig+=("$l_showconfig")
             done < <(modprobe --showconfig | grep -P -- '\b(install|blacklist)\h+'"${l_mod_name//-/_}"'\b')
-            if  lsmod | grep "$l_mod_name" &> /dev/null; then
+            if  lsmod | grep "$l_mod_name" &> /dev/null; then # Check if the module is currently loaded
                a_output2+=(" - unloading kernel module: \"$l_mod_name\"")
                modprobe -r "$l_mod_name" 2>/dev/null; rmmod "$l_mod_name" 2>/dev/null
             fi
-            if ! grep -Pq -- '\binstall\h+'"${l_mod_name//- /_}"'\h+\/bin\/(true|false)\b' <<< "${a_showconfig[*]}"; then
+            if ! grep -Pq -- '\binstall\h+'"${l_mod_name//-/_}"'\h+\/bin\/(true|false)\b' <<< "${a_showconfig[*]}"; then
                a_output2+=(" - setting kernel  module: \"$l_mod_name\" to \"/bin/false\"")
                printf '%s\n' "install $l_mod_name /bin/false" >> /etc/modprobe.d/"$l_mod_name".conf
             fi
@@ -40,7 +36,7 @@
                printf '%s\n' "blacklist $l_mod_name" >> /etc/modprobe.d/"$l_mod_name".conf
             fi
          }
-         for l_mod_base_directory in $l_mod_path; do
+         for l_mod_base_directory in $l_mod_path; do # Check if the module exists on the system
             if [ -d "$l_mod_base_directory/${l_mod_name/-/\/}" ] && [ -n "$(ls -A $l_mod_base_directory/${l_mod_name/-/\/})" ]; then
                l_output3="$l_output3\n  - \"$l_mod_base_directory\""
                [[ "$l_mod_name" =~ overlay ]] && l_mod_name="${l_mod_name::-2}"
@@ -53,123 +49,100 @@
          [ "${#a_output2[@]}" -gt 0 ] && printf '%s\n' "${a_output2[@]}"
          echo -e "\n - remediation of kernel module: \"$l_mod_name\" complete\n"
       }
-      {% endraw %}
-    verify_script_path: "/tmp/verify_cramfs.sh"
-    verify_script_content: |
-      {% raw %}
-      #!/usr/bin/env bash
-      set -o pipefail
-      MODULE="cramfs"
-      if lsmod | grep -q "^${MODULE} "; then
-        echo "FAIL: module ${MODULE} is loaded"
-        exit 1
-      fi
-      if [ -d "/lib/modules/$(uname -r)/kernel/fs/${MODULE}" ] && [ -n "$(ls -A /lib/modules/$(uname -r)/kernel/fs/${MODULE} 2>/dev/null)" ]; then
-        if [ -f "/etc/modprobe.d/${MODULE}.conf" ]; then
-          if grep -q "^install ${MODULE} /bin/false" "/etc/modprobe.d/${MODULE}.conf" && \
-             grep -q "^blacklist ${MODULE}" "/etc/modprobe.d/${MODULE}.conf"; then
-            echo "PASS"
-            exit 0
-          else
-            echo "FAIL: conf file missing required lines"
-            exit 1
-          fi
-        else
-          echo "FAIL: conf file not found"
-          exit 1
-        fi
-      else
-        echo "PASS (module not available)"
-        exit 0
-      fi
-      {% endraw %}
 
   pre_tasks:
-    - name: "State Guard - Remove stale checkpoint if exists"
+    # === SNAPSHOT PHASE ===
+    - name: "Req lifecycle_snapshot - Create backup directory"
       ansible.builtin.file:
-        path: "{{ state_guard_dir }}"
-        state: absent
-      tags: [snapshot]
-
-    - name: "State Guard - Create checkpoint directory"
-      ansible.builtin.file:
-        path: "{{ state_guard_dir }}"
+        path: "{{ backup_dir }}"
         state: directory
         mode: '0700'
       tags: [snapshot]
 
-    - name: "State Guard - Check if /etc/modprobe.d/cramfs.conf exists"
+    - name: "Req lifecycle_snapshot - Check if modprobe config file exists"
       ansible.builtin.stat:
-        path: "/etc/modprobe.d/cramfs.conf"
-      register: _sg_cramfs_conf_stat
+        path: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
+      register: config_stat
       tags: [snapshot]
 
-    - name: "State Guard - Backup /etc/modprobe.d/cramfs.conf (present)"
+    - name: "Req lifecycle_snapshot - Backup modprobe config file if exists"
       ansible.builtin.copy:
-        src: "/etc/modprobe.d/cramfs.conf"
-        dest: "{{ state_guard_dir }}/cramfs.conf.present"
-        remote_src: true
-      when: _sg_cramfs_conf_stat.stat.exists
+        src: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
+        dest: "{{ backup_dir }}/{{ kernel_module_name }}.conf.present"
+        remote_src: yes
+      when: config_stat.stat.exists
       tags: [snapshot]
 
-    - name: "State Guard - Mark /etc/modprobe.d/cramfs.conf as absent"
+    - name: "Req lifecycle_snapshot - Mark modprobe config file as absent if not exists"
       ansible.builtin.copy:
         content: "absent"
-        dest: "{{ state_guard_dir }}/cramfs.conf.absent"
-      when: not _sg_cramfs_conf_stat.stat.exists
+        dest: "{{ backup_dir }}/{{ kernel_module_name }}.conf.absent"
+      when: not config_stat.stat.exists
       tags: [snapshot]
 
-    - name: "State Guard - Create checkpoint flag"
+    - name: "Req lifecycle_snapshot - Check if {{ kernel_module_name }} module is loaded"
+      ansible.builtin.shell: set -o pipefail && lsmod | grep -q "^{{ kernel_module_name }} "
+      args:
+        executable: /bin/bash
+      register: module_loaded
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Req lifecycle_snapshot - Save module loaded state"
       ansible.builtin.copy:
-        content: "checkpoint"
-        dest: "{{ state_guard_flag }}"
+        content: "{{ 'yes' if module_loaded.rc == 0 else 'no' }}"
+        dest: "{{ backup_dir }}/{{ kernel_module_name }}_loaded.state"
       tags: [snapshot]
 
   tasks:
-    - block:
-        - name: "Req 01 - Deploy remediation script for cramfs"
+    - block:   # === EXECUTE PHASE ===
+        - name: "Req cramfs_remediate - Deploy remediation script"
           ansible.builtin.copy:
-            dest: "{{ remediate_script_path }}"
+            # content is AnsibleUnsafeText, no Jinja2 rendering
+            content: "{{ remediation_script_content }}"
+            dest: "{{ script_path }}"
             mode: '0700'
-            content: "{{ remediate_script_content }}"
-          changed_when: false
-          failed_when: false
           tags: [execute]
 
-        - name: "Req 01 - Execute remediation script"
-          ansible.builtin.shell: /bin/bash "{{ remediate_script_path }}"
+        - name: "Req cramfs_remediate - Execute remediation script"
+          ansible.builtin.shell: "/bin/bash {{ script_path }}"
           args:
             executable: /bin/bash
+          environment:
+            KERNEL_MODULE_NAME: "{{ kernel_module_name }}"
           register: remediate_result
           failed_when: false
           changed_when: false
           tags: [execute]
 
-        - name: "Req 01 - Remove temporary remediation script"
-          ansible.builtin.file:
-            path: "{{ remediate_script_path }}"
-            state: absent
-          changed_when: false
-          failed_when: false
-          tags: [execute]
-
-        - name: "Req 01 - Determine remediation status"
-          ansible.builtin.set_fact:
-            status_01: "{{ 'PASS' if remediate_result.rc | default(-1) == 0 else 'FAIL' }}"
-            details_01: "Remediation script executed"
-          tags: [execute]
-
-        - name: "Req 02 - Deploy verify script"
-          ansible.builtin.copy:
-            dest: "{{ verify_script_path }}"
-            mode: '0700'
-            content: "{{ verify_script_content }}"
-          changed_when: false
-          failed_when: false
-          tags: [execute]
-
-        - name: "Req 02 - Execute verify script"
-          ansible.builtin.shell: /bin/bash "{{ verify_script_path }}"
+        - name: "Req cramfs_verify - Verify module is not loaded and config is correct"
+          ansible.builtin.shell: |
+            set -o pipefail
+            if lsmod | grep -q "^{{ kernel_module_name }} "; then
+              echo "MODULE_LOADED"
+              exit 1
+            fi
+            if modinfo "{{ kernel_module_name }}" &>/dev/null; then
+              # Module is available, config file is required
+              if [ -f "/etc/modprobe.d/{{ kernel_module_name }}.conf" ]; then
+                if grep -q "install {{ kernel_module_name }} /bin/false" "/etc/modprobe.d/{{ kernel_module_name }}.conf" && \
+                   grep -q "blacklist {{ kernel_module_name }}" "/etc/modprobe.d/{{ kernel_module_name }}.conf"; then
+                  echo "COMPLIANT"
+                  exit 0
+                else
+                  echo "CONFIG_INCOMPLETE"
+                  exit 1
+                fi
+              else
+                echo "CONFIG_FILE_MISSING"
+                exit 1
+              fi
+            else
+              # Module not available, system is compliant without config
+              echo "COMPLIANT (module not present)"
+              exit 0
+            fi
           args:
             executable: /bin/bash
           register: verify_result
@@ -177,123 +150,78 @@
           changed_when: false
           tags: [execute]
 
-        - name: "Req 02 - Remove temporary verify script"
-          ansible.builtin.file:
-            path: "{{ verify_script_path }}"
-            state: absent
-          changed_when: false
-          failed_when: false
-          tags: [execute]
-
-        - name: "Req 02 - Determine verification status"
+        - name: "Req cramfs_result - Set cis_result fact"
           ansible.builtin.set_fact:
-            status_02: "{{ 'PASS' if verify_result.rc | default(-1) == 0 else 'FAIL' }}"
-            details_02: "{{ 'Verification successful' if verify_result.rc | default(-1) == 0 else 'Verification failed' }}"
+            cis_result: "{{ 'PASS' if verify_result.rc == 0 else 'FAIL' }}"
           tags: [execute]
 
-        - name: "Req 03 - Store final remediation result in cis_result"
-          ansible.builtin.set_fact:
-            cis_result: "{{ status_02 | default('ERROR') | trim }}"
-          tags: [execute]
-
-        - name: "Req 03 - Record status for requirement 03"
-          ansible.builtin.set_fact:
-            status_03: "PASS"
-            details_03: "cis_result stored"
-          tags: [execute]
-
-        - name: "Req 04 - Record status for requirement 04"
-          ansible.builtin.set_fact:
-            status_04: "PASS"
-            details_04: "Report generated"
-          tags: [execute]
-
-        - name: "Req 04 - Generate remediation report"
-          ansible.builtin.debug:
+        - name: "Generate remediation report"
+          debug:
             msg:
-              - "REMEDIATION REPORT — CIS 1.1.1.1"
-              - "Reference: CIS Benchmark checkpoint 1.1.1.1"
-              - ""
-              - "REQUIREMENT 01 - {{ req_01 }}:"
-              - "  Task: Deploy and execute remediation script"
-              - "  Command: {{ remediate_script_path }}"
-              - "  Exit code: {{ remediate_result.rc | default(-1) }}"
-              - "  Data: {{ remediate_result.stdout | default('') | trim }}"
-              - "  Status: {{ status_01 | default('ERROR') | trim }}"
-              - "  Details: {{ details_01 | default('') | trim }}"
-              - ""
-              - "REQUIREMENT 02 - {{ req_02 }}:"
-              - "  Task: Execute verify script"
-              - "  Command: {{ verify_script_path }}"
-              - "  Exit code: {{ verify_result.rc | default(-1) }}"
-              - "  Data: {{ verify_result.stdout | default('') | trim }}"
-              - "  Status: {{ status_02 | default('ERROR') | trim }}"
-              - "  Details: {{ details_02 | default('') | trim }}"
-              - ""
-              - "REQUIREMENT 03 - {{ req_03 }}:"
-              - "  Task: Store cis_result via set_fact"
-              - "  Command: N/A"
-              - "  Exit code: -"
-              - "  Data: cis_result = {{ cis_result | default('ERROR') }}"
-              - "  Status: {{ status_03 | default('ERROR') | trim }}"
-              - "  Details: {{ details_03 | default('') | trim }}"
-              - ""
-              - "REQUIREMENT 04 - {{ req_04 }}:"
-              - "  Task: Generate report via debug"
-              - "  Command: N/A"
-              - "  Exit code: -"
-              - "  Data: Remediation report"
-              - "  Status: {{ status_04 | default('ERROR') | trim }}"
-              - "  Details: {{ details_04 | default('') | trim }}"
+              - "REMEDIATION REPORT"
               - "========================================================"
-              - "OVERALL REMEDIATION:"
-              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "CIS checkpoint 1.1.1.1: Ensure cramfs kernel module is not available"
+              - ""
+              - "Remediation script exit code: {{ remediate_result.rc }}"
+              - "Remediation output: {{ remediate_result.stdout | default('') }}"
+              - ""
+              - "Verification result: {{ verify_result.stdout | default('') | trim }}"
+              - "Overall result: {{ cis_result }}"
               - "========================================================"
           tags: [execute]
 
-      always:
-        - name: "State Guard Restore - Check if cramfs.conf backup exists"
+      always:   # === RESTORE PHASE ===
+        - name: "Req lifecycle_restore - Check if backup of config file exists"
           ansible.builtin.stat:
-            path: "{{ state_guard_dir }}/cramfs.conf.present"
-          register: _sg_restore_present
+            path: "{{ backup_dir }}/{{ kernel_module_name }}.conf.present"
+          register: restore_config_present
           failed_when: false
           tags: [restore]
 
-        - name: "State Guard Restore - Restore /etc/modprobe.d/cramfs.conf from backup"
+        - name: "Req lifecycle_restore - Restore config file from backup"
           ansible.builtin.copy:
-            src: "{{ state_guard_dir }}/cramfs.conf.present"
-            dest: "/etc/modprobe.d/cramfs.conf"
-            remote_src: true
-          when: _sg_restore_present.stat.exists | default(false)
+            src: "{{ backup_dir }}/{{ kernel_module_name }}.conf.present"
+            dest: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
+            remote_src: yes
+          when: restore_config_present.stat.exists
           failed_when: false
           tags: [restore]
 
-        - name: "State Guard Restore - Check if cramfs.conf absent marker exists"
+        - name: "Req lifecycle_restore - Check if config file was absent before remediation"
           ansible.builtin.stat:
-            path: "{{ state_guard_dir }}/cramfs.conf.absent"
-          register: _sg_restore_absent
+            path: "{{ backup_dir }}/{{ kernel_module_name }}.conf.absent"
+          register: restore_config_absent
           failed_when: false
           tags: [restore]
 
-        - name: "State Guard Restore - Delete /etc/modprobe.d/cramfs.conf (created by remediation)"
+        - name: "Req lifecycle_restore - Delete config file if it was absent before"
           ansible.builtin.file:
-            path: "/etc/modprobe.d/cramfs.conf"
+            path: "/etc/modprobe.d/{{ kernel_module_name }}.conf"
             state: absent
-          when: _sg_restore_absent.stat.exists | default(false)
+          when: restore_config_absent.stat.exists
           failed_when: false
           tags: [restore]
 
-        - name: "State Guard Restore - Check if checkpoint flag exists"
-          ansible.builtin.stat:
-            path: "{{ state_guard_flag }}"
-          register: _sg_restore_flag
+        - name: "Req lifecycle_restore - Read module loaded state"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/{{ kernel_module_name }}_loaded.state"
+          register: module_state_slurp
           failed_when: false
           tags: [restore]
 
-        - name: "State Guard Restore - Remove checkpoint directory"
+        - name: "Req lifecycle_restore - Reload module if it was loaded before remediation"
+          ansible.builtin.shell: "modprobe {{ kernel_module_name }}"
+          args:
+            executable: /bin/bash
+          when:
+            - module_state_slurp.content is defined
+            - (module_state_slurp.content | b64decode | trim) == 'yes'
+          failed_when: false
+          tags: [restore]
+
+        - name: "Req lifecycle_restore - Remove backup directory"
           ansible.builtin.file:
-            path: "{{ state_guard_dir }}"
+            path: "{{ backup_dir }}"
             state: absent
-          when: _sg_restore_flag.stat.exists | default(false)
           failed_when: false
           tags: [restore]
