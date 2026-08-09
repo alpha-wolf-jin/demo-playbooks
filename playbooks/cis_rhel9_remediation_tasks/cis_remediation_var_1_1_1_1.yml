@@ -1,0 +1,4 @@
+kernel_module_name: "cramfs"
+playbook_name: "cis_1_1_1_1_remediation"
+backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+audit_task_file: "./cis_rhel9_audit_tasks/cis_audit_1_1_1_1.yml"
