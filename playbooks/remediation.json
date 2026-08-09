@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "1.1.1.1",
-  "title": "Ensure cramfs kernel module is not available",
+  "checkpoint_id": "1.1.2.1.2",
+  "title": "Ensure nodev option set on /tmp partition",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
   "transport": "ssh",
   "connection_risk": false,
-  "objective": "Remediate CIS checkpoint 1.1.1.1: Ensure cramfs kernel module is not available",
+  "objective": "Remediate CIS checkpoint 1.1.2.1.2: Ensure nodev option set on /tmp partition",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -33,12 +33,20 @@
         "description": "SSH user with sudo access"
       },
       {
-        "name": "kernel_module_name",
+        "name": "fs_option",
         "type": "string",
         "required": false,
-        "default": "cramfs",
+        "default": "nodev",
         "unit": null,
-        "description": "Kernel module name to remediate"
+        "description": "Filesystem mount option to enforce (e.g., nodev, nosuid, noexec)"
+      },
+      {
+        "name": "partition",
+        "type": "string",
+        "required": false,
+        "default": "/tmp",
+        "unit": null,
+        "description": "Partition mount point to audit/remediate"
       }
     ]
   },
@@ -55,101 +63,112 @@
       }
     ]
   },
-  "audit_script": "#!/usr/bin/env bash\n\n{\n   unset a_output2; l_output3=\"\" l_dl=\"\" # unset arrays and clear variables\n   l_mod_name=\"{{ kernel_module_name }}\" # set module name\n   l_mod_type=\"fs\" # set module type\n   l_mod_path=\"$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)\"\n   f_module_fix()\n   {\n      l_dl=\"y\" # Set to ignore duplicate checks\n      a_showconfig=() # Create array with modprobe output\n      while IFS= read -r l_showconfig; do\n         a_showconfig+=(\"$l_showconfig\")\n      done < <(modprobe --showconfig | grep -P -- '\\b(install|blacklist)\\h+'\"${l_mod_name//-/_}\"'\\b')\n      if  lsmod | grep \"$l_mod_name\" &> /dev/null; then # Check if the module is currently loaded\n         a_output2+=(\" - unloading kernel module: \\\"$l_mod_name\\\"\")\n         modprobe -r \"$l_mod_name\" 2>/dev/null; rmmod \"$l_mod_name\" 2>/dev/null\n      fi\n      if ! grep -Pq -- '\\binstall\\h+'\"${l_mod_name//- /_}\"'\\h+\\/bin\\/(true|false)\\b' <<< \"${a_showconfig[*]}\"; then\n         a_output2+=(\" - setting kernel  module: \\\"$l_mod_name\\\" to \\\"/bin/false\\\"\")\n         printf '%s\\n' \"install $l_mod_name /bin/false\" >> /etc/modprobe.d/\"$l_mod_name\".conf\n      fi\n      if ! grep -Pq -- '\\bblacklist\\h+'\"${l_mod_name//-/_}\"'\\b' <<< \"${a_showconfig[*]}\"; then\n         a_output2+=(\" - denylisting kernel  module: \\\"$l_mod_name\\\"\")\n         printf '%s\\n' \"blacklist $l_mod_name\" >> /etc/modprobe.d/\"$l_mod_name\".conf\n      fi\n   }\n   for l_mod_base_directory in $l_mod_path; do # Check if the module exists on the system\n      if [ -d \"$l_mod_base_directory/${l_mod_name/-/\\/}\" ] && [ -n \"$(ls -A $l_mod_base_directory/${l_mod_name/-/\\/})\" ]; then\n         l_output3=\"$l_output3\\n  - \\\"$l_mod_base_directory\\\"\"\n         [[ \"$l_mod_name\" =~ overlay ]] && l_mod_name=\"${l_mod_name::-2}\"\n         [ \"$l_dl\" != \"y\" ] && f_module_fix\n      else\n         echo -e \" - kernel module: \\\"$l_mod_name\\\" doesn't exist in \\\"$l_mod_base_directory\\\"\"\n      fi\n   done\n   [ -n \"$l_output3\" ] && echo -e \"\\n\\n -- INFO --\\n - module: \\\"$l_mod_name\\\" exists in:$l_output3\"\n   [ \"${#a_output2[@]}\" -gt 0 ] && printf '%s\\n' \"${a_output2[@]}\"\n   echo -e \"\\n - remediation of kernel module: \\\"$l_mod_name\\\" complete\\n\"\n}",
+  "audit_script": "",
   "steps": [
     {
       "id": "step-01",
-      "type": "action",
-      "name": "Run the provided remediation script to fix Ensure cramfs kernel module is not av",
-      "function": "1. Run the provided remediation script to fix Ensure cramfs kernel module is not available. Run the following script to unload and disable the cramfs module:\n- IF - the cramfs kernel module is available in ANY installed kernel:\n• Create a file ending in .conf with install cramfs /bin/false in the /etc/modprobe.d/ directory\n• Create a file ending in .conf with blacklist cramfs in the /etc/modprobe.d/ directory\n• Run modprobe -r cramfs 2>/dev/null; rmmod cramfs 2>/dev/null to remove cramfs from the kernel\n- IF - the cramfs kernel module is not available on the system, or pre-compiled int — run audit_script — . Expected result: Script applies the required changes",
+      "type": "collect",
+      "name": "PRECHECK: Read partition mount state and fstab config",
+      "function": "1. Run two read-only checks and register boolean facts:\n   a) `findmnt -kn {{ partition }}` — register _partition_is_separate=true if output is non-empty (mounted separately), false if empty.\n   b) `grep -E '\\s{{ partition }}\\s' /etc/fstab | grep -c {{ fs_option }}` — register _option_in_fstab=true if count > 0, false otherwise.\n   Use failed_when: false on both. Do NOT modify anything in this step.",
       "module": "ansible.builtin.shell",
-      "input": {
-        "source": "playbook_input.parameters",
-        "fields": [
-          "kernel_module_name"
-        ]
-      },
       "parameters": {
-        "cmd": "#!/usr/bin/env bash\n\n{\n   unset a_output2; l_output3=\"\" l_dl=\"\" # unset arrays and clear variables\n   l_mod_name=\"{{ kernel_module_name }}\" # set module name\n   l_mod_type=\"fs\" # set module type\n   l_mod_path=\"$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)\"\n   f_module_fix()\n   {\n      l_dl=\"y\" # Set to ignore duplicate checks\n      a_showconfig=() # Create array with modprobe output\n      while IFS= read -r l_showconfig; do\n         a_showconfig+=(\"$l_showconfig\")\n      done < <(modprobe --showconfig | grep -P -- '\\b(install|blacklist)\\h+'\"${l_mod_name//-/_}\"'\\b')\n      if  lsmod | grep \"$l_mod_name\" &> /dev/null; then # Check if the module is currently loaded\n         a_output2+=(\" - unloading kernel module: \\\"$l_mod_name\\\"\")\n         modprobe -r \"$l_mod_name\" 2>/dev/null; rmmod \"$l_mod_name\" 2>/dev/null\n      fi\n      if ! grep -Pq -- '\\binstall\\h+'\"${l_mod_name//- /_}\"'\\h+\\/bin\\/(true|false)\\b' <<< \"${a_showconfig[*]}\"; then\n         a_output2+=(\" - setting kernel  module: \\\"$l_mod_name\\\" to \\\"/bin/false\\\"\")\n         printf '%s\\n' \"install $l_mod_name /bin/false\" >> /etc/modprobe.d/\"$l_mod_name\".conf\n      fi\n      if ! grep -Pq -- '\\bblacklist\\h+'\"${l_mod_name//-/_}\"'\\b' <<< \"${a_showconfig[*]}\"; then\n         a_output2+=(\" - denylisting kernel  module: \\\"$l_mod_name\\\"\")\n         printf '%s\\n' \"blacklist $l_mod_name\" >> /etc/modprobe.d/\"$l_mod_name\".conf\n      fi\n   }\n   for l_mod_base_directory in $l_mod_path; do # Check if the module exists on the system\n      if [ -d \"$l_mod_base_directory/${l_mod_name/-/\\/}\" ] && [ -n \"$(ls -A $l_mod_base_directory/${l_mod_name/-/\\/})\" ]; then\n         l_output3=\"$l_output3\\n  - \\\"$l_mod_base_directory\\\"\"\n         [[ \"$l_mod_name\" =~ overlay ]] && l_mod_name=\"${l_mod_name::-2}\"\n         [ \"$l_dl\" != \"y\" ] && f_module_fix\n      else\n         echo -e \" - kernel module: \\\"$l_mod_name\\\" doesn't exist in \\\"$l_mod_base_directory\\\"\"\n      fi\n   done\n   [ -n \"$l_output3\" ] && echo -e \"\\n\\n -- INFO --\\n - module: \\\"$l_mod_name\\\" exists in:$l_output3\"\n   [ \"${#a_output2[@]}\" -gt 0 ] && printf '%s\\n' \"${a_output2[@]}\"\n   echo -e \"\\n - remediation of kernel module: \\\"$l_mod_name\\\" complete\\n\"\n}"
+        "cmd": "findmnt -kn {{ partition }}; grep -E '\\s{{ partition }}\\s' /etc/fstab | grep -c {{ fs_option }}"
       },
       "stores": [
-        "_remediation_output"
+        "_partition_is_separate",
+        "_option_in_fstab"
       ],
       "on_success": "step-02",
-      "on_fail": "step-07"
+      "on_fail": "step-11"
     },
     {
       "id": "step-02",
-      "type": "collect",
-      "name": "VERIFY: Run audit check to confirm Ensure cramfs kernel module is not available",
-      "function": "2. VERIFY: Run audit check to confirm Ensure cramfs kernel module is not available is properly configured. Guard with stat+fail for the audit task file, then use include_tasks to run the CIS audit. The included tasks set cis_result (PASS/FAIL/SKIP/ERROR) directly in play scope. Do NOT duplicate audit logic inline.",
-      "module": "ansible.builtin.include_tasks",
-      "input": {
-        "source": "step-01",
-        "fields": [
-          "_remediation_output"
-        ]
-      },
-      "stores": [
-        "cis_result"
-      ],
-      "parameters": {
-        "file": "./cis_rhel9_audit_tasks/cis_audit_1_1_1_1.yml"
-      },
-      "on_success": "step-03",
-      "on_fail": "step-07"
+      "type": "decide",
+      "name": "Is partition a separate mount?",
+      "condition": "_partition_is_separate | bool",
+      "on_pass": "step-03",
+      "on_fail": "step-09"
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "Abort if audit task reports unexpected result",
-      "function": "Guard: abort with a targeted message if the included audit task does not report PASS or SKIP. Use when: cis_result not in ['PASS', 'SKIP'] — when the condition is false (result is PASS/SKIP) the task is skipped (Ansible ok) and execution continues. When the condition is true (FAIL/ERROR) the task fails, triggering the rescue block and aborting with a message that asks the user to verify the audit playbook.",
-      "module": "ansible.builtin.fail",
-      "input": {
-        "source": "step-02",
-        "fields": [
-          "cis_result"
-        ]
-      },
-      "parameters": {
-        "msg": "Audit task ./cis_rhel9_audit_tasks/cis_audit_1_1_1_1.yml reported '{{ cis_result }}' after remediation. Ensure the audit playbook works correctly and the fix has been applied before re-running remediation."
-      },
-      "on_success": "step-04",
-      "on_fail": "step-07"
+      "type": "decide",
+      "name": "Is option already set in /etc/fstab?",
+      "condition": "_option_in_fstab | bool",
+      "on_pass": "step-06",
+      "on_fail": "step-04"
     },
     {
       "id": "step-04",
-      "type": "transform",
-      "name": "Store the final remediation result in a variable named 'cis_result' using set_fa",
-      "function": "3. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
-      "input": {
-        "source": "step-02",
-        "fields": [
-          "cis_result"
-        ]
+      "type": "action",
+      "name": "Apply option to partition in /etc/fstab",
+      "function": "2. Add {{ fs_option }} to the {{ partition }} mount options in /etc/fstab:\n   `sed -i '/\\s{{ partition }}\\s/ s/\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)/\\1 \\2 \\3 \\4,{{ fs_option }}/' /etc/fstab`\n   Guard with `when: _partition_is_separate and not _option_in_fstab`. Use failed_when: false.",
+      "module": "ansible.builtin.shell",
+      "parameters": {
+        "cmd": "sed -i '/\\s{{ partition }}\\s/ s/\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)/\\1 \\2 \\3 \\4,{{ fs_option }}/' /etc/fstab"
       },
-      "stores": [
-        "cis_result"
-      ],
-      "on_success": "step-05"
+      "on_success": "step-05",
+      "on_fail": "step-11"
     },
     {
       "id": "step-05",
-      "type": "emit",
-      "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY t",
-      "function": "4. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.1.1\nReference: CIS Benchmark checkpoint 1.1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
-      "input": {
-        "source": "step-04",
-        "fields": [
-          "cis_result"
-        ]
+      "type": "action",
+      "name": "Remount partition to activate the updated fstab entry",
+      "function": "3. Run `mount -o remount {{ partition }}` to activate the {{ fs_option }} option without rebooting.\n   Guard with `when: _partition_is_separate and not _option_in_fstab`.\n   This MUST run AFTER step-04 (fstab modification), NOT before. Use failed_when: false.",
+      "module": "ansible.builtin.shell",
+      "parameters": {
+        "cmd": "mount -o remount {{ partition }}"
       },
-      "on_success": "step-06"
+      "on_success": "step-06",
+      "on_fail": "step-11"
     },
     {
       "id": "step-06",
+      "type": "collect",
+      "name": "VERIFY: Check if option is active on partition",
+      "function": "4. Run `findmnt -kn -o OPTIONS {{ partition }}` to read the live mount options of the partition. Register the output as _verify_output. Use failed_when: false. Run only when _partition_is_separate is true.",
+      "module": "ansible.builtin.shell",
+      "parameters": {
+        "cmd": "findmnt -kn -o OPTIONS {{ partition }}"
+      },
+      "stores": [
+        "_verify_output"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-07",
+      "type": "transform",
+      "name": "Determine compliance result from verification output",
+      "function": "Set cis_result based on _verify_output: if the stdout contains '{{ fs_option }}', set cis_result='PASS'; otherwise set cis_result='FAIL'. Run only when _partition_is_separate is true.",
+      "module": "ansible.builtin.set_fact",
+      "stores": [
+        "cis_result"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Finalise compliance status",
+      "function": "5. Store the final cis_result using set_fact. Three paths converge here:\n   — partition not a separate mount (step-02 on_fail → step-09): cis_result is set to 'SKIP' here before emitting.\n   — option already set + verification passed (step-03 on_pass → step-06 → step-07): cis_result already set by step-07.\n   — option applied + remounted + verification passed (step-05 → step-06 → step-07): cis_result already set by step-07.\n   Ensure cis_result is one of PASS/FAIL/SKIP/ERROR.",
+      "module": "ansible.builtin.set_fact",
+      "stores": [
+        "cis_result"
+      ],
+      "on_success": "step-09"
+    },
+    {
+      "id": "step-09",
+      "type": "emit",
+      "name": "Generate remediation report",
+      "function": "6. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.2.1.2\nReference: CIS Benchmark checkpoint 1.1.2.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{ cis_result }}",
+      "module": "ansible.builtin.debug",
+      "on_success": "step-10"
+    },
+    {
+      "id": "step-10",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -159,72 +178,86 @@
       "on_success": "end"
     },
     {
-      "id": "step-07",
+      "id": "step-11",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.1.1 audit failed",
+      "error_message": "ERROR: CIS 1.1.2.1.2 remediation failed",
       "on_success": "end"
     }
   ],
   "phases": [
     {
-      "name": "Execution",
-      "description": "Apply remediation changes on the target host.",
+      "name": "Data Collection",
+      "description": "Precheck — read partition mount state and fstab config (no modifications).",
       "steps": [
         "step-01",
+        "step-06"
+      ]
+    },
+    {
+      "name": "Decision",
+      "description": "Branch: skip if partition is not a separate mount; skip fstab change if already compliant.",
+      "steps": [
+        "step-02",
         "step-03"
       ]
     },
     {
-      "name": "Data Collection",
-      "description": "Execute read-only commands on the target host.",
+      "name": "Execution",
+      "description": "Apply fstab modification and remount (only when option is missing).",
       "steps": [
-        "step-02"
+        "step-04",
+        "step-05",
+        "step-07"
       ]
     },
     {
       "name": "Analysis",
-      "description": "Evaluate collected data and determine compliance status.",
+      "description": "Finalise compliance status from all execution paths.",
       "steps": [
-        "step-04"
+        "step-08"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-05",
-        "step-06"
+        "step-09",
+        "step-10"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-07"
+        "step-11"
       ]
     }
   ],
   "compliance_constraints": [
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
     "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages.",
-    "The ./cis_rhel9_audit_tasks/ directory is READ-ONLY from the remediation playbook's perspective. NEVER generate tasks that write, modify, or delete files in that directory. Read via include_tasks only; pass variables using include_tasks vars: if needed.",
-    "After EVERY ansible.builtin.include_tasks call for verification, ALWAYS add ansible.builtin.fail with when: cis_result not in ['PASS', 'SKIP'] to abort with a clear message if the audit reports an unexpected result. Do NOT add a stat check before include_tasks — include_tasks resolves the file path locally on the Ansible controller, not on the remote host."
+    "Use failed_when: false on all remediation tasks (except set_fact, debug, ansible.builtin.fail) so all steps complete and report status",
+    "If /tmp is NOT a separate partition (findmnt -kn /tmp returns empty output), set cis_result=SKIP and skip ALL remediation steps. Do NOT install or configure anything.",
+    "If the partition is NOT a separate mount (findmnt -kn {{ partition }} returns empty output), set cis_result=SKIP and skip ALL remediation steps. Do NOT install or configure anything.",
+    "Use failed_when: false on all remediation tasks (except set_fact, debug, ansible.builtin.fail) so all steps complete and report status.",
+    "STEP ORDER IS CRITICAL: (1) modify /etc/fstab with sed, (2) remount the partition with `mount -o remount {{ partition }}`, (3) THEN verify with findmnt. Verification checks LIVE mount options — running it before the remount will always see the old options.",
+    "Verification (step-06) uses `findmnt -kn -o OPTIONS {{ partition }}` to check live mount options. Set cis_result=PASS if stdout contains {{ fs_option }}, else FAIL."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Run the following script to unload and disable the cramfs module:\n- IF - the cramfs kernel module is available in ANY installed kernel:\n• Create a file ending in .conf with install cramfs /bin/false in the /etc/modprobe.d/ directory\n• Create a file ending in .conf with blacklist cramfs in the /etc/modprobe.d/ directory\n• Run modprobe -r cramfs 2>/dev/null; rmmod cramfs 2>/dev/null to remove cramfs from the kernel\n- IF - the cramfs kernel module is not available on the system, or pre-compiled into the kernel, no remediation is necessary\n#!/usr/bin/env bash\n\n{\n   unset a_output2; l_output3=\"\" l_dl=\"\" # unset arrays and clear variables\n   l_mod_name=\"{{ kernel_module_name }}\" # set module name\n   l_mod_type=\"fs\" # set module type\n   l_mod_path=\"$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)\"\n   f_module_fix()\n   {\n      l_dl=\"y\" # Set to ignore duplicate checks\n      a_showconfig=() # Create array with modprobe output\n      while IFS= read -r l_showconfig; do\n         a_showconfig+=(\"$l_showconfig\")\n      done < <(modprobe --showconfig | grep -P -- '\\b(install|blacklist)\\h+'\"${l_mod_name//-/_}\"'\\b')\n      if  lsmod | grep \"$l_mod_name\" &> /dev/null; then # Check if the module is currently loaded\n         a_output2+=(\" - unloading kernel module: \\\"$l_mod_name\\\"\")\n         modprobe -r \"$l_mod_name\" 2>/dev/null; rmmod \"$l_mod_name\" 2>/dev/null\n      fi\n      if ! grep -Pq -- '\\binstall\\h+'\"${l_mod_name//- /_}\"'\\h+\\/bin\\/(true|false)\\b' <<< \"${a_showconfig[*]}\"; then\n         a_output2+=(\" - setting kernel  module: \\\"$l_mod_name\\\" to \\\"/bin/false\\\"\")\n         printf '%s\\n' \"install $l_mod_name /bin/false\" >> /etc/modprobe.d/\"$l_mod_name\".conf\n      fi\n      if ! grep -Pq -- '\\bblacklist\\h+'\"${l_mod_name//-/_}\"'\\b' <<< \"${a_showconfig[*]}\"; then\n         a_output2+=(\" - denylisting kernel  module: \\\"$l_mod_name\\\"\")\n         printf '%s\\n' \"blacklist $l_mod_name\" >> /etc/modprobe.d/\"$l_mod_name\".conf\n      fi\n   }\n   for l_mod_base_directory in $l_mod_path; do # Check if the module exists on the system\n      if [ -d \"$l_mod_base_directory/${l_mod_name/-/\\/}\" ] && [ -n \"$(ls -A $l_mod_base_directory/${l_mod_name/-/\\/})\" ]; then\n         l_output3=\"$l_output3\\n  - \\\"$l_mod_base_directory\\\"\"\n         [[ \"$l_mod_name\" =~ overlay ]] && l_mod_name=\"${l_mod_name::-2}\"\n         [ \"$l_dl\" != \"y\" ] && f_module_fix\n      else\n         echo -e \" - kernel module: \\\"$l_mod_name\\\" doesn't exist in \\\"$l_mod_base_directory\\\"\"\n      fi\n   done\n   [ -n \"$l_output3\" ] && echo -e \"\\n\\n -- INFO --\\n - module: \\\"$l_mod_name\\\" exists in:$l_output3\"\n   [ \"${#a_output2[@]}\" -gt 0 ] && printf '%s\\n' \"${a_output2[@]}\"\n   echo -e \"\\n - remediation of kernel module: \\\"$l_mod_name\\\" complete\\n\"\n}",
+  "reference_procedure": "- IF - a separate partition exists for /tmp.\nEdit the /etc/fstab file and add nodev to the fourth field (mounting options) for the /tmp partition.\nExample:\n<device> /tmp    <fstype>     defaults,rw,nosuid,nodev,noexec,relatime  0 0\nRun the following command to remount /tmp with the configured options:\n# mount -o remount /tmp",
   "example_output": "",
-  "filename": "cis_remediation_1_1_1_1.yml",
+  "filename": "cis_remediation_1_1_2_1_2.yml",
   "output_dir": "./cis_rhel9_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-09T20:08:13",
-    "revision": 6,
-    "approved_at": "2026-08-09T20:12:16",
+    "drafted_at": "2026-08-10T02:46:49",
+    "revision": 4,
+    "approved_at": "2026-08-10T02:48:44",
     "saved_by": null
   }
 }
