@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "1.1.2.1.2",
-  "title": "Ensure nodev option set on /tmp partition",
+  "checkpoint_id": "1.6.3",
+  "title": "Ensure system wide crypto policy disables sha1 hash and signature support",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "ssh",
-  "connection_risk": false,
-  "objective": "Audit CIS checkpoint 1.1.2.1.2: Ensure nodev option set on /tmp partition",
+  "connection_risk": true,
+  "objective": "Audit CIS checkpoint 1.6.3: Ensure system wide crypto policy disables sha1 hash and signature support",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -31,14 +31,6 @@
         "default": null,
         "unit": null,
         "description": "SSH user with sudo access"
-      },
-      {
-        "name": "fs_option",
-        "type": "string",
-        "required": true,
-        "default": "nodev",
-        "unit": null,
-        "description": "Filesystem mount option to check on /tmp partition (e.g. nodev, nosuid, noexec)"
       }
     ]
   },
@@ -52,6 +44,20 @@
         "nullable": false,
         "required_by_sop": true,
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
+      },
+      {
+        "name": "cis_result_comment",
+        "type": "string",
+        "nullable": true,
+        "required_by_sop": false,
+        "description": "Raw output of the crypto policy checks (step-02 and step-03 results)"
+      },
+      {
+        "name": "cis_raw_output",
+        "type": "string",
+        "nullable": true,
+        "required_by_sop": false,
+        "description": "Raw output of the crypto policy checks (step-02 and step-03 results) for troubleshooting"
       }
     ]
   },
@@ -59,38 +65,67 @@
   "steps": [
     {
       "id": "step-01",
-      "type": "emit",
-      "name": "Check if /tmp is a separate partition using command: `findmnt -kn /tmp`. Expecte",
-      "function": "1. Check if /tmp is a separate partition using command: `findmnt -kn /tmp`. Expected result: output contains a mount point for /tmp.",
-      "module": "ansible.builtin.debug",
-      "on_success": "step-02"
+      "type": "collect",
+      "name": "Check if the system-wide crypto policy file exists",
+      "function": "1. Check if the system-wide crypto policy file exists using command: `test -f /etc/crypto-policies/state/CURRENT.pol`. Expected result: exit status 0 (file exists).",
+      "module": "ansible.builtin.shell",
+      "parameters": {
+        "cmd": "test -f /etc/crypto-policies/state/CURRENT.pol"
+      },
+      "stores": [
+        "_step01_output"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-08"
     },
     {
       "id": "step-02",
-      "type": "emit",
-      "name": "Check if the nodev option is set on the /tmp partition using command: `findmnt -",
-      "function": "2. Check if the nodev option is set on the /tmp partition using command: `findmnt -kn /tmp | grep -v nodev`. Expected result: no output (empty).",
-      "module": "ansible.builtin.debug",
-      "on_success": "step-03"
+      "type": "collect",
+      "name": "Check that the hash and sign lines do not include SHA1 (excluding commented lines)",
+      "function": "2. Check that the hash and sign lines do not include SHA1 (excluding commented lines) using command: `awk -F= '($1~/(hash|sign)/ && $2~/SHA1/ && $2!~/^\\s*-\\s*([^#\\n\\r]+)?SHA1/){print}' /etc/crypto-policies/state/CURRENT.pol`. Expected result: no output (nothing returned).",
+      "module": "ansible.builtin.shell",
+      "parameters": {
+        "cmd": "awk -F= '($1~/(hash|sign)/ && $2~/SHA1/ && $2!~/^\\s*-\\s*([^#\\n\\r]+)?SHA1/){print}' /etc/crypto-policies/state/CURRENT.pol"
+      },
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_step01_output"
+        ]
+      },
+      "stores": [
+        "_step02_output"
+      ],
+      "on_success": "step-03",
+      "on_fail": "step-08"
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "Check overall compliance status: PASS if the separate partition exists and nodev",
-      "function": "3. Check overall compliance status: PASS if the separate partition exists and nodev is set; SKIP if /tmp is not a separate partition; FAIL if /tmp is a separate partition but nodev is not set.",
+      "type": "collect",
+      "name": "Check that sha1_in_certs is set to 0 (disabled)",
+      "function": "3. Check that sha1_in_certs is set to 0 (disabled) using command: `grep -Psi -- '^\\h*sha1_in_certs\\h*=\\h*' /etc/crypto-policies/state/CURRENT.pol`. Expected result: output contains `sha1_in_certs = 0`.",
       "module": "ansible.builtin.shell",
+      "parameters": {
+        "cmd": "grep -Psi -- '^\\h*sha1_in_certs\\h*=\\h*' /etc/crypto-policies/state/CURRENT.pol"
+      },
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_step02_output"
+        ]
+      },
       "stores": [
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-07"
+      "on_fail": "step-08"
     },
     {
       "id": "step-04",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Se",
-      "function": "4. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "action",
+      "name": "Check overall compliance status: PASS if all above checks pass, SKIP if the policy file does not exist, FAIL if the…",
+      "function": "4. Check overall compliance status: PASS if all above checks pass, SKIP if the policy file does not exist, FAIL if the file exists but SHA1 hash/sign support is enabled or sha1_in_certs is not 0.",
+      "module": "ansible.builtin.shell",
       "input": {
         "source": "step-03",
         "fields": [
@@ -98,40 +133,66 @@
         ]
       },
       "stores": [
-        "cis_result"
+        "_step04_output"
       ],
-      "on_success": "step-05"
+      "on_success": "step-05",
+      "on_fail": "step-08"
     },
     {
       "id": "step-05",
-      "type": "emit",
-      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this fo",
-      "function": "5. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.2.1.2\nReference: CIS Benchmark checkpoint 1.1.2.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "5. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable. Also store the raw output of step-02 and step-03 in cis_result_comment and cis_raw_output.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-04",
         "fields": [
-          "cis_result"
+          "_step04_output",
+          "_step02_output",
+          "_step03_output"
         ]
       },
+      "stores": [
+        "cis_result",
+        "cis_result_comment",
+        "cis_raw_output"
+      ],
       "on_success": "step-06"
     },
     {
       "id": "step-06",
       "type": "emit",
+      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
+      "function": "6. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.6.3\nReference: CIS Benchmark checkpoint 1.6.3\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "cis_result",
+          "cis_result_comment",
+          "cis_raw_output"
+        ]
+      },
+      "on_success": "step-07"
+    },
+    {
+      "id": "step-07",
+      "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
       "output_fields": {
-        "cis_result": "{{ cis_result }}"
+        "cis_result": "{{ cis_result }}",
+        "cis_result_comment": "{{ cis_result_comment }}",
+        "cis_raw_output": "{{ cis_raw_output }}"
       },
       "on_success": "end"
     },
     {
-      "id": "step-07",
+      "id": "step-08",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.2.1.2 audit failed",
+      "error_message": "ERROR: CIS 1.6.3 audit failed",
       "on_success": "end"
     }
   ],
@@ -140,6 +201,15 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
+        "step-04"
+      ]
+    },
+    {
+      "name": "Data Collection",
+      "description": "Execute read-only commands on the target host.",
+      "steps": [
+        "step-01",
+        "step-02",
         "step-03"
       ]
     },
@@ -147,45 +217,43 @@
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-04"
+        "step-05"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-01",
-        "step-02",
-        "step-05",
-        "step-06"
+        "step-06",
+        "step-07"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-07"
+        "step-08"
       ]
     }
   ],
   "compliance_constraints": [
     "Use failed_when: false on all audit tasks (except set_fact, debug) so all checks complete and report status",
     "If the audit targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, report SKIP for all checks.",
-    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.)."
+    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.)"
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "- IF - a separate partition exists for /tmp, verify that the nodev option is set.\nRun the following command to verify that the nodev mount option is set.\nExample:\n# findmnt -kn /tmp | grep -v nodev\n\nNothing should be returned",
+  "reference_procedure": "Run the following commands to verify SHA1 hash and signature support has been disabled:\nRun the following command to verify that the hash and sign lines do not include the\nSHA1 hash:\n# awk -F= '($1~/(hash|sign)/ && $2~/SHA1/ && $2!~/^\\s*\\-\n\\s*([^#\\n\\r]+)?SHA1/){print}' /etc/crypto-policies/state/CURRENT.pol\nNothing should be returned\nRun the following command to verify that sha1_in_certs is set to 0 (disabled):\n# grep -Psi -- '^\\h*sha1_in_certs\\h*=\\h*' /etc/crypto-policies/state/CURRENT.pol\n\nsha1_in_certs = 0",
   "example_output": "",
-  "filename": "cis_audit_1_1_2_1_2.yml",
+  "filename": "cis_audit_1_6_3.yml",
   "output_dir": "./cis_rhel9_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-09T21:53:57",
-    "revision": 1,
-    "approved_at": "2026-08-09T21:54:33",
+    "drafted_at": "2026-08-10T10:38:44",
+    "revision": 2,
+    "approved_at": "2026-08-10T10:41:51",
     "saved_by": null
   }
 }
