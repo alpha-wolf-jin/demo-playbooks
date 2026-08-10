@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "6.3.3.1",
-  "title": "Ensure changes to system administration scope (sudoers) is collected",
+  "checkpoint_id": "6.3.3.6",
+  "title": "Ensure use of privileged commands are collected",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "ssh",
   "connection_risk": false,
-  "objective": "Audit CIS checkpoint 6.3.3.1: Ensure changes to system administration scope (sudoers) is collected",
+  "objective": "Audit CIS checkpoint 6.3.3.6: Ensure use of privileged commands are collected",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -47,44 +47,51 @@
       }
     ]
   },
-  "audit_script": "",
+  "audit_script": "#!/usr/bin/env bash\n\n{\n   for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         grep -qr \"${PRIVILEGED}\" /etc/audit/rules.d && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in on disk configuration.\\n\"\n      done\n   done\n}\nVerify that all output is OK.\nRunning configuration\nRun the following script to check loaded rules:\n#!/usr/bin/env bash\n\n{\n   RUNNING=$(auditctl -l)\n   [ -n \"${RUNNING}\" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         printf -- \"${RUNNING}\" | grep -q \"${PRIVILEGED}\" && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in running configuration.\\n\"\n      done\n   done \\\n   || printf \"ERROR: Variable 'RUNNING' is unset.\\n\"\n}",
   "steps": [
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Check if auditd is installed",
-      "function": "1. Check if auditd is installed using command: `command -v auditctl`. Expected result: path to auditctl binary.",
+      "name": "Run the provided audit script to verify Ensure use of privileged commands are collected. On disk configuration",
+      "function": "1. Run the provided audit script to verify Ensure use of privileged commands are collected. On disk configuration\nRun the following script to check on disk rules: — run audit_script — . Additional notes: Verify that all output is OK.\nSpecial mount points\nIf there are any special mount points that are not visible by default from findmnt as per the above audit, said file systems would have to be manually audited.. Expected result: Script applies the required changes",
       "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "parameters": {
+        "cmd": "#!/usr/bin/env bash\n\n{\n   for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         grep -qr \"${PRIVILEGED}\" /etc/audit/rules.d && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in on disk configuration.\\n\"\n      done\n   done\n}\nVerify that all output is OK.\nRunning configuration\nRun the following script to check loaded rules:\n#!/usr/bin/env bash\n\n{\n   RUNNING=$(auditctl -l)\n   [ -n \"${RUNNING}\" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         printf -- \"${RUNNING}\" | grep -q \"${PRIVILEGED}\" && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in running configuration.\\n\"\n      done\n   done \\\n   || printf \"ERROR: Variable 'RUNNING' is unset.\\n\"\n}"
+      },
       "stores": [
-        "_step01_output"
+        "_audit_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-08"
+      "on_fail": "step-06"
     },
     {
       "id": "step-02",
       "type": "collect",
-      "name": "Check on disk audit rules for /etc/sudoers and /etc/sudoers.d",
-      "function": "2. Check on disk audit rules for /etc/sudoers and /etc/sudoers.d using command: `awk '/^ *-w/ &&/\\/etc\\/sudoers/ &&/ +-p *wa/ &&(/ key= *[!-~]* *$/||/ -k *[!-~]* *$/)' /etc/audit/rules.d/*.rules`. Expected result: `-w /etc/sudoers -p wa -k scope` and `-w /etc/sudoers.d -p wa -k scope`.",
+      "name": "VERIFY: Summarise compliance status for Ensure use of privileged commands are collected",
+      "function": "2. VERIFY: Summarise compliance status for Ensure use of privileged commands are collected. Expected result: PASS if compliant, SKIP if prerequisite not met (e.g., partition/package does not exist), FAIL if misconfigured",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
         "fields": [
-          "_step01_output"
+          "_audit_output"
         ]
       },
       "stores": [
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-08"
+      "on_fail": "step-06"
     },
     {
       "id": "step-03",
-      "type": "collect",
-      "name": "Check loaded audit rules for /etc/sudoers and /etc/sudoers.d",
-      "function": "3. Check loaded audit rules for /etc/sudoers and /etc/sudoers.d using command: `auditctl -l | awk '/^ *-w/ &&/\\/etc\\/sudoers/ &&/ +-p *wa/ &&(/ key= *[!-~]* *$/||/ -k *[!-~]* *$/)'`. Expected result: `-w /etc/sudoers -p wa -k scope` and `-w /etc/sudoers.d -p wa -k scope`.",
-      "module": "ansible.builtin.shell",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "3. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-02",
         "fields": [
@@ -92,62 +99,26 @@
         ]
       },
       "stores": [
-        "_step03_output"
+        "cis_result"
       ],
-      "on_success": "step-04",
-      "on_fail": "step-08"
+      "on_success": "step-04"
     },
     {
       "id": "step-04",
-      "type": "action",
-      "name": "Check overall compliance status: PASS if all previous checks pass, SKIP if auditd is not installed, FAIL if auditd is…",
-      "function": "4. Check overall compliance status: PASS if all previous checks pass, SKIP if auditd is not installed, FAIL if auditd is installed but rules are missing or incorrect.",
-      "module": "ansible.builtin.shell",
-      "input": {
-        "source": "step-03",
-        "fields": [
-          "_step03_output"
-        ]
-      },
-      "stores": [
-        "_step04_output"
-      ],
-      "on_success": "step-05",
-      "on_fail": "step-08"
-    },
-    {
-      "id": "step-05",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "5. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
-      "input": {
-        "source": "step-04",
-        "fields": [
-          "_step04_output"
-        ]
-      },
-      "stores": [
-        "cis_result"
-      ],
-      "on_success": "step-06"
-    },
-    {
-      "id": "step-06",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "6. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 6.3.3.1\nReference: CIS Benchmark checkpoint 6.3.3.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "4. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 6.3.3.6\nReference: CIS Benchmark checkpoint 6.3.3.6\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-05",
+        "source": "step-03",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-07"
+      "on_success": "step-05"
     },
     {
-      "id": "step-07",
+      "id": "step-05",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -157,51 +128,43 @@
       "on_success": "end"
     },
     {
-      "id": "step-08",
+      "id": "step-06",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 6.3.3.1 audit failed",
+      "error_message": "ERROR: CIS 6.3.3.6 audit failed",
       "on_success": "end"
     }
   ],
   "phases": [
     {
-      "name": "Execution",
-      "description": "Apply remediation changes on the target host.",
-      "steps": [
-        "step-04"
-      ]
-    },
-    {
       "name": "Data Collection",
       "description": "Execute read-only commands on the target host.",
       "steps": [
         "step-01",
-        "step-02",
-        "step-03"
+        "step-02"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-05"
+        "step-03"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-06",
-        "step-07"
+        "step-04",
+        "step-05"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-08"
+        "step-06"
       ]
     }
   ],
@@ -213,16 +176,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "On disk configuration\nRun the following command to check the on disk rules:\n# awk '/^ *-w/ \\\n&&/\\/etc\\/sudoers/ \\\n&&/ +-p *wa/ \\\n&&(/ key= *[!-~]* *$/||/ -k *[!-~]* *$/)' /etc/audit/rules.d/*.rules\nVerify the output matches:\n-w /etc/sudoers -p wa -k scope\n-w /etc/sudoers.d -p wa -k scope\nRunning configuration\nRun the following command to check loaded rules:\n# auditctl -l | awk '/^ *-w/ \\\n&&/\\/etc\\/sudoers/ \\\n&&/ +-p *wa/ \\\n&&(/ key= *[!-~]* *$/||/ -k *[!-~]* *$/)'\nVerify the output matches:\n-w /etc/sudoers -p wa -k scope\n-w /etc/sudoers.d -p wa -k scope",
+  "reference_procedure": "On disk configuration\nRun the following script to check on disk rules:\n#!/usr/bin/env bash\n\n{\n   for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         grep -qr \"${PRIVILEGED}\" /etc/audit/rules.d && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in on disk configuration.\\n\"\n      done\n   done\n}\nVerify that all output is OK.\nRunning configuration\nRun the following script to check loaded rules:\n#!/usr/bin/env bash\n\n{\n   RUNNING=$(auditctl -l)\n   [ -n \"${RUNNING}\" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         printf -- \"${RUNNING}\" | grep -q \"${PRIVILEGED}\" && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in running configuration.\\n\"\n      done\n   done \\\n   || printf \"ERROR: Variable 'RUNNING' is unset.\\n\"\n}\nVerify that all output is OK.\nSpecial mount points\nIf there are any special mount points that are not visible by default from findmnt as per the above audit, said file systems would have to be manually audited.",
   "example_output": "",
-  "filename": "cis_audit_6_3_3_1.yml",
+  "filename": "cis_audit_6_3_3_6.yml",
   "output_dir": "./cis_rhel9_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-10T15:01:07",
+    "drafted_at": "2026-08-10T15:34:29",
     "revision": 1,
-    "approved_at": "2026-08-10T15:01:47",
+    "approved_at": "2026-08-10T15:34:54",
     "saved_by": null
   }
 }
