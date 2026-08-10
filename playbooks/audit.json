@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "6.3.3.6",
-  "title": "Ensure use of privileged commands are collected",
+  "checkpoint_id": "1.6.4",
+  "title": "Ensure system wide crypto policy disables macs less than 128 bits",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "ssh",
-  "connection_risk": false,
-  "objective": "Audit CIS checkpoint 6.3.3.6: Ensure use of privileged commands are collected",
+  "connection_risk": true,
+  "objective": "Audit CIS checkpoint 1.6.4: Ensure system wide crypto policy disables macs less than 128 bits",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -47,51 +47,44 @@
       }
     ]
   },
-  "audit_script": "#!/usr/bin/env bash\n\n{\n   for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         grep -qr \"${PRIVILEGED}\" /etc/audit/rules.d && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in on disk configuration.\\n\"\n      done\n   done\n}\nVerify that all output is OK.\nRunning configuration\nRun the following script to check loaded rules:\n#!/usr/bin/env bash\n\n{\n   RUNNING=$(auditctl -l)\n   [ -n \"${RUNNING}\" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         printf -- \"${RUNNING}\" | grep -q \"${PRIVILEGED}\" && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in running configuration.\\n\"\n      done\n   done \\\n   || printf \"ERROR: Variable 'RUNNING' is unset.\\n\"\n}",
+  "audit_script": "",
   "steps": [
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Run the provided audit script to verify Ensure use of privileged commands are collected. On disk configuration",
-      "function": "1. Run the provided audit script to verify Ensure use of privileged commands are collected. On disk configuration\nRun the following script to check on disk rules: — run audit_script — . Additional notes: Verify that all output is OK.\nSpecial mount points\nIf there are any special mount points that are not visible by default from findmnt as per the above audit, said file systems would have to be manually audited.. Expected result: Script applies the required changes",
+      "name": "Check if the system-wide crypto policy state file exists",
+      "function": "1. Check if the system-wide crypto policy state file exists using command: `test -f /etc/crypto-policies/state/CURRENT.pol`. Expected result: exit code 0 (file exists).",
       "module": "ansible.builtin.shell",
-      "input": {
-        "source": "playbook_input.parameters",
-        "fields": []
-      },
-      "parameters": {
-        "cmd": "#!/usr/bin/env bash\n\n{\n   for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         grep -qr \"${PRIVILEGED}\" /etc/audit/rules.d && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in on disk configuration.\\n\"\n      done\n   done\n}\nVerify that all output is OK.\nRunning configuration\nRun the following script to check loaded rules:\n#!/usr/bin/env bash\n\n{\n   RUNNING=$(auditctl -l)\n   [ -n \"${RUNNING}\" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         printf -- \"${RUNNING}\" | grep -q \"${PRIVILEGED}\" && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in running configuration.\\n\"\n      done\n   done \\\n   || printf \"ERROR: Variable 'RUNNING' is unset.\\n\"\n}"
-      },
       "stores": [
-        "_audit_output"
+        "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-06"
+      "on_fail": "step-07"
     },
     {
       "id": "step-02",
       "type": "collect",
-      "name": "VERIFY: Summarise compliance status for Ensure use of privileged commands are collected",
-      "function": "2. VERIFY: Summarise compliance status for Ensure use of privileged commands are collected. Expected result: PASS if compliant, SKIP if prerequisite not met (e.g., partition/package does not exist), FAIL if misconfigured",
+      "name": "Check that no MAC algorithms with less than 128 bits are enabled in the system-wide crypto policy",
+      "function": "2. Check that no MAC algorithms with less than 128 bits are enabled in the system-wide crypto policy using command: `grep -Pi -- '^\\h*mac\\h*=\\h*([^#\\n\\r]+)?-64\\b' /etc/crypto-policies/state/CURRENT.pol`. Expected result: no output (nothing returned).",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
         "fields": [
-          "_audit_output"
+          "_step01_output"
         ]
       },
       "stores": [
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-06"
+      "on_fail": "step-07"
     },
     {
       "id": "step-03",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "3. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "collect",
+      "name": "Check overall compliance status: PASS if the policy file exists and the grep command returns no output; SKIP if the…",
+      "function": "3. Check overall compliance status: PASS if the policy file exists and the grep command returns no output; SKIP if the policy file does not exist; FAIL if the policy file exists but the grep command returns any output.",
+      "module": "ansible.builtin.shell",
       "input": {
         "source": "step-02",
         "fields": [
@@ -99,26 +92,44 @@
         ]
       },
       "stores": [
-        "cis_result"
+        "_step03_output"
       ],
-      "on_success": "step-04"
+      "on_success": "step-04",
+      "on_fail": "step-07"
     },
     {
       "id": "step-04",
-      "type": "emit",
-      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "4. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 6.3.3.6\nReference: CIS Benchmark checkpoint 6.3.3.6\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "4. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-03",
         "fields": [
-          "cis_result"
+          "_step03_output"
         ]
       },
+      "stores": [
+        "cis_result"
+      ],
       "on_success": "step-05"
     },
     {
       "id": "step-05",
+      "type": "emit",
+      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
+      "function": "5. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.6.4\nReference: CIS Benchmark checkpoint 1.6.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "cis_result"
+        ]
+      },
+      "on_success": "step-06"
+    },
+    {
+      "id": "step-06",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -128,11 +139,11 @@
       "on_success": "end"
     },
     {
-      "id": "step-06",
+      "id": "step-07",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 6.3.3.6 audit failed",
+      "error_message": "ERROR: CIS 1.6.4 audit failed",
       "on_success": "end"
     }
   ],
@@ -142,29 +153,30 @@
       "description": "Execute read-only commands on the target host.",
       "steps": [
         "step-01",
-        "step-02"
+        "step-02",
+        "step-03"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-03"
+        "step-04"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-04",
-        "step-05"
+        "step-05",
+        "step-06"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-06"
+        "step-07"
       ]
     }
   ],
@@ -176,16 +188,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "On disk configuration\nRun the following script to check on disk rules:\n#!/usr/bin/env bash\n\n{\n   for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         grep -qr \"${PRIVILEGED}\" /etc/audit/rules.d && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in on disk configuration.\\n\"\n      done\n   done\n}\nVerify that all output is OK.\nRunning configuration\nRun the following script to check loaded rules:\n#!/usr/bin/env bash\n\n{\n   RUNNING=$(auditctl -l)\n   [ -n \"${RUNNING}\" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do\n      for PRIVILEGED in $(find \"${PARTITION}\" -xdev -perm /6000 -type f); do\n         printf -- \"${RUNNING}\" | grep -q \"${PRIVILEGED}\" && printf \"OK: '${PRIVILEGED}' found in auditing rules.\\n\" || printf \"Warning: '${PRIVILEGED}' not found in running configuration.\\n\"\n      done\n   done \\\n   || printf \"ERROR: Variable 'RUNNING' is unset.\\n\"\n}\nVerify that all output is OK.\nSpecial mount points\nIf there are any special mount points that are not visible by default from findmnt as per the above audit, said file systems would have to be manually audited.",
+  "reference_procedure": "Run the following script to verify weak MACs are disabled:\n# grep -Pi -- '^\\h*mac\\h*=\\h*([^#\\n\\r]+)?-64\\b' /etc/crypto-policies/state/CURRENT.pol\n\nNothing should be returned",
   "example_output": "",
-  "filename": "cis_audit_6_3_3_6.yml",
+  "filename": "cis_audit_1_6_4.yml",
   "output_dir": "./cis_rhel9_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-10T15:34:29",
+    "drafted_at": "2026-08-10T17:33:33",
     "revision": 1,
-    "approved_at": "2026-08-10T15:34:54",
+    "approved_at": "2026-08-10T17:34:26",
     "saved_by": null
   }
 }
