@@ -1,0 +1,422 @@
+---
+- name: "Remediate CIS checkpoint 1.6.4 - Ensure system wide crypto policy disables macs less than 128 bits"
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    playbook_name: "cis_1_6_4"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    req_01: "Apply prerequisite check for crypto-policies tools using command: `command -v update-crypto-policies && command -v reboot`. Expected result: both commands return paths without error."
+    req_02: |
+      Create or edit the subpolicy file /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod with content disabling weak MACs using command: `printf '%s\\n' '# This is a subpolicy to disable weak macs' 'mac = -*-64' >> /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod`. Expected result: file is created or appended with the specified lines.
+    req_03: "Apply the system-wide crypto policy with the NO-WEAKMAC subpolicy using command: `update-crypto-policies --set DEFAULT:NO-WEAKMAC`. Expected result: command completes successfully and updates the system crypto policy."
+    req_04: "Reboot the system to make cryptographic settings effective for running services using command: `reboot`. Expected result: system reboots successfully."
+    req_05: "Verify that MACs less than 128 bits are disabled in the active crypto policy using command: `update-crypto-policies --show`. Expected result: output includes 'DEFAULT:NO-WEAKMAC' or equivalent showing the subpolicy is applied."
+    req_06: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
+
+    - name: "Snapshot - Check if NO-WEAKMAC.pmod exists"
+      ansible.builtin.stat:
+        path: "/etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod"
+      register: _sg_pmod_stat
+      tags: [snapshot]
+
+    - name: "Snapshot - Backup NO-WEAKMAC.pmod if it exists"
+      ansible.builtin.copy:
+        src: "/etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod"
+        dest: "{{ backup_dir }}/NO-WEAKMAC.pmod.present"
+        remote_src: true
+      when: _sg_pmod_stat.stat.exists
+      tags: [snapshot]
+
+    - name: "Snapshot - Mark NO-WEAKMAC.pmod as absent if not present"
+      ansible.builtin.copy:
+        content: "absent"
+        dest: "{{ backup_dir }}/NO-WEAKMAC.pmod.absent"
+      when: not _sg_pmod_stat.stat.exists
+      tags: [snapshot]
+
+    - name: "Snapshot - Capture current crypto policy"
+      ansible.builtin.shell: "update-crypto-policies --show"
+      args:
+        executable: /bin/bash
+      register: _sg_policy_show
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Save current policy to file"
+      ansible.builtin.copy:
+        content: "{{ _sg_policy_show.stdout | default('') | trim }}"
+        dest: "{{ backup_dir }}/policy.state"
+      when: _sg_policy_show.stdout | default('') | length > 0
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Initialize data variables"
+          set_fact:
+            data_01: "Not collected yet"
+            status_01: "ERROR"
+            details_01: "Not evaluated"
+            data_02: "Not collected yet"
+            status_02: "ERROR"
+            details_02: "Not evaluated"
+            data_03: "Not collected yet"
+            status_03: "ERROR"
+            details_03: "Not evaluated"
+            data_04: "Not collected yet"
+            status_04: "ERROR"
+            details_04: "Not evaluated"
+            data_05: "Not collected yet"
+            status_05: "ERROR"
+            details_05: "Not evaluated"
+            data_06: "Not collected yet"
+            status_06: "ERROR"
+            details_06: "Not evaluated"
+            task_01_name: "Not executed"
+            task_01_cmd: "N/A"
+            task_01_rc: -1
+            task_02_name: "Not executed"
+            task_02_cmd: "N/A"
+            task_02_rc: -1
+            task_03_name: "Not executed"
+            task_03_cmd: "N/A"
+            task_03_rc: -1
+            task_04_name: "Not executed"
+            task_04_cmd: "N/A"
+            task_04_rc: -1
+            task_05_name: "Not executed"
+            task_05_cmd: "N/A"
+            task_05_rc: -1
+            task_06_name: "Not executed"
+            task_06_cmd: "N/A"
+            task_06_rc: -1
+          tags: [execute]
+
+        # Requirement 1
+        - name: "Req 1 - Check for required crypto-policies tools"
+          ansible.builtin.shell: "command -v update-crypto-policies && command -v reboot"
+          args:
+            executable: /bin/bash
+          register: result_01
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Store requirement 01 details"
+          set_fact:
+            task_01_name: "Check for update-crypto-policies and reboot commands"
+            task_01_cmd: "command -v update-crypto-policies && command -v reboot"
+            task_01_rc: "{{ result_01.rc | default(-1) }}"
+            data_01: "{{ result_01.stdout | default('') | trim }}"
+            status_01: "{{ ('PASS' if (result_01.rc | default(-1)) == 0 else 'FAIL') | trim }}"
+            details_01: "{{ ('Both tools found' if (result_01.rc | default(-1)) == 0 else 'Missing required tools') | trim }}"
+          tags: [execute]
+
+        - name: "Set prerequisite flag based on tool availability"
+          set_fact:
+            crypto_tools_available: "{{ (result_01.rc | default(-1)) == 0 }}"
+          tags: [execute]
+
+        # Requirement 2
+        - name: "Req 2 - Ensure NO-WEAKMAC.pmod contains required lines"
+          block:
+            - name: "Check if required content exists in NO-WEAKMAC.pmod"
+              ansible.builtin.shell: "grep -qx '# This is a subpolicy to disable weak macs' /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod 2>/dev/null && grep -qx 'mac = -*-64' /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod 2>/dev/null"
+              args:
+                executable: /bin/bash
+              register: _content_check
+              failed_when: false
+              changed_when: false
+              tags: [execute]
+
+            - name: "Append required lines if missing"
+              ansible.builtin.shell: "printf '%s\\n' '# This is a subpolicy to disable weak macs' 'mac = -*-64' >> /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod"
+              args:
+                executable: /bin/bash
+              when: _content_check.rc != 0
+              register: _append_result
+              failed_when: false
+              tags: [execute]
+
+            - name: "Set result_02 from append operation"
+              set_fact:
+                result_02: "{{ _append_result | default({'rc': 0, 'stdout': 'No change needed'}) }}"
+              tags: [execute]
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Store requirement 02 details"
+          set_fact:
+            task_02_name: "Ensure NO-WEAKMAC.pmod has required content"
+            task_02_cmd: "printf ... >> NO-WEAKMAC.pmod (only if missing)"
+            task_02_rc: "{{ result_02.rc | default(0) }}"
+            data_02: "{{ result_02.stdout | default('') | trim }}"
+            status_02: "{{ ('PASS' if (result_02.rc | default(0)) == 0 else 'FAIL') | trim }}"
+            details_02: "{{ ('Subpolicy file updated' if (result_02.rc | default(0)) == 0 else 'Failed to update subpolicy file') | trim }}"
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Set requirement 02 SKIP if tools unavailable"
+          set_fact:
+            task_02_name: "Skipped - tools not available"
+            task_02_cmd: "N/A"
+            task_02_rc: -1
+            data_02: ""
+            status_02: "SKIP"
+            details_02: "Skipped because crypto-policies tools not installed"
+          when: not (crypto_tools_available | default(false) | bool)
+          tags: [execute]
+
+        # Requirement 3
+        - name: "Req 3 - Apply system-wide crypto policy"
+          block:
+            - name: "Check current policy"
+              ansible.builtin.shell: "update-crypto-policies --show"
+              args:
+                executable: /bin/bash
+              register: _current_policy
+              failed_when: false
+              changed_when: false
+              tags: [execute]
+
+            - name: "Apply policy if NO-WEAKMAC not already active"
+              ansible.builtin.shell: "update-crypto-policies --set DEFAULT:NO-WEAKMAC"
+              args:
+                executable: /bin/bash
+              register: _apply_result
+              failed_when: false
+              when: |
+                'NO-WEAKMAC' not in (_current_policy.stdout | default(''))
+              tags: [execute]
+
+            - name: "Set result_03"
+              set_fact:
+                result_03: "{{ _apply_result | default({'rc': 0, 'stdout': 'Policy already applied'}) }}"
+              tags: [execute]
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Store requirement 03 details"
+          set_fact:
+            task_03_name: "Apply crypto policy DEFAULT:NO-WEAKMAC"
+            task_03_cmd: "update-crypto-policies --set DEFAULT:NO-WEAKMAC"
+            task_03_rc: "{{ result_03.rc | default(0) }}"
+            data_03: "{{ result_03.stdout | default('') | trim }}"
+            status_03: "{{ ('PASS' if (result_03.rc | default(0)) == 0 else 'FAIL') | trim }}"
+            details_03: "{{ ('Policy applied successfully' if (result_03.rc | default(0)) == 0 else 'Failed to apply policy') | trim }}"
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Set requirement 03 SKIP if tools unavailable"
+          set_fact:
+            task_03_name: "Skipped - tools not available"
+            task_03_cmd: "N/A"
+            task_03_rc: -1
+            data_03: ""
+            status_03: "SKIP"
+            details_03: "Skipped because crypto-policies tools not installed"
+          when: not (crypto_tools_available | default(false) | bool)
+          tags: [execute]
+
+        # Requirement 4
+        - name: "Req 4 - Reboot the system"
+          ansible.builtin.reboot:
+            reboot_timeout: 180
+          register: result_04
+          failed_when: false
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Store requirement 04 details"
+          set_fact:
+            task_04_name: "Reboot system"
+            task_04_cmd: "reboot (ansible.builtin.reboot module)"
+            task_04_rc: 0
+            data_04: "{{ 'Reboot completed' if (result_04.rebooted | default(false)) else 'Reboot not triggered' }}"
+            status_04: "PASS"
+            details_04: "{{ 'System rebooted successfully' if (result_04.rebooted | default(false)) else 'Reboot not required or skipped' }}"
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Set requirement 04 SKIP if tools unavailable"
+          set_fact:
+            task_04_name: "Skipped - tools not available"
+            task_04_cmd: "N/A"
+            task_04_rc: -1
+            data_04: ""
+            status_04: "SKIP"
+            details_04: "Skipped because crypto-policies tools not installed"
+          when: not (crypto_tools_available | default(false) | bool)
+          tags: [execute]
+
+        # Requirement 5
+        - name: "Req 5 - Verify active crypto policy includes NO-WEAKMAC"
+          ansible.builtin.shell: "update-crypto-policies --show"
+          args:
+            executable: /bin/bash
+          register: result_05
+          failed_when: false
+          changed_when: false
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Store requirement 05 details"
+          set_fact:
+            task_05_name: "Verify policy includes NO-WEAKMAC"
+            task_05_cmd: "update-crypto-policies --show"
+            task_05_rc: "{{ result_05.rc | default(-1) }}"
+            data_05: "{{ result_05.stdout | default('') | trim }}"
+            status_05: >-
+              {{- ('PASS' if ('NO-WEAKMAC' in (result_05.stdout | default(''))) else 'FAIL') | trim -}}
+            details_05: "{{ ('Policy verified' if ('NO-WEAKMAC' in (result_05.stdout | default(''))) else 'Verification failed') | trim }}"
+          when: crypto_tools_available | default(false) | bool
+          tags: [execute]
+
+        - name: "Set requirement 05 SKIP if tools unavailable"
+          set_fact:
+            task_05_name: "Skipped - tools not available"
+            task_05_cmd: "N/A"
+            task_05_rc: -1
+            data_05: ""
+            status_05: "SKIP"
+            details_05: "Skipped because crypto-policies tools not installed"
+          when: not (crypto_tools_available | default(false) | bool)
+          tags: [execute]
+
+        # Requirement 6 (fixed: removed circular reference to cis_result)
+        - name: "Req 6 - Store final remediation result in cis_result"
+          set_fact:
+            cis_result: "{{ status_05 | default('ERROR') | trim }}"
+            data_06: "{{ status_05 | default('ERROR') | trim }}"
+            status_06: "{{ status_05 | default('ERROR') | trim }}"
+            details_06: "Overall remediation status"
+          tags: [execute]
+
+        # Requirement 7 (report)
+        - name: "Generate remediation report"
+          debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 1.6.4"
+              - "Reference: CIS Benchmark checkpoint 1.6.4"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 04 - {{ req_04 }}:"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 05 - {{ req_05 }}:"
+              - "  Task: {{ task_05_name | default('Not recorded') }}"
+              - "  Command: {{ task_05_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_05_rc | default(-1) }}"
+              - "  Data: {{ data_05 | default('') | trim }}"
+              - "  Status: {{ status_05 | default('ERROR') | trim }}"
+              - "  Details: {{ details_05 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 06 - {{ req_06 }}:"
+              - "  Task: {{ task_06_name | default('Not recorded') }}"
+              - "  Command: {{ task_06_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_06_rc | default(-1) }}"
+              - "  Data: {{ data_06 | default('') | trim }}"
+              - "  Status: {{ status_06 | default('ERROR') | trim }}"
+              - "  Details: {{ details_06 | default('') | trim }}"
+              - ""
+              - "========================================================"
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "========================================================"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Check if NO-WEAKMAC.pmod backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/NO-WEAKMAC.pmod.present"
+          register: _restore_pmod_backup
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Overwrite NO-WEAKMAC.pmod with original if backup exists"
+          ansible.builtin.copy:
+            src: "{{ backup_dir }}/NO-WEAKMAC.pmod.present"
+            dest: "/etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod"
+            remote_src: true
+          when: _restore_pmod_backup.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Check if NO-WEAKMAC.pmod was originally absent"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/NO-WEAKMAC.pmod.absent"
+          register: _restore_pmod_absent
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove NO-WEAKMAC.pmod if it was created by remediation"
+          ansible.builtin.file:
+            path: "/etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod"
+            state: absent
+          when: _restore_pmod_absent.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read original policy from backup"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/policy.state"
+          register: _restore_policy_state
+          failed_when: false
+          when:
+            - _restore_pmod_backup.stat.exists | default(false) or _restore_pmod_absent.stat.exists | default(false)
+          tags: [restore]
+
+        - name: "Restore - Revert crypto policy to original"
+          ansible.builtin.shell: "update-crypto-policies --set {{ (_restore_policy_state.content | b64decode | default('') | trim) }}"
+          args:
+            executable: /bin/bash
+          when:
+            - _restore_policy_state is not failed
+            - _restore_policy_state.content is defined
+            - (_restore_policy_state.content | b64decode | default('') | trim) | length > 0
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
