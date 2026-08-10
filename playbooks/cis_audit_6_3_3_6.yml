@@ -1,0 +1,232 @@
+---
+- name: "Audit CIS checkpoint 6.3.3.6 - Ensure use of privileged commands are collected"
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    req_01: "Run the provided audit script to verify Ensure use of privileged commands are collected. On disk configuration and Running configuration"
+    req_02: "VERIFY: Summarise compliance status for Ensure use of privileged commands are collected. Expected result: PASS if compliant, SKIP if prerequisite not met (e.g., partition/package does not exist), FAIL if misconfigured"
+    req_03: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    req_04: "Create a task named 'Generate audit report' using debug msg with EXACTLY this format: AUDIT REPORT — CIS 6.3.3.6 ..."
+    ondisk_script: "/tmp/cis_6.3.3.6_ondisk.sh"
+    running_script: "/tmp/cis_6.3.3.6_running.sh"
+    ondisk_script_content: |
+      {% raw %}
+      #!/usr/bin/env bash
+      {
+         for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv "noexec|nosuid" | awk '{print $1}'); do
+            for PRIVILEGED in $(find "${PARTITION}" -xdev -perm /6000 -type f); do
+               grep -qr "${PRIVILEGED}" /etc/audit/rules.d && printf "OK: '${PRIVILEGED}' found in auditing rules.\n" || printf "Warning: '${PRIVILEGED}' not found in on disk configuration.\n"
+            done
+         done
+      }
+      {% endraw %}
+    running_script_content: |
+      {% raw %}
+      #!/usr/bin/env bash
+      {
+         RUNNING=$(auditctl -l)
+         [ -n "${RUNNING}" ] && for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv "noexec|nosuid" | awk '{print $1}'); do
+            for PRIVILEGED in $(find "${PARTITION}" -xdev -perm /6000 -type f); do
+               printf -- "${RUNNING}" | grep -q "${PRIVILEGED}" && printf "OK: '${PRIVILEGED}' found in auditing rules.\n" || printf "Warning: '${PRIVILEGED}' not found in running configuration.\n"
+            done
+         done \
+         || printf "ERROR: Variable 'RUNNING' is unset.\n"
+      }
+      {% endraw %}
+
+  tasks:
+    - name: "Initialize data variables"
+      set_fact:
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        data_01: "Not collected yet"
+        status_01: "ERROR"
+        details_01: "Not evaluated"
+        task_02_name: "Not executed"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        data_02: "Not collected yet"
+        status_02: "ERROR"
+        details_02: "Not evaluated"
+        task_03_name: "Not executed"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
+        data_03: "Not collected yet"
+        status_03: "ERROR"
+        details_03: "Not evaluated"
+        task_04_name: "Not executed"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
+        data_04: "Not collected yet"
+        status_04: "ERROR"
+        details_04: "Not evaluated"
+
+    - name: "Check if auditctl command is available (auditd package installed)"
+      ansible.builtin.shell: which auditctl
+      args:
+        executable: /bin/bash
+      register: auditctl_check
+      failed_when: false
+      changed_when: false
+
+    - name: "Set auditd installed fact"
+      set_fact:
+        auditd_installed: "{{ auditctl_check.rc == 0 }}"
+
+    - name: "Copy on-disk audit script to remote"
+      ansible.builtin.copy:
+        dest: "{{ ondisk_script }}"
+        mode: '0700'
+        content: "{{ ondisk_script_content }}"
+      when: auditd_installed | bool
+      changed_when: false
+
+    - name: "Execute on-disk audit script"
+      ansible.builtin.shell: /bin/bash "{{ ondisk_script }}"
+      args:
+        executable: /bin/bash
+      register: ondisk_result
+      when: auditd_installed | bool
+      failed_when: false
+      changed_when: false
+
+    - name: "Remove on-disk audit script"
+      ansible.builtin.file:
+        path: "{{ ondisk_script }}"
+        state: absent
+      when: auditd_installed | bool
+      changed_when: false
+
+    - name: "Copy running audit script to remote"
+      ansible.builtin.copy:
+        dest: "{{ running_script }}"
+        mode: '0700'
+        content: "{{ running_script_content }}"
+      when: auditd_installed | bool
+      changed_when: false
+
+    - name: "Execute running audit script"
+      ansible.builtin.shell: /bin/bash "{{ running_script }}"
+      args:
+        executable: /bin/bash
+      register: running_result
+      when: auditd_installed | bool
+      failed_when: false
+      changed_when: false
+
+    - name: "Remove running audit script"
+      ansible.builtin.file:
+        path: "{{ running_script }}"
+        state: absent
+      when: auditd_installed | bool
+      changed_when: false
+
+    - name: "Store requirement 01 details"
+      set_fact:
+        task_01_name: "Execute audit scripts (on-disk + running)"
+        task_01_cmd: "/bin/bash {{ ondisk_script }}; /bin/bash {{ running_script }}"
+        task_01_rc: 0
+        data_01: |
+          {{ (ondisk_result.stdout | default('') | trim) + '\n' + (running_result.stdout | default('') | trim) }}
+        status_01: >-
+          {%- if not auditd_installed -%}
+            SKIP
+          {%- elif 'Warning:' in (ondisk_result.stdout | default('') | trim) or 'Warning:' in (running_result.stdout | default('') | trim) -%}
+            FAIL
+          {%- else -%}
+            PASS
+          {%- endif -%}
+        details_01: >-
+          {%- if not auditd_installed -%}
+            Skipped: auditd package not installed
+          {%- elif 'Warning:' in (ondisk_result.stdout | default('') | trim) or 'Warning:' in (running_result.stdout | default('') | trim) -%}
+            Audit output contains warnings – on‑disk and/or running configuration missing rules for privileged commands
+          {%- else -%}
+            Both audit scripts output only OK lines
+          {%- endif -%}
+
+    - name: "Req 02 - Summarise compliance status"
+      set_fact:
+        task_02_name: "Summarise compliance status"
+        task_02_cmd: "Analysis of audit script outputs"
+        task_02_rc: 0
+        data_02: |
+          {{ (ondisk_result.stdout | default('') | trim) + '\n' + (running_result.stdout | default('') | trim) }}
+        status_02: >-
+          {%- if not auditd_installed -%}
+            SKIP
+          {%- else -%}
+            {%- set ondisk_out = ondisk_result.stdout | default('') | trim -%}
+            {%- set running_out = running_result.stdout | default('') | trim -%}
+            {%- if 'Warning:' in ondisk_out or 'Warning:' in running_out or 'ERROR:' in running_out -%}
+              FAIL
+            {%- else -%}
+              PASS
+            {%- endif -%}
+          {%- endif -%}
+        details_02: "{{ 'SKIP: auditd package not installed' if not auditd_installed else 'Compliance derived from audit output' }}"
+
+    - name: "Req 03 - Store final audit result in cis_result"
+      set_fact:
+        cis_result: "{{ status_02 | default('ERROR') | trim }}"
+        task_03_name: "Store final audit result in cis_result"
+        task_03_cmd: "set_fact"
+        task_03_rc: 0
+        data_03: "{{ status_02 | default('ERROR') | trim }}"
+        status_03: "PASS"
+        details_03: "Overall compliance status stored"
+
+    - name: "Req 04 - Prepare report metadata"
+      set_fact:
+        task_04_name: "Generate audit report"
+        task_04_cmd: "debug msg"
+        task_04_rc: 0
+        data_04: "Report generated"
+        status_04: "PASS"
+        details_04: "Audit report generated successfully"
+
+    - name: "Req 04 - Generate audit report"
+      debug:
+        msg:
+          - "AUDIT REPORT — CIS 6.3.3.6"
+          - "Reference: CIS Benchmark checkpoint 6.3.3.6"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "========================================================"
