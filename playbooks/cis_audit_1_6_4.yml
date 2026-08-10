@@ -1,0 +1,206 @@
+---
+- name: "Audit CIS checkpoint 1.6.4: Ensure system wide crypto policy disables macs less than 128 bits"
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    req_01: "Check if the system-wide crypto policy state file exists using command: `test -f /etc/crypto-policies/state/CURRENT.pol`. Expected result: exit code 0 (file exists)."
+    req_02: |
+      Check that no MAC algorithms with less than 128 bits are enabled in the system-wide crypto policy using command: `grep -Pi -- '^\\h*mac\\h*=\\h*([^#\\n\\r]+)?-64\\b' /etc/crypto-policies/state/CURRENT.pol`. Expected result: no output (nothing returned).
+    req_03: "Check overall compliance status: PASS if the policy file exists and the grep command returns no output; SKIP if the policy file does not exist; FAIL if the policy file exists but the grep command returns any output."
+    req_04: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  tasks:
+    - name: "Initialize data variables"
+      set_fact:
+        data_01: "Not collected yet"
+        status_01: "ERROR"
+        details_01: "Not evaluated"
+        data_02: "Not collected yet"
+        status_02: "ERROR"
+        details_02: "Not evaluated"
+        data_03: "Not collected yet"
+        status_03: "ERROR"
+        details_03: "Not evaluated"
+        data_04: "Not collected yet"
+        status_04: "ERROR"
+        details_04: "Not evaluated"
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        task_02_name: "Not executed"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        task_03_name: "Not executed"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
+        task_04_name: "Not executed"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
+
+    - name: "Gather package facts"
+      ansible.builtin.package_facts:
+        manager: auto
+      tags: [execute]
+
+    - name: "Set crypto-policies installation status"
+      set_fact:
+        crypto_policy_installed: "{{ 'crypto-policies' in ansible_facts.packages }}"
+
+    - name: "Set all requirements to SKIP when crypto-policies not installed"
+      set_fact:
+        status_01: "SKIP"
+        details_01: "crypto-policies package not installed"
+        status_02: "SKIP"
+        details_02: "crypto-policies package not installed"
+        status_03: "SKIP"
+        details_03: "crypto-policies package not installed"
+        cis_result: "SKIP"
+        status_04: "SKIP"
+        details_04: "crypto-policies package not installed"
+        task_01_name: "Req 01 - Check file (skipped)"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        task_02_name: "Req 02 - Check weak MACs (skipped)"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        task_03_name: "Req 03 - Determine compliance (skipped)"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
+        task_04_name: "Req 04 - Store cis_result (skipped)"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
+      when: not crypto_policy_installed
+
+    - name: "Req 01 - Check system-wide crypto policy state file exists"
+      ansible.builtin.shell: test -f /etc/crypto-policies/state/CURRENT.pol
+      args:
+        executable: /bin/bash
+      register: result_01
+      failed_when: false
+      changed_when: false
+      when: crypto_policy_installed | default(false)
+      tags: [execute]
+
+    - name: "Store requirement 01 details"
+      set_fact:
+        task_01_name: "Req 01 - Check system-wide crypto policy state file exists"
+        task_01_cmd: "test -f /etc/crypto-policies/state/CURRENT.pol"
+        task_01_rc: "{{ result_01.rc | default(-1) }}"
+        data_01: ""
+        status_01: "{{ ('PASS' if (result_01.rc | default(-1) == 0) else 'FAIL') | trim }}"
+        details_01: "{{ 'File exists' if (result_01.rc | default(-1) == 0) else 'File does not exist' }}"
+      when: crypto_policy_installed | default(false)
+      tags: [execute]
+
+    - name: "Req 02 - Check for MAC algorithms with less than 128 bits"
+      ansible.builtin.shell:
+        cmd: |
+          {% raw %}grep -Pi -- '^\h*mac\h*=\h*([^#\n\r]+)?-64\b' /etc/crypto-policies/state/CURRENT.pol{% endraw %}
+      args:
+        executable: /bin/bash
+      register: result_02
+      failed_when: false
+      changed_when: false
+      when: crypto_policy_installed | default(false)
+      tags: [execute]
+
+    - name: "Store requirement 02 details"
+      set_fact:
+        task_02_name: "Req 02 - Check for weak MACs in crypto policy"
+        task_02_cmd: |
+          grep -Pi -- '^\\h*mac\\h*=\\h*([^#\\n\\r]+)?-64\\b' /etc/crypto-policies/state/CURRENT.pol
+        task_02_rc: "{{ result_02.rc | default(-1) }}"
+        data_02: "{{ result_02.stdout | default('') | trim }}"
+        status_02: "{{ ('PASS' if (result_02.stdout | default('') | trim == '') else 'FAIL') | trim }}"
+        details_02: "{{ 'No weak MACs detected' if (result_02.stdout | default('') | trim == '') else 'Weak MACs found: ' + result_02.stdout }}"
+      when: crypto_policy_installed | default(false)
+      tags: [execute]
+
+    - name: "Evaluate overall compliance (Req 03)"
+      set_fact:
+        task_03_name: "Req 03 - Determine overall compliance"
+        task_03_cmd: "Internal evaluation of previous checks"
+        task_03_rc: 0
+        data_03: "status_01={{ status_01 }}, status_02={{ status_02 }}"
+        status_03: >-
+          {%- if status_01 | trim == 'PASS' and status_02 | trim == 'PASS' -%}
+            PASS
+          {%- elif status_01 | trim == 'PASS' and status_02 | trim == 'FAIL' -%}
+            FAIL
+          {%- else -%}
+            SKIP
+          {%- endif -%}
+        details_03: >-
+          {%- if status_01 | trim == 'PASS' and status_02 | trim == 'PASS' -%}
+            Policy file exists and no weak MACs found
+          {%- elif status_01 | trim == 'PASS' and status_02 | trim == 'FAIL' -%}
+            Policy file exists but weak MACs detected
+          {%- elif status_01 | trim == 'FAIL' -%}
+            Policy file does not exist
+          {%- else -%}
+            crypto-policies package not installed or skip
+          {%- endif -%}
+      when: crypto_policy_installed | default(false)
+      tags: [execute]
+
+    - name: "Store final audit result in cis_result (Req 04)"
+      set_fact:
+        cis_result: "{{ status_03 | default('ERROR') | trim }}"
+      when: crypto_policy_installed | default(false)
+      tags: [execute]
+
+    - name: "Store requirement 04 details"
+      set_fact:
+        task_04_name: "Req 04 - Store final audit result in cis_result"
+        task_04_cmd: "N/A"
+        task_04_rc: 0
+        data_04: "cis_result = {{ cis_result | default('ERROR') }}"
+        status_04: "{{ cis_result | default('ERROR') | trim }}"
+        details_04: "Audit completed"
+      tags: [execute]
+
+    - name: "Generate audit report"
+      debug:
+        msg:
+          - "AUDIT REPORT — CIS 1.6.4"
+          - "Reference: CIS Benchmark checkpoint 1.6.4"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "========================================================"
+      tags: [execute]
