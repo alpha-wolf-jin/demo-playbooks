@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "6.3.3.1",
-  "title": "Ensure changes to system administration scope (sudoers) is collected",
+  "checkpoint_id": "6.3.3.6",
+  "title": "Ensure use of privileged commands are collected",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
   "transport": "ssh",
   "connection_risk": false,
-  "objective": "Remediate CIS checkpoint 6.3.3.1: Ensure changes to system administration scope (sudoers) is collected",
+  "objective": "Remediate CIS checkpoint 6.3.3.6: Ensure use of privileged commands are collected",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -47,16 +47,23 @@
       }
     ]
   },
-  "audit_script": "",
+  "audit_script": "#!/usr/bin/env bash\n\n{\n  UID_MIN=$(awk '/^\\s*UID_MIN/{print $2}' /etc/login.defs)\n  AUDIT_RULE_FILE=\"/etc/audit/rules.d/50-privileged.rules\"\n  NEW_DATA=()\n  for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do readarray -t DATA < <(find \"${PARTITION}\" -xdev -perm /6000 -type f | awk -v UID_MIN=${UID_MIN} '{print \"-a always,exit -F path=\" $1 \" -F perm=x -F auid>=\"UID_MIN\" -F auid!=unset -k privileged\" }')\n      for ENTRY in \"${DATA[@]}\"; do\n        NEW_DATA+=(\"${ENTRY}\")\n      done\n  done\n  readarray &> /dev/null -t OLD_DATA < \"${AUDIT_RULE_FILE}\"\n  COMBINED_DATA=( \"${OLD_DATA[@]}\" \"${NEW_DATA[@]}\" )\n  printf '%s\\n' \"${COMBINED_DATA[@]}\" | sort -u > \"${AUDIT_RULE_FILE}\"\n}",
   "steps": [
     {
       "id": "step-01",
       "type": "action",
-      "name": "Apply remediation for: Ensure changes to system administration scope (sudoers) is collected",
-      "function": "1. Apply remediation for: Ensure changes to system administration scope (sudoers) is collected. Expected result: System is compliant",
+      "name": "Run the provided remediation script to fix Ensure use of privileged commands are collected. Edit or create a file in…",
+      "function": "1. Run the provided remediation script to fix Ensure use of privileged commands are collected. Edit or create a file in the /etc/audit/rules.d/ directory, ending in .rules extension, with the relevant rules to monitor the use of privileged commands.\nExample script: — run audit_script — . Additional notes: Merge and load the rules into active configuration:\n# augenrules --load\nCheck if reboot is required.\n# if [[ $(auditctl -s | grep \"enabled\") =~ \"2\" ]]; then printf \"Reboot required to load rules\\n\"; fi\nSpecial mount points\nIf there are any special mount points that are not visible by default from just scanning /, change the PARTITION variable to the appropriate partition and re-run the remediation.. Expected result: Script applies the required changes",
       "module": "ansible.builtin.shell",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": []
+      },
+      "parameters": {
+        "cmd": "#!/usr/bin/env bash\n\n{\n  UID_MIN=$(awk '/^\\s*UID_MIN/{print $2}' /etc/login.defs)\n  AUDIT_RULE_FILE=\"/etc/audit/rules.d/50-privileged.rules\"\n  NEW_DATA=()\n  for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do readarray -t DATA < <(find \"${PARTITION}\" -xdev -perm /6000 -type f | awk -v UID_MIN=${UID_MIN} '{print \"-a always,exit -F path=\" $1 \" -F perm=x -F auid>=\"UID_MIN\" -F auid!=unset -k privileged\" }')\n      for ENTRY in \"${DATA[@]}\"; do\n        NEW_DATA+=(\"${ENTRY}\")\n      done\n  done\n  readarray &> /dev/null -t OLD_DATA < \"${AUDIT_RULE_FILE}\"\n  COMBINED_DATA=( \"${OLD_DATA[@]}\" \"${NEW_DATA[@]}\" )\n  printf '%s\\n' \"${COMBINED_DATA[@]}\" | sort -u > \"${AUDIT_RULE_FILE}\"\n}"
+      },
       "stores": [
-        "_step01_output"
+        "_remediation_output"
       ],
       "on_success": "step-02",
       "on_fail": "step-06"
@@ -64,13 +71,13 @@
     {
       "id": "step-02",
       "type": "collect",
-      "name": "VERIFY: Confirm Ensure changes to system administration scope (sudoers) is collected is properly configured",
-      "function": "2. VERIFY: Confirm Ensure changes to system administration scope (sudoers) is collected is properly configured. Expected result: Compliant",
+      "name": "VERIFY: Run audit check to confirm Ensure use of privileged commands are collected is properly configured",
+      "function": "2. VERIFY: Run audit check to confirm Ensure use of privileged commands are collected is properly configured. Expected result: System is compliant",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
         "fields": [
-          "_step01_output"
+          "_remediation_output"
         ]
       },
       "stores": [
@@ -100,7 +107,7 @@
       "id": "step-04",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "4. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 6.3.3.1\nReference: CIS Benchmark checkpoint 6.3.3.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "4. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 6.3.3.6\nReference: CIS Benchmark checkpoint 6.3.3.6\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-03",
@@ -125,7 +132,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 6.3.3.1 audit failed",
+      "error_message": "ERROR: CIS 6.3.3.6 audit failed",
       "on_success": "end"
     }
   ],
@@ -174,16 +181,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Edit or create a file in the /etc/audit/rules.d/ directory, ending in .rules extension, with the relevant rules to monitor scope changes for system administrators.\nExample:\n# printf '%s\\n' \"-w /etc/sudoers -p wa -k scope\" \"-w /etc/sudoers.d -p wa -k scope\" >> /etc/audit/rules.d/50-scope.rules\nMerge and load the rules into active configuration:\n# augenrules --load\nCheck if reboot is required.\n# if [[ $(auditctl -s | grep \"enabled\") =~ \"2\" ]]; then printf \"Reboot required to load rules\\n\"; fi",
+  "reference_procedure": "Edit or create a file in the /etc/audit/rules.d/ directory, ending in .rules extension, with the relevant rules to monitor the use of privileged commands.\nExample script:\n#!/usr/bin/env bash\n\n{\n  UID_MIN=$(awk '/^\\s*UID_MIN/{print $2}' /etc/login.defs)\n  AUDIT_RULE_FILE=\"/etc/audit/rules.d/50-privileged.rules\"\n  NEW_DATA=()\n  for PARTITION in $(findmnt -n -l -k -it $(awk '/nodev/ { print $2 }' /proc/filesystems | paste -sd,) | grep -Pv \"noexec|nosuid\" | awk '{print $1}'); do readarray -t DATA < <(find \"${PARTITION}\" -xdev -perm /6000 -type f | awk -v UID_MIN=${UID_MIN} '{print \"-a always,exit -F path=\" $1 \" -F perm=x -F auid>=\"UID_MIN\" -F auid!=unset -k privileged\" }')\n      for ENTRY in \"${DATA[@]}\"; do\n        NEW_DATA+=(\"${ENTRY}\")\n      done\n  done\n  readarray &> /dev/null -t OLD_DATA < \"${AUDIT_RULE_FILE}\"\n  COMBINED_DATA=( \"${OLD_DATA[@]}\" \"${NEW_DATA[@]}\" )\n  printf '%s\\n' \"${COMBINED_DATA[@]}\" | sort -u > \"${AUDIT_RULE_FILE}\"\n}\nMerge and load the rules into active configuration:\n# augenrules --load\nCheck if reboot is required.\n# if [[ $(auditctl -s | grep \"enabled\") =~ \"2\" ]]; then printf \"Reboot required to load rules\\n\"; fi\nSpecial mount points\nIf there are any special mount points that are not visible by default from just scanning /, change the PARTITION variable to the appropriate partition and re-run the remediation.",
   "example_output": "",
-  "filename": "cis_remediation_6_3_3_1.yml",
+  "filename": "cis_remediation_6_3_3_6.yml",
   "output_dir": "./cis_rhel9_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-10T15:12:43",
+    "drafted_at": "2026-08-10T17:21:37",
     "revision": 1,
-    "approved_at": "2026-08-10T15:12:57",
+    "approved_at": "2026-08-10T17:22:16",
     "saved_by": null
   }
 }
