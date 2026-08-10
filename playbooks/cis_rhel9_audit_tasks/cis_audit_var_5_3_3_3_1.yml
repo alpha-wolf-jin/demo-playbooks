@@ -1,0 +1,14 @@
+password_history_remember: '24'
+req_01: "Check if the /etc/security/pwhistory.conf file exists using command: `test -f /etc/security/pwhistory.conf`. Expected result: exit status 0 (file exists)."
+req_02: |
+  Check if the pam_pwhistory module is configured in /etc/pam.d/password-auth or /etc/pam.d/system-auth using command: `grep -Pi -- '^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so' /etc/pam.d/password-auth /etc/pam.d/system-auth`. Expected result: at least one match is returned (module is present).
+req_03: |
+  Check that the remember option in /etc/security/pwhistory.conf is set to {{ password_history_remember }} or more using command: `grep -Pi -- '^\\h*remember\\h*=\\h*(2[4-9]|[3-9][0-9]|[1-9][0-9]{2,})\\b' /etc/security/pwhistory.conf` and verify the value is >= {{ password_history_remember }}. Expected result: a line matching the pattern is returned with a value >= {{ password_history_remember }}.
+req_04: |
+  Check that the remember option in /etc/security/pwhistory.conf is not set to less than {{ password_history_remember }} using command: `grep -Pi -- '^\\h*remember\\h*=\\h*(2[0-3]|1[0-9]|[0-9])\\b' /etc/security/pwhistory.conf` and verify no value is < {{ password_history_remember }}. Expected result: no output (nothing returned).
+req_05: |
+  Check that the remember option on the pam_pwhistory.so module in /etc/pam.d/password-auth is not set to less than {{ password_history_remember }} using command: `grep -Pi -- '^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so\\h+([^#\\n\\r]+\\h+)?remember=(2[0-3]|1[0-9]|[0-9])\\b' /etc/pam.d/password-auth` and verify no value is < {{ password_history_remember }}. Expected result: no output (nothing returned).
+req_06: |
+  Check that the remember option on the pam_pwhistory.so module in /etc/pam.d/system-auth is not set to less than {{ password_history_remember }} using command: `grep -Pi -- '^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so\\h+([^#\\n\\r]+\\h+)?remember=(2[0-3]|1[0-9]|[0-9])\\b' /etc/pam.d/system-auth` and verify no value is < {{ password_history_remember }}. Expected result: no output (nothing returned).
+req_07: "Check overall compliance status: if /etc/security/pwhistory.conf does not exist, or pam_pwhistory module is not present in both /etc/pam.d/password-auth and /etc/pam.d/system-auth, then SKIP; otherwise, if all previous checks pass, then PASS; if any check fails, then FAIL. Expected result: PASS if all checks pass, SKIP if prerequisite not met, FAIL if feature exists but is misconfigured."
+req_08: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
