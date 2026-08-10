@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "5.3.3.3.1",
-  "title": "Ensure password history remember is configured",
+  "checkpoint_id": "6.3.3.1",
+  "title": "Ensure changes to system administration scope (sudoers) is collected",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
   "transport": "ssh",
-  "connection_risk": true,
-  "objective": "Remediate CIS checkpoint 5.3.3.3.1: Ensure password history remember is configured",
+  "connection_risk": false,
+  "objective": "Remediate CIS checkpoint 6.3.3.1: Ensure changes to system administration scope (sudoers) is collected",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -31,14 +31,6 @@
         "default": null,
         "unit": null,
         "description": "SSH user with sudo access"
-      },
-      {
-        "name": "password_history_remember",
-        "type": "string",
-        "required": false,
-        "default": "24",
-        "unit": null,
-        "description": "Number of previous passwords to remember (pwhistory remember value)"
       }
     ]
   },
@@ -55,102 +47,71 @@
       }
     ]
   },
-  "audit_script": "#!/usr/bin/env bash\n\n{\n   for l_pam_file in system-auth password-auth; do\n     l_authselect_file=\"/etc/authselect/$(head -1 /etc/authselect/authselect.conf | grep 'custom/')/$l_pam_file\"\n     sed -ri 's/(^\\s*password\\s+(requisite|required|sufficient)\\s+pam_pwhistory\\.so.*)(\\s+ remember\\s*=\\s*\\S+)(.*$)/\\1\\4/' \"$l_authselect_file\"\n   done\n   authselect apply-changes\n}",
+  "audit_script": "",
   "steps": [
     {
       "id": "step-01",
-      "type": "collect",
-      "name": "Check if pwhistory remember is already configured",
-      "function": "1. Verify if the password history remember configuration is already present. Check /etc/security/pwhistory.conf for 'remember = {{ password_history_remember }}' and ensure no 'remember' argument exists in pam_pwhistory.so lines in /etc/pam.d/system-auth and /etc/pam.d/password-auth. If the configuration is already correct, skip remediation and go to step-04 (transform). Otherwise, proceed to step-02 (remediation).",
+      "type": "action",
+      "name": "Apply remediation for: Ensure changes to system administration scope (sudoers) is collected",
+      "function": "1. Apply remediation for: Ensure changes to system administration scope (sudoers) is collected. Expected result: System is compliant",
       "module": "ansible.builtin.shell",
-      "input": {
-        "source": "playbook_input.parameters",
-        "fields": [
-          "password_history_remember"
-        ]
-      },
-      "parameters": {
-        "cmd": "#!/usr/bin/env bash\n{\n  l_remember=\"{{ password_history_remember }}\"\n  l_pwhistory_conf_ok=0\n  l_pam_ok=0\n\n  # Check /etc/security/pwhistory.conf\n  if grep -Eqs \"^\\s*remember\\s*=\\s*${l_remember}\\s*$\" /etc/security/pwhistory.conf; then\n    l_pwhistory_conf_ok=1\n  fi\n\n  # Check pam_pwhistory.so lines in system-auth and password-auth\n  l_pam_ok=1\n  for l_pam_file in system-auth password-auth; do\n    l_authselect_file=\"/etc/authselect/$(head -1 /etc/authselect/authselect.conf | grep 'custom/')/$l_pam_file\"\n    if grep -Eqs \"^\\s*password\\s+(requisite|required|sufficient)\\s+pam_pwhistory\\.so.*\\s+remember\\s*=\\s*\\S+\" \"$l_authselect_file\"; then\n      l_pam_ok=0\n    fi\n  done\n\n  if [ \"$l_pwhistory_conf_ok\" -eq 1 ] && [ \"$l_pam_ok\" -eq 1 ]; then\n    echo \"COMPLIANT\"\n  else\n    echo \"NOT_COMPLIANT\"\n  fi\n}"
-      },
       "stores": [
-        "_step01_check_output"
+        "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-07"
+      "on_fail": "step-06"
     },
     {
       "id": "step-02",
-      "type": "action",
-      "name": "Run the provided remediation script to fix Ensure password history remember is configured",
-      "function": "2. Run the provided remediation script to fix Ensure password history remember is configured. Edit or add the following line in /etc/security/pwhistory.conf:\nremember = {{ password_history_remember }}\nRun the following script to remove the remember argument from the pam_pwhistory.so module in /etc/pam.d/system-auth and /etc/pam.d/password-auth: — run audit_script — . Expected result: Script applies the required changes",
+      "type": "collect",
+      "name": "VERIFY: Confirm Ensure changes to system administration scope (sudoers) is collected is properly configured",
+      "function": "2. VERIFY: Confirm Ensure changes to system administration scope (sudoers) is collected is properly configured. Expected result: Compliant",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
         "fields": [
-          "_step01_check_output",
-          "password_history_remember"
+          "_step01_output"
         ]
       },
-      "parameters": {
-        "cmd": "#!/usr/bin/env bash\n\n{\n   l_remember=\"{{ password_history_remember }}\"\n   # Set remember in /etc/security/pwhistory.conf\n   if grep -Eqs \"^\\s*remember\\s*=\" /etc/security/pwhistory.conf; then\n     sed -ri \"s/^\\s*remember\\s*=.*/remember = ${l_remember}/\" /etc/security/pwhistory.conf\n   else\n     echo \"remember = ${l_remember}\" >> /etc/security/pwhistory.conf\n   fi\n\n   for l_pam_file in system-auth password-auth; do\n     l_authselect_file=\"/etc/authselect/$(head -1 /etc/authselect/authselect.conf | grep 'custom/')/$l_pam_file\"\n     sed -ri 's/(^\\s*password\\s+(requisite|required|sufficient)\\s+pam_pwhistory\\.so.*)(\\s+ remember\\s*=\\s*\\S+)(.*$)/\\1\\4/' \"$l_authselect_file\"\n   done\n   authselect apply-changes\n}"
-      },
       "stores": [
-        "_remediation_output"
+        "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-07"
+      "on_fail": "step-06"
     },
     {
       "id": "step-03",
-      "type": "collect",
-      "name": "VERIFY: Run audit check to confirm Ensure password history remember is configured",
-      "function": "3. VERIFY: Run audit check to confirm Ensure password history remember is configured is properly configured. Expected result: System is compliant",
-      "module": "ansible.builtin.shell",
+      "type": "transform",
+      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
+      "function": "3. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-02",
         "fields": [
-          "_remediation_output"
-        ]
-      },
-      "stores": [
-        "_step03_output"
-      ],
-      "on_success": "step-04",
-      "on_fail": "step-07"
-    },
-    {
-      "id": "step-04",
-      "type": "transform",
-      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact",
-      "function": "4. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
-      "input": {
-        "source": "step-03",
-        "fields": [
-          "_step03_output"
+          "_step02_output"
         ]
       },
       "stores": [
         "cis_result"
       ],
-      "on_success": "step-05"
+      "on_success": "step-04"
     },
     {
-      "id": "step-05",
+      "id": "step-04",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "5. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 5.3.3.3.1\nReference: CIS Benchmark checkpoint 5.3.3.3.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "4. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 6.3.3.1\nReference: CIS Benchmark checkpoint 6.3.3.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-04",
+        "source": "step-03",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-06"
+      "on_success": "step-05"
     },
     {
-      "id": "step-06",
+      "id": "step-05",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -160,11 +121,11 @@
       "on_success": "end"
     },
     {
-      "id": "step-07",
+      "id": "step-06",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 5.3.3.3.1 audit failed",
+      "error_message": "ERROR: CIS 6.3.3.1 audit failed",
       "on_success": "end"
     }
   ],
@@ -173,37 +134,36 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-02"
+        "step-01"
       ]
     },
     {
       "name": "Data Collection",
       "description": "Execute read-only commands on the target host.",
       "steps": [
-        "step-01",
-        "step-03"
+        "step-02"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-04"
+        "step-03"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-05",
-        "step-06"
+        "step-04",
+        "step-05"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-07"
+        "step-06"
       ]
     }
   ],
@@ -214,16 +174,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Edit or add the following line in /etc/security/pwhistory.conf:\nremember = 24\nRun the following script to remove the remember argument from the pam_pwhistory.so module in /etc/pam.d/system-auth and /etc/pam.d/password-auth:\n#!/usr/bin/env bash\n\n{\n   for l_pam_file in system-auth password-auth; do\n     l_authselect_file=\"/etc/authselect/$(head -1 /etc/authselect/authselect.conf | grep 'custom/')/$l_pam_file\"\n     sed -ri 's/(^\\s*password\\s+(requisite|required|sufficient)\\s+pam_pwhistory\\.so.*)(\\s+ remember\\s*=\\s*\\S+)(.*$)/\\1\\4/' \"$l_authselect_file\"\n   done\n   authselect apply-changes\n}",
+  "reference_procedure": "Edit or create a file in the /etc/audit/rules.d/ directory, ending in .rules extension, with the relevant rules to monitor scope changes for system administrators.\nExample:\n# printf '%s\\n' \"-w /etc/sudoers -p wa -k scope\" \"-w /etc/sudoers.d -p wa -k scope\" >> /etc/audit/rules.d/50-scope.rules\nMerge and load the rules into active configuration:\n# augenrules --load\nCheck if reboot is required.\n# if [[ $(auditctl -s | grep \"enabled\") =~ \"2\" ]]; then printf \"Reboot required to load rules\\n\"; fi",
   "example_output": "",
-  "filename": "cis_remediation_5_3_3_3_1.yml",
+  "filename": "cis_remediation_6_3_3_1.yml",
   "output_dir": "./cis_rhel9_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-10T12:24:31",
-    "revision": 2,
-    "approved_at": "2026-08-10T12:30:47",
+    "drafted_at": "2026-08-10T15:12:43",
+    "revision": 1,
+    "approved_at": "2026-08-10T15:12:57",
     "saved_by": null
   }
 }
