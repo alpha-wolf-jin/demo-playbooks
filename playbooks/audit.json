@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "5.3.3.4.1",
-  "title": "Ensure pam_unix does not include nullok",
+  "checkpoint_id": "5.3.3.3.1",
+  "title": "Ensure password history remember is configured",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "ssh",
   "connection_risk": true,
-  "objective": "Audit CIS checkpoint 5.3.3.4.1: Ensure pam_unix does not include nullok",
+  "objective": "Audit CIS checkpoint 5.3.3.3.1: Ensure password history remember is configured",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -31,6 +31,14 @@
         "default": null,
         "unit": null,
         "description": "SSH user with sudo access"
+      },
+      {
+        "name": "password_history_remember",
+        "type": "integer",
+        "required": false,
+        "default": 24,
+        "unit": null,
+        "description": "Minimum number of password history entries to remember (CIS requires 24 or more)"
       }
     ]
   },
@@ -44,13 +52,6 @@
         "nullable": false,
         "required_by_sop": true,
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
-      },
-      {
-        "name": "audit_details",
-        "type": "string",
-        "nullable": true,
-        "required_by_sop": false,
-        "description": "Raw PAM configuration lines that were checked"
       }
     ]
   },
@@ -59,27 +60,21 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Check if PAM configuration files exist",
-      "function": "1. Check if PAM configuration files exist using command: `ls /etc/pam.d/password-auth /etc/pam.d/system-auth`. Expected result: Both files exist.",
+      "name": "Check if the /etc/security/pwhistory.conf file exists",
+      "function": "1. Check if the /etc/security/pwhistory.conf file exists using command: `test -f /etc/security/pwhistory.conf`. Expected result: exit status 0 (file exists).",
       "module": "ansible.builtin.shell",
-      "parameters": {
-        "cmd": "ls /etc/pam.d/password-auth /etc/pam.d/system-auth"
-      },
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-07"
+      "on_fail": "step-11"
     },
     {
       "id": "step-02",
       "type": "collect",
-      "name": "Check that pam_unix.so lines do not include nullok",
-      "function": "2. Check that pam_unix.so lines do not include nullok using command: `grep -P -- '^\\h*(auth|account|password|session)\\h+(requisite|required|sufficient)\\h+pam_unix\\.so\\b' /etc/pam.d/password-auth /etc/pam.d/system-auth`. Expected result: None of the returned lines includes 'nullok'.",
+      "name": "Check if the pam_pwhistory module is configured in /etc/pam.d/password-auth or /etc/pam.d/system-auth",
+      "function": "2. Check if the pam_pwhistory module is configured in /etc/pam.d/password-auth or /etc/pam.d/system-auth using command: `grep -Pi -- '^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so' /etc/pam.d/password-auth /etc/pam.d/system-auth`. Expected result: at least one match is returned (module is present).",
       "module": "ansible.builtin.shell",
-      "parameters": {
-        "cmd": "grep -P -- '^\\h*(auth|account|password|session)\\h+(requisite|required|sufficient)\\h+pam_unix\\.so\\b' /etc/pam.d/password-auth /etc/pam.d/system-auth"
-      },
       "input": {
         "source": "step-01",
         "fields": [
@@ -90,13 +85,13 @@
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-07"
+      "on_fail": "step-11"
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "Check overall compliance status",
-      "function": "3. Check overall compliance status. Expected result: PASS if all checks pass, SKIP if PAM configuration files do not exist, FAIL if pam_unix.so lines include nullok.",
+      "type": "collect",
+      "name": "Check that the remember option in /etc/security/pwhistory.conf is set to the required value or more",
+      "function": "3. Check that the remember option in /etc/security/pwhistory.conf is set to {{ password_history_remember }} or more using command: `grep -Pi -- '^\\h*remember\\h*=\\h*([2-9][0-9]|[1-9][0-9]{2,})\\b' /etc/security/pwhistory.conf` and verify the value is >= {{ password_history_remember }}. Expected result: a line matching the pattern is returned with a value >= {{ password_history_remember }}.",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-02",
@@ -108,14 +103,14 @@
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-07"
+      "on_fail": "step-11"
     },
     {
       "id": "step-04",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "4. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "collect",
+      "name": "Check that the remember option in /etc/security/pwhistory.conf is not set to less than the required value",
+      "function": "4. Check that the remember option in /etc/security/pwhistory.conf is not set to less than {{ password_history_remember }} using command: `grep -Pi -- '^\\h*remember\\h*=\\h*([0-9]|[1-9][0-9])\\b' /etc/security/pwhistory.conf` and verify no value is < {{ password_history_remember }}. Expected result: no output (nothing returned).",
+      "module": "ansible.builtin.shell",
       "input": {
         "source": "step-03",
         "fields": [
@@ -123,41 +118,112 @@
         ]
       },
       "stores": [
-        "cis_result"
+        "_step04_output"
       ],
-      "on_success": "step-05"
+      "on_success": "step-05",
+      "on_fail": "step-11"
     },
     {
       "id": "step-05",
-      "type": "emit",
-      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "5. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 5.3.3.4.1\nReference: CIS Benchmark checkpoint 5.3.3.4.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
+      "type": "collect",
+      "name": "Check that the remember option on the pam_pwhistory.so module in /etc/pam.d/password-auth is not set to less than the required value",
+      "function": "5. Check that the remember option on the pam_pwhistory.so module in /etc/pam.d/password-auth is not set to less than {{ password_history_remember }} using command: `grep -Pi -- '^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so\\h+([^#\\n\\r]+\\h+)?remember=([0-9]|[1-9][0-9])\\b' /etc/pam.d/password-auth` and verify no value is < {{ password_history_remember }}. Expected result: no output (nothing returned).",
+      "module": "ansible.builtin.shell",
       "input": {
         "source": "step-04",
+        "fields": [
+          "_step04_output"
+        ]
+      },
+      "stores": [
+        "_step05_output"
+      ],
+      "on_success": "step-06",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-06",
+      "type": "collect",
+      "name": "Check that the remember option on the pam_pwhistory.so module in /etc/pam.d/system-auth is not set to less than the required value",
+      "function": "6. Check that the remember option on the pam_pwhistory.so module in /etc/pam.d/system-auth is not set to less than {{ password_history_remember }} using command: `grep -Pi -- '^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so\\h+([^#\\n\\r]+\\h+)?remember=([0-9]|[1-9][0-9])\\b' /etc/pam.d/system-auth` and verify no value is < {{ password_history_remember }}. Expected result: no output (nothing returned).",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-05",
+        "fields": [
+          "_step05_output"
+        ]
+      },
+      "stores": [
+        "_step06_output"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Check overall compliance status: if /etc/security/pwhistory.conf does not exist, or pam_pwhistory module is not present…",
+      "function": "7. Check overall compliance status: if /etc/security/pwhistory.conf does not exist, or pam_pwhistory module is not present in both /etc/pam.d/password-auth and /etc/pam.d/system-auth, then SKIP; otherwise, if all previous checks pass, then PASS; if any check fails, then FAIL. Expected result: PASS if all checks pass, SKIP if prerequisite not met, FAIL if feature exists but is misconfigured.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_step06_output"
+        ]
+      },
+      "stores": [
+        "_step07_output"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "8. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_step07_output"
+        ]
+      },
+      "stores": [
+        "cis_result"
+      ],
+      "on_success": "step-09"
+    },
+    {
+      "id": "step-09",
+      "type": "emit",
+      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
+      "function": "9. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 5.3.3.3.1\nReference: CIS Benchmark checkpoint 5.3.3.3.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
+      "input": {
+        "source": "step-08",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-06"
+      "on_success": "step-10"
     },
     {
-      "id": "step-06",
+      "id": "step-10",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
       "output_fields": {
-        "cis_result": "{{ cis_result }}",
-        "audit_details": "{{ _step02_output.stdout | default('') }}"
+        "cis_result": "{{ cis_result }}"
       },
       "on_success": "end"
     },
     {
-      "id": "step-07",
+      "id": "step-11",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 5.3.3.4.1 audit failed",
+      "error_message": "ERROR: CIS 5.3.3.3.1 audit failed",
       "on_success": "end"
     }
   ],
@@ -166,7 +232,7 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-03"
+        "step-07"
       ]
     },
     {
@@ -174,29 +240,33 @@
       "description": "Execute read-only commands on the target host.",
       "steps": [
         "step-01",
-        "step-02"
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-04"
+        "step-08"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-05",
-        "step-06"
+        "step-09",
+        "step-10"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-07"
+        "step-11"
       ]
     }
   ],
@@ -208,16 +278,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Run the following command to verify that the nullok argument is not set on the pam_unix.so module:\n# grep -P --\n'^\\h*(auth|account|password|session)\\h+(requisite|required|sufficient)\\h+pam_ unix\\.so\\b' /etc/pam.d/{password,system}-auth\nVerify that none of the returned lines includes nullok. Output should be similar to:\n/etc/pam.d/password-auth:auth   sufficient   pam_unix.so\n/etc/pam.d/password-auth:account   required   pam_unix.so\n/etc/pam.d/password-auth:password   sufficient   pam_unix.so sha512 shadow use_authtok\n/etc/pam.d/password-auth:session   required   pam_unix.so\n\n/etc/pam.d/system-auth:auth   sufficient   pam_unix.so\n/etc/pam.d/system-auth:account   required   pam_unix.so\n/etc/pam.d/system-auth:password   sufficient   pam_unix.so sha512 shadow use_authtok\n/etc/pam.d/system-auth:session   required   pam_unix.so",
+  "reference_procedure": "Run the following command and verify that the remember option is set to 24 or more and meets local site policy in /etc/security/pwhistory.conf:\n# grep -Pi -- '^\\h*remember\\h*=\\h*(2[4-9]|[3-9][0-9]|[1-9][0-9]{2,})\\b'\n/etc/security/pwhistory.conf\n\nremember = 24\nRun the following command to verify that the remember option is not set to less than 24 on the pam_pwhistory.so module in /etc/pam.d/password-auth and /etc/pam.d/system-auth:\n# grep -Pi --\n'^\\h*password\\h+(requisite|required|sufficient)\\h+pam_pwhistory\\.so\\h+([^#\\n\\ r]+\\h+)?remember=(2[0-3]|1[0-9]|[0-9])\\b' /etc/pam.d/system-auth\n/etc/pam.d/password-auth\n\nNothing should be returned",
   "example_output": "",
-  "filename": "cis_audit_5_3_3_4_1.yml",
+  "filename": "cis_audit_5_3_3_3_1.yml",
   "output_dir": "./cis_rhel9_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-10T11:42:21",
-    "revision": 1,
-    "approved_at": "2026-08-10T11:44:03",
+    "drafted_at": "2026-08-10T13:11:56",
+    "revision": 2,
+    "approved_at": "2026-08-10T13:31:28",
     "saved_by": null
   }
 }
