@@ -1,0 +1,432 @@
+---
+- name: "Remediate CIS 5.3.3.4.1 - Ensure pam_unix does not include nullok"
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    playbook_name: "cis_5.3.3.4.1"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    profile_file: "{{ backup_dir }}/profile_name.txt"
+    authselect_package: "authselect"
+    req_01: "Run the provided remediation script to fix Ensure pam_unix does not include nullok."
+    req_02: "VERIFY: Run audit check to confirm Ensure pam_unix does not include nullok is properly configured. Expected result: System is compliant"
+    req_03: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    req_04: "Generate remediation report with required format."
+
+  pre_tasks:
+    - name: "Snapshot - Remove stale backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: absent
+      tags: [snapshot]
+
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
+
+    - name: "Snapshot - Save authselect profile name"
+      ansible.builtin.shell: head -1 /etc/authselect/authselect.conf > "{{ profile_file }}" 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Save authselect feature state"
+      ansible.builtin.shell: >
+        authselect current --features > "{{ backup_dir }}/features.txt" 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Read profile name"
+      ansible.builtin.command: cat "{{ profile_file }}"
+      register: _snap_profile_cat
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Set profile fact"
+      ansible.builtin.set_fact:
+        _snap_profile: "{{ _snap_profile_cat.stdout | trim }}"
+      tags: [snapshot]
+
+    - name: "Snapshot - Back up /etc/authselect/{{ _snap_profile }}/password-auth if exists"
+      block:
+        - name: "Snapshot - Check password-auth"
+          ansible.builtin.stat:
+            path: "/etc/authselect/{{ _snap_profile }}/password-auth"
+          register: _snap_pwd_auth_stat
+          tags: [snapshot]
+
+        - name: "Snapshot - Copy password-auth (present)"
+          ansible.builtin.copy:
+            src: "/etc/authselect/{{ _snap_profile }}/password-auth"
+            dest: "{{ backup_dir }}/password-auth.present"
+            remote_src: true
+          when: _snap_pwd_auth_stat.stat.exists
+          tags: [snapshot]
+
+        - name: "Snapshot - Mark password-auth absent"
+          ansible.builtin.copy:
+            content: "absent"
+            dest: "{{ backup_dir }}/password-auth.absent"
+          when: not _snap_pwd_auth_stat.stat.exists
+          tags: [snapshot]
+      when: _snap_profile | default('') != ''
+      tags: [snapshot]
+
+    - name: "Snapshot - Back up /etc/authselect/{{ _snap_profile }}/system-auth if exists"
+      block:
+        - name: "Snapshot - Check system-auth"
+          ansible.builtin.stat:
+            path: "/etc/authselect/{{ _snap_profile }}/system-auth"
+          register: _snap_sys_auth_stat
+          tags: [snapshot]
+
+        - name: "Snapshot - Copy system-auth (present)"
+          ansible.builtin.copy:
+            src: "/etc/authselect/{{ _snap_profile }}/system-auth"
+            dest: "{{ backup_dir }}/system-auth.present"
+            remote_src: true
+          when: _snap_sys_auth_stat.stat.exists
+          tags: [snapshot]
+
+        - name: "Snapshot - Mark system-auth absent"
+          ansible.builtin.copy:
+            content: "absent"
+            dest: "{{ backup_dir }}/system-auth.absent"
+          when: not _snap_sys_auth_stat.stat.exists
+          tags: [snapshot]
+      when: _snap_profile | default('') != ''
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Check if authselect is installed"
+          ansible.builtin.package_facts:
+            manager: auto
+          tags: [execute]
+
+        - name: "Set authselect installed flag"
+          ansible.builtin.set_fact:
+            authselect_installed: "{{ authselect_package in ansible_facts.packages }}"
+          tags: [execute]
+
+        - name: "Read profile name from backup"
+          ansible.builtin.command: cat "{{ profile_file }}"
+          register: _exec_profile_cat
+          changed_when: false
+          when: authselect_installed
+          tags: [execute]
+
+        - name: "Set custom profile flag"
+          ansible.builtin.set_fact:
+            custom_profile: "{{ _exec_profile_cat.stdout is defined and _exec_profile_cat.stdout | trim is match('^custom/') }}"
+          when: authselect_installed
+          tags: [execute]
+
+        - name: "Req 01 - Remediate nullok in pam_unix"
+          ansible.builtin.shell: |
+            {% raw %}
+            l_module_name="unix"
+            l_profile_name="$(head -1 /etc/authselect/authselect.conf)"
+            if [[ ! "$l_profile_name" =~ ^custom/ ]]; then
+              echo "SKIP: Custom authselect profile not in use"
+              exit 0
+            fi
+            grep_output=$(grep -P -- "\bpam_$l_module_name\.so\b" "/etc/authselect/$l_profile_name"/{password,system}-auth 2>/dev/null || true)
+            if echo "$grep_output" | grep -q '{if not "without-nullok":nullok}'; then
+              echo "FEATURE_MARKER_FOUND"
+              authselect enable-feature without-nullok
+              authselect apply-changes
+            elif echo "$grep_output" | grep -q "nullok"; then
+              echo "NULLOK_FOUND_WITHOUT_FEATURE"
+              for l_pam_file in system-auth password-auth; do
+                l_file="/etc/authselect/$l_profile_name/$l_pam_file"
+                sed -ri 's/(^\s*password\s+(requisite|required|sufficient)\s+pam_unix\.so\s+.*)(nullok)(\s*.*)$/\1\4/g' "$l_file"
+              done
+              authselect apply-changes
+            else
+              echo "NO_NULLOK_FOUND"
+            fi
+            {% endraw %}
+          args:
+            executable: /bin/bash
+          register: remediate_result
+          failed_when: false
+          changed_when: false
+          when:
+            - authselect_installed | default(false)
+            - custom_profile | default(false)
+          tags: [execute]
+
+        - name: "Req 02 - Verify nullok is absent from PAM files"
+          ansible.builtin.shell: |
+            {% raw %}
+            if grep -Pr '\bpam_unix\.so\b' /etc/pam.d/system-auth /etc/pam.d/password-auth 2>/dev/null | grep -v 'without-nullok' | grep -q 'nullok'; then
+              echo "FAIL"
+              exit 1
+            else
+              echo "PASS"
+            fi
+            {% endraw %}
+          args:
+            executable: /bin/bash
+          register: verify_result
+          failed_when: false
+          changed_when: false
+          when:
+            - authselect_installed | default(false)
+            - custom_profile | default(false)
+          tags: [execute]
+
+        - name: "Store requirement 01 details"
+          ansible.builtin.set_fact:
+            task_01_name: "Remediate nullok in pam_unix"
+            task_01_cmd: "authselect check, sed to remove nullok, enable without-nullok, apply-changes"
+            task_01_rc: "{{ remediate_result.rc | default(-1) }}"
+            data_01: "{{ remediate_result.stdout | default('') | trim }}"
+            status_01: >-
+              {%- if not (authselect_installed | default(false)) -%}
+              SKIP
+              {%- elif not (custom_profile | default(false)) -%}
+              SKIP
+              {%- elif remediate_result.stdout is search('FEATURE_MARKER_FOUND|NULLOK_FOUND_WITHOUT_FEATURE|NO_NULLOK_FOUND') -%}
+              PASS
+              {%- else -%}
+              FAIL
+              {%- endif -%}
+          tags: [execute]
+
+        - name: "Store requirement 01 details - details"
+          ansible.builtin.set_fact:
+            details_01: >-
+              {%- if status_01 == 'PASS' -%}
+              Remediation completed
+              {%- elif status_01 == 'SKIP' -%}
+              Skipped
+              {%- else -%}
+              Failed
+              {%- endif -%}
+          tags: [execute]
+
+        - name: "Store requirement 02 details"
+          ansible.builtin.set_fact:
+            task_02_name: "Verify nullok absent"
+            task_02_cmd: "grep for nullok in /etc/pam.d/system-auth password-auth excluding without-nullok"
+            task_02_rc: "{{ verify_result.rc | default(-1) }}"
+            data_02: "{{ verify_result.stdout | default('') | trim }}"
+            status_02: >-
+              {%- if not (authselect_installed | default(false)) -%}
+              SKIP
+              {%- elif not (custom_profile | default(false)) -%}
+              SKIP
+              {%- elif verify_result.stdout | trim == 'PASS' -%}
+              PASS
+              {%- else -%}
+              FAIL
+              {%- endif -%}
+          tags: [execute]
+
+        - name: "Store requirement 02 details - details"
+          ansible.builtin.set_fact:
+            details_02: >-
+              {%- if status_02 == 'PASS' -%}
+              Verification passed
+              {%- elif status_02 == 'SKIP' -%}
+              Verification skipped
+              {%- else -%}
+              Verification failed
+              {%- endif -%}
+          tags: [execute]
+
+        - name: "Req 03 - Set cis_result from final status"
+          ansible.builtin.set_fact:
+            cis_result: "{{ status_02 | default('ERROR') | trim }}"
+          tags: [execute]
+
+        - name: "Store requirement 03 details"
+          ansible.builtin.set_fact:
+            task_03_name: "Set cis_result fact"
+            task_03_cmd: "set_fact cis_result from status_02"
+            task_03_rc: 0
+            data_03: "{{ cis_result | default('ERROR') | trim }}"
+            status_03: "PASS"
+            details_03: "Final overall remediation status stored"
+          tags: [execute]
+
+        - name: "Req 04 - Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 5.3.3.4.1"
+              - "Reference: CIS Benchmark checkpoint 5.3.3.4.1"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "========================================================"
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "========================================================"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Read profile name from backup"
+          ansible.builtin.command: cat "{{ profile_file }}"
+          register: _restore_profile_cat
+          changed_when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Set profile fact"
+          ansible.builtin.set_fact:
+            _restore_profile: "{{ _restore_profile_cat.stdout | default('') | trim }}"
+          tags: [restore]
+
+        - name: "Restore - Restore password-auth if backup exists"
+          block:
+            - name: "Restore - Check password-auth backup"
+              ansible.builtin.stat:
+                path: "{{ backup_dir }}/password-auth.present"
+              register: _restore_pwd_present
+              failed_when: false
+              tags: [restore]
+
+            - name: "Restore - Copy back password-auth from backup"
+              ansible.builtin.copy:
+                src: "{{ backup_dir }}/password-auth.present"
+                dest: "/etc/authselect/{{ _restore_profile }}/password-auth"
+                remote_src: true
+              when: _restore_pwd_present.stat.exists | default(false)
+              failed_when: false
+              tags: [restore]
+
+            - name: "Restore - Check password-auth absent marker"
+              ansible.builtin.stat:
+                path: "{{ backup_dir }}/password-auth.absent"
+              register: _restore_pwd_absent
+              failed_when: false
+              tags: [restore]
+
+            - name: "Restore - Delete password-auth if was absent"
+              ansible.builtin.file:
+                path: "/etc/authselect/{{ _restore_profile }}/password-auth"
+                state: absent
+              when: _restore_pwd_absent.stat.exists | default(false)
+              failed_when: false
+              tags: [restore]
+          when: _restore_profile | default('') != ''
+          tags: [restore]
+
+        - name: "Restore - Restore system-auth if backup exists"
+          block:
+            - name: "Restore - Check system-auth backup"
+              ansible.builtin.stat:
+                path: "{{ backup_dir }}/system-auth.present"
+              register: _restore_sys_present
+              failed_when: false
+              tags: [restore]
+
+            - name: "Restore - Copy back system-auth from backup"
+              ansible.builtin.copy:
+                src: "{{ backup_dir }}/system-auth.present"
+                dest: "/etc/authselect/{{ _restore_profile }}/system-auth"
+                remote_src: true
+              when: _restore_sys_present.stat.exists | default(false)
+              failed_when: false
+              tags: [restore]
+
+            - name: "Restore - Check system-auth absent marker"
+              ansible.builtin.stat:
+                path: "{{ backup_dir }}/system-auth.absent"
+              register: _restore_sys_absent
+              failed_when: false
+              tags: [restore]
+
+            - name: "Restore - Delete system-auth if was absent"
+              ansible.builtin.file:
+                path: "/etc/authselect/{{ _restore_profile }}/system-auth"
+                state: absent
+              when: _restore_sys_absent.stat.exists | default(false)
+              failed_when: false
+              tags: [restore]
+          when: _restore_profile | default('') != ''
+          tags: [restore]
+
+        - name: "Restore - Check if features backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/features.txt"
+          register: _restore_feat_stat
+          failed_when: false
+          when: _restore_profile | default('') != ''
+          tags: [restore]
+
+        - name: "Restore - Read original features"
+          ansible.builtin.slurp:
+            src: "{{ backup_dir }}/features.txt"
+          register: _restore_orig_features
+          when:
+            - _restore_profile | default('') != ''
+            - _restore_feat_stat.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Disable without-nullok if not originally enabled"
+          ansible.builtin.shell: |
+            curr_feats=$(authselect current --features 2>/dev/null || true)
+            orig_feats=$(cat "{{ backup_dir }}/features.txt" 2>/dev/null || echo "")
+            {% raw %}
+            if echo "$orig_feats" | grep -qv 'without-nullok' && echo "$curr_feats" | grep -q 'without-nullok'; then
+              authselect disable-feature without-nullok
+            fi
+            {% endraw %}
+          args:
+            executable: /bin/bash
+          when:
+            - _restore_profile | default('') != ''
+            - _restore_orig_features.content is defined
+            - _restore_orig_features.content | b64decode | trim | length > 0
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Apply authselect changes to regenerate PAM files"
+          ansible.builtin.shell: authselect apply-changes
+          args:
+            executable: /bin/bash
+          when: _restore_profile | default('') != ''
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
