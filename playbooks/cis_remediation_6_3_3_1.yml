@@ -1,0 +1,301 @@
+---
+- name: "Remediate CIS checkpoint 6.3.3.1 - Ensure changes to system administration scope (sudoers) is collected"
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+  vars:
+    playbook_name: "cis_6_3_3_1_remediation"
+    backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+    req_01: "Apply remediation for: Ensure changes to system administration scope (sudoers) is collected. Expected result: System is compliant"
+    req_02: "VERIFY: Confirm Ensure changes to system administration scope (sudoers) is collected is properly configured. Expected result: Compliant"
+    req_03: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    req_04: "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format: ..."
+    audit_rules_file: "/etc/audit/rules.d/50-scope.rules"
+    backup_filename: "50-scope.rules"
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [snapshot]
+
+    - name: "Snapshot - Check if {{ audit_rules_file }} exists"
+      ansible.builtin.stat:
+        path: "{{ audit_rules_file }}"
+      register: _sg_file_stat
+      tags: [snapshot]
+
+    - name: "Snapshot - Backup {{ audit_rules_file }} if present"
+      ansible.builtin.copy:
+        src: "{{ audit_rules_file }}"
+        dest: "{{ backup_dir }}/{{ backup_filename }}.present"
+        remote_src: true
+      when: _sg_file_stat.stat.exists
+      tags: [snapshot]
+
+    - name: "Snapshot - Mark {{ audit_rules_file }} as absent"
+      ansible.builtin.copy:
+        content: "absent"
+        dest: "{{ backup_dir }}/{{ backup_filename }}.absent"
+      when: not _sg_file_stat.stat.exists
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Initialize data variables"
+          ansible.builtin.set_fact:
+            task_01_name: "Not executed"
+            task_01_cmd: "N/A"
+            task_01_rc: -1
+            task_02_name: "Not executed"
+            task_02_cmd: "N/A"
+            task_02_rc: -1
+            task_03_name: "Not executed"
+            task_03_cmd: "N/A"
+            task_03_rc: -1
+            task_04_name: "Not executed"
+            task_04_cmd: "N/A"
+            task_04_rc: -1
+            data_01: "Not collected yet"
+            data_02: "Not collected yet"
+            data_03: "Not collected yet"
+            data_04: "Not collected yet"
+            status_01: "ERROR"
+            status_02: "ERROR"
+            status_03: "ERROR"
+            status_04: "ERROR"
+            details_01: "Not evaluated"
+            details_02: "Not evaluated"
+            details_03: "Not evaluated"
+            details_04: "Not evaluated"
+          tags: [execute]
+
+        - name: "Check if auditd package is installed"
+          ansible.builtin.package_facts:
+            manager: auto
+          failed_when: false
+          tags: [execute]
+
+        - name: "Set auditd_installed fact"
+          ansible.builtin.set_fact:
+            auditd_installed: "{{ 'audit' in ansible_facts.packages }}"
+          tags: [execute]
+
+        # ----- Requirement 1 -----
+        - name: "Req 01 - Capture before content of {{ audit_rules_file }}"
+          ansible.builtin.slurp:
+            src: "{{ audit_rules_file }}"
+          register: _before_slurp
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req 01 - Ensure '-w /etc/sudoers -p wa -k scope' rule in {{ audit_rules_file }}"
+          ansible.builtin.lineinfile:
+            path: "{{ audit_rules_file }}"
+            line: "-w /etc/sudoers -p wa -k scope"
+            state: present
+            create: yes
+            mode: '0640'
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req 01 - Ensure '-w /etc/sudoers.d -p wa -k scope' rule in {{ audit_rules_file }}"
+          ansible.builtin.lineinfile:
+            path: "{{ audit_rules_file }}"
+            line: "-w /etc/sudoers.d -p wa -k scope"
+            state: present
+            create: yes
+            mode: '0640'
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req 01 - Load audit rules using augenrules"
+          ansible.builtin.shell: augenrules --load
+          args:
+            executable: /bin/bash
+          register: _augenrules
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req 01 - Check if reboot is required"
+          ansible.builtin.shell: |
+            set -o pipefail
+            if [[ $(auditctl -s | grep "enabled") =~ "2" ]]; then printf "Reboot required to load rules\n"; fi
+          args:
+            executable: /bin/bash
+          register: _reboot_check
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req 01 - Capture after content of {{ audit_rules_file }}"
+          ansible.builtin.slurp:
+            src: "{{ audit_rules_file }}"
+          register: _after_slurp
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Store requirement 01 details"
+          ansible.builtin.set_fact:
+            task_01_name: "Add audit rules and load via augenrules"
+            task_01_cmd: "augenrules --load"
+            task_01_rc: "{{ _augenrules.rc | default(-1) }}"
+            data_01: "{{ _augenrules.stdout | default('') | trim }}"
+            status_01: >-
+              {%- if not auditd_installed -%}SKIP
+              {%- elif _augenrules.rc | default(-1) == 0 -%}PASS
+              {%- else -%}FAIL
+              {%- endif -%}
+            details_01: >-
+              {%- if not auditd_installed -%}SKIP: auditd package not installed
+              {%- elif _augenrules.rc | default(-1) == 0 -%}
+              PASS: audit rules loaded successfully.
+              Before: {{ _before_slurp.content | default('') | b64decode | trim | truncate(200) }}
+              After: {{ _after_slurp.content | default('') | b64decode | trim | truncate(200) }}
+              {%- else -%}FAIL: augenrules returned non-zero exit code. Error: {{ _augenrules.stderr | default('') | trim }}
+              {%- endif -%}
+          tags: [execute]
+
+        # ----- Requirement 2 -----
+        - name: "Req 02 - Verify audit rules are active"
+          ansible.builtin.shell: |
+            set -o pipefail
+            EXPECTED=2
+            FOUND=$(auditctl -l | grep -cE '^(-w /etc/sudoers -p wa -k scope|-w /etc/sudoers\.d -p wa -k scope)')
+            if [ "$FOUND" -eq "$EXPECTED" ]; then echo "Both rules active"; else echo "Missing rules, found $FOUND/$EXPECTED"; exit 1; fi
+          args:
+            executable: /bin/bash
+          register: _verify
+          when: auditd_installed
+          failed_when: false
+          tags: [execute]
+
+        - name: "Store requirement 02 details"
+          ansible.builtin.set_fact:
+            task_02_name: "Verify audit rules for sudoers and sudoers.d"
+            task_02_cmd: |
+              set -o pipefail
+              EXPECTED=2
+              FOUND=$(auditctl -l | grep -cE '^(-w /etc/sudoers -p wa -k scope|-w /etc/sudoers\.d -p wa -k scope)')
+              if [ "$FOUND" -eq "$EXPECTED" ]; then echo "Both rules active"; else echo "Missing rules, found $FOUND/$EXPECTED"; exit 1; fi
+            task_02_rc: "{{ _verify.rc | default(-1) }}"
+            data_02: "{{ _verify.stdout | default('') | trim }}"
+            status_02: >-
+              {%- if not auditd_installed -%}SKIP
+              {%- elif _verify.rc | default(-1) == 0 -%}PASS
+              {%- else -%}FAIL
+              {%- endif -%}
+            details_02: >-
+              {%- if not auditd_installed -%}SKIP: auditd package not installed
+              {%- elif _verify.rc | default(-1) == 0 -%}PASS: Both audit rules are active
+              {%- else -%}FAIL: Expected 2 rules, found {{ _verify.stdout | default('') | trim }}
+              {%- endif -%}
+          tags: [execute]
+
+        # ----- Requirement 3 -----
+        - name: "Req 03 - Store final remediation result in cis_result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ status_02 | default('ERROR') | trim }}"
+            task_03_name: "Set cis_result fact"
+            task_03_cmd: "set_fact cis_result = {{ status_02 | default('ERROR') | trim }}"
+            task_03_rc: 0
+            data_03: "cis_result = {{ status_02 | default('ERROR') | trim }}"
+            status_03: "PASS"
+            details_03: "cis_result successfully set to {{ status_02 | default('ERROR') | trim }}"
+          tags: [execute]
+
+        # ----- Requirement 4 -----
+        - name: "Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 6.3.3.1"
+              - "Reference: CIS Benchmark checkpoint 6.3.3.1"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "========================================================"
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "  Details: Remediation completed with status {{ cis_result }}"
+              - "========================================================"
+          when: true
+          tags: [execute]
+
+        - name: "Set report task facts"
+          ansible.builtin.set_fact:
+            task_04_name: "Generate remediation report"
+            task_04_cmd: "debug msg"
+            task_04_rc: 0
+            data_04: "Report generated"
+            status_04: "PASS"
+            details_04: "Report displayed above"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Check if {{ backup_filename }}.present backup exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/{{ backup_filename }}.present"
+          register: _restore_present
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Restore {{ audit_rules_file }} from backup"
+          ansible.builtin.copy:
+            src: "{{ backup_dir }}/{{ backup_filename }}.present"
+            dest: "{{ audit_rules_file }}"
+            remote_src: true
+          when: _restore_present.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Check if {{ backup_filename }}.absent marker exists"
+          ansible.builtin.stat:
+            path: "{{ backup_dir }}/{{ backup_filename }}.absent"
+          register: _restore_absent
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Delete {{ audit_rules_file }} if it was absent before"
+          ansible.builtin.file:
+            path: "{{ audit_rules_file }}"
+            state: absent
+          when: _restore_absent.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.builtin.file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
