@@ -1,0 +1,251 @@
+---
+- name: "Audit CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured"
+  hosts: all
+  become: yes
+  gather_facts: false
+  vars:
+    req_01: "Check if OpenSSH server is installed using command: `sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null`. Expected result: command returns version or package information indicating sshd is present."
+    req_02: |
+      Check sshd configured ciphers for weak algorithms using command: `sshd -T | grep -Pi -- '^ciphers\\h+\\\"?([^#\\n\\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\\.liu\\.se|chacha20-poly1305@openssh\\.com)\\b'`. Expected result: no output (no weak ciphers listed).
+    req_03: "If the previous command returns a line containing chacha20-poly1305@openssh.com, check if system is patched against CVE-2023-48795 using command: `sshd -T | grep -i 'chacha20-poly1305@openssh.com' && (grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795')`. Expected result: patch information or updated version is found."
+    req_04: |
+      Check that none of the specific weak ciphers (3des-cbc, aes128-cbc, aes192-cbc, aes256-cbc) are present in the sshd configuration using command: `sshd -T | grep -E '^ciphers\\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'`. Expected result: no output.
+    req_05: "Summarize overall compliance status: PASS if all previous checks pass (no weak ciphers returned, and if chacha20-poly1305 present, patched), SKIP if sshd is not installed, FAIL if any weak cipher is configured or chacha20-poly1305 is present without patch. Expected result: one of PASS, SKIP, or FAIL based on the checks."
+    req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  tasks:
+    - name: "Initialize data variables"
+      set_fact:
+        data_01: "Not collected yet"
+        status_01: "ERROR"
+        details_01: "Not evaluated"
+        data_02: "Not collected yet"
+        status_02: "ERROR"
+        details_02: "Not evaluated"
+        data_03: "Not collected yet"
+        status_03: "ERROR"
+        details_03: "Not evaluated"
+        data_04: "Not collected yet"
+        status_04: "ERROR"
+        details_04: "Not evaluated"
+        data_05: "Not collected yet"
+        status_05: "ERROR"
+        details_05: "Not evaluated"
+        data_06: "Not collected yet"
+        status_06: "ERROR"
+        details_06: "Not evaluated"
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+
+    - name: "Req step-01 - Check if OpenSSH server is installed"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null
+      args:
+        executable: /bin/bash
+      register: _step01_output
+      failed_when: false
+      changed_when: false
+
+    - name: "Req step-01 - Store installation status"
+      set_fact:
+        sshd_installed: "{{ _step01_output.rc == 0 }}"
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        status_01: "{{ 'PASS' if _step01_output.rc == 0 else 'FAIL' }}"
+        details_01: "{{ 'OpenSSH server is installed' if _step01_output.rc == 0 else 'OpenSSH server not found' }}"
+        task_01_name: "Check OpenSSH installation"
+        task_01_cmd: "sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null"
+        task_01_rc: "{{ _step01_output.rc }}"
+
+    - name: "Req step-02 - Check sshd ciphers for weak algorithms"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -T | grep -Pi -- '^ciphers\h+\"?([^#\n\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se|chacha20-poly1305@openssh\.com)\b'
+      args:
+        executable: /bin/bash
+      register: _step02_output
+      failed_when: false
+      changed_when: false
+      when: sshd_installed | default(false)
+
+    - name: "Req step-02 - Store weak ciphers check result"
+      set_fact:
+        data_02: "{{ _step02_output.stdout | default('') | trim }}"
+        status_02: >-
+          {%- if not sshd_installed -%}
+            SKIP
+          {%- elif _step02_output.stdout | default('') | regex_search('(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc|blowfish-cbc|cast128-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se)') -%}
+            FAIL
+          {%- else -%}
+            PASS
+          {%- endif -%}
+        details_02: >-
+          {%- if not sshd_installed -%}
+            Skipped - sshd not installed
+          {%- elif _step02_output.stdout | default('') | regex_search('(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc|blowfish-cbc|cast128-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se)') -%}
+            Weak ciphers detected: {{ _step02_output.stdout }}
+          {%- else -%}
+            No weak ciphers detected
+          {%- endif -%}
+        task_02_name: "Check sshd ciphers for weak algorithms"
+        task_02_cmd: |
+          set -o pipefail && sshd -T | grep -Pi -- '^ciphers\\h+\\\"?([^#\\n\\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\\.liu\\.se|chacha20-poly1305@openssh\\.com)\\b'
+        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+
+    - name: "Req step-03 - Check chacha20-poly1305 CVE-2023-48795 patch"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -T | grep -i 'chacha20-poly1305@openssh.com' && (grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795')
+      args:
+        executable: /bin/bash
+      register: _step03_output
+      failed_when: false
+      changed_when: false
+      when:
+        - sshd_installed | default(false)
+        - "'chacha20-poly1305@openssh.com' in (_step02_output.stdout | default(''))"
+
+    - name: "Req step-03 - Store CVE patch check result"
+      set_fact:
+        data_03: "{{ _step03_output.stdout | default('') | trim if (sshd_installed and 'chacha20-poly1305@openssh.com' in (_step02_output.stdout | default(''))) else 'N/A' }}"
+        status_03: >-
+          {%- if not sshd_installed -%}
+            SKIP
+          {%- elif 'chacha20-poly1305@openssh.com' not in (_step02_output.stdout | default('')) -%}
+            SKIP
+          {%- elif _step03_output.rc | default(1) == 0 -%}
+            PASS
+          {%- else -%}
+            FAIL
+          {%- endif -%}
+        details_03: >-
+          {%- if not sshd_installed -%}
+            Skipped - sshd not installed
+          {%- elif 'chacha20-poly1305@openssh.com' not in (_step02_output.stdout | default('')) -%}
+            Skipped - chacha20-poly1305 cipher not in use
+          {%- elif _step03_output.rc | default(1) == 0 -%}
+            System appears patched against CVE-2023-48795
+          {%- else -%}
+            chacha20-poly1305 cipher in use but no patch detected
+          {%- endif -%}
+        task_03_name: "Check if chacha20-poly1305 present and system patched"
+        task_03_cmd: "sshd -T | grep -i 'chacha20-poly1305@openssh.com' && (grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795')"
+        task_03_rc: "{{ _step03_output.rc | default(-1) }}"
+
+    - name: "Req step-04 - Check for specific weak CBC ciphers"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -T | grep -E '^ciphers\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
+      args:
+        executable: /bin/bash
+      register: _step04_output
+      failed_when: false
+      changed_when: false
+      when: sshd_installed | default(false)
+
+    - name: "Req step-04 - Store CBC ciphers check result"
+      set_fact:
+        data_04: "{{ _step04_output.stdout | default('') | trim }}"
+        status_04: "{{ 'SKIP' if not sshd_installed else ('PASS' if (_step04_output.rc | default(-1)) != 0 else 'FAIL') }}"
+        details_04: "{{ 'Skipped - sshd not installed' if not sshd_installed else ('No weak CBC ciphers detected' if (_step04_output.rc | default(-1)) != 0 else 'Weak CBC ciphers detected: ' + (_step04_output.stdout | default(''))) }}"
+        task_04_name: "Check for specific weak CBC ciphers"
+        task_04_cmd: |
+          set -o pipefail && sshd -T | grep -E '^ciphers\\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
+        task_04_rc: "{{ _step04_output.rc | default(-1) }}"
+
+    - name: "Req step-05 - Determine overall compliance status"
+      set_fact:
+        status_05: >-
+          {%- if not sshd_installed -%}
+            SKIP
+          {%- elif status_02 | trim == 'FAIL' or status_03 | trim == 'FAIL' or status_04 | trim == 'FAIL' -%}
+            FAIL
+          {%- else -%}
+            PASS
+          {%- endif -%}
+        details_05: >-
+          {%- if not sshd_installed -%}
+            Audit skipped - OpenSSH server not installed
+          {%- elif status_02 | trim == 'FAIL' or status_03 | trim == 'FAIL' or status_04 | trim == 'FAIL' -%}
+            Weak ciphers or unpatched chacha20-poly1305 or CBC ciphers detected
+          {%- else -%}
+            All checks passed
+          {%- endif -%}
+
+    - name: "Req step-05 - Set cis status flag"
+      set_fact:
+        _cis_status: "{{ status_05 | trim }}"
+
+    - name: "Req step-05 - Store overall compliance check result"
+      set_fact:
+        data_05: "Overall: {{ status_05 }}"
+        task_05_name: "Determine overall compliance status"
+        task_05_cmd: "N/A"
+        task_05_rc: 0
+
+    - name: "Req step-06 - Store final audit result in cis_result"
+      set_fact:
+        cis_result: "{{ status_05 | default('ERROR') | trim }}"
+        data_06: "{{ status_05 | default('ERROR') }}"
+        status_06: "{{ status_05 | default('ERROR') }}"
+        details_06: "{{ details_05 | default('Not evaluated') }}"
+        task_06_name: "Store cis_result"
+        task_06_cmd: "N/A"
+        task_06_rc: 0
+
+    - name: "Req step-07 - Generate audit report"
+      debug:
+        msg:
+          - "AUDIT REPORT — CIS 5.1.4"
+          - "Reference: CIS Benchmark checkpoint 5.1.4"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 05 - {{ req_05 }}:"
+          - "  Task: {{ task_05_name | default('Not recorded') }}"
+          - "  Command: {{ task_05_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_05_rc | default(-1) }}"
+          - "  Data: {{ data_05 | default('') | trim }}"
+          - "  Status: {{ status_05 | default('ERROR') | trim }}"
+          - "  Details: {{ details_05 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 06 - {{ req_06 }}:"
+          - "  Task: {{ task_06_name | default('Not recorded') }}"
+          - "  Command: {{ task_06_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_06_rc | default(-1) }}"
+          - "  Data: {{ data_06 | default('') | trim }}"
+          - "  Status: {{ status_06 | default('ERROR') | trim }}"
+          - "  Details: {{ details_06 | default('') | trim }}"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
+          - "========================================================"
