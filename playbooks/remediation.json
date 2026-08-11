@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "1.6.4",
-  "title": "Ensure system wide crypto policy disables macs less than 128 bits",
+  "checkpoint_id": "5.1.4",
+  "title": "Ensure sshd Ciphers are configured",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
   "transport": "ssh",
   "connection_risk": true,
-  "objective": "Remediate CIS checkpoint 1.6.4: Ensure system wide crypto policy disables macs less than 128 bits",
+  "objective": "Remediate CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -52,8 +52,8 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Apply prerequisite check for crypto-policies tools",
-      "function": "1. Apply prerequisite check for crypto-policies tools using command: `command -v update-crypto-policies && command -v reboot`. Expected result: both commands return paths without error.",
+      "name": "Apply prerequisite check for system-wide crypto policy package",
+      "function": "1. Apply prerequisite check for system-wide crypto policy package using command: `rpm -q crypto-policies-scripts`. Expected result: package is installed and version is displayed.",
       "module": "ansible.builtin.shell",
       "stores": [
         "_step01_output"
@@ -64,8 +64,8 @@
     {
       "id": "step-02",
       "type": "action",
-      "name": "Create or edit the subpolicy file /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod with content disabling weak MACs",
-      "function": "2. Create or edit the subpolicy file /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod with content disabling weak MACs using command: `printf '%s\\n' '# This is a subpolicy to disable weak macs' 'mac = -*-64' >> /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod`. Expected result: file is created or appended with the specified lines.",
+      "name": "Apply creation of a crypto policy module to disable weak SSH ciphers",
+      "function": "2. Apply creation of a crypto policy module to disable weak SSH ciphers using command: `printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the SSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod`. Expected result: file /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod is created with the specified content.",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
@@ -82,8 +82,8 @@
     {
       "id": "step-03",
       "type": "collect",
-      "name": "Apply the system-wide crypto policy with the NO-WEAKMAC subpolicy",
-      "function": "3. Apply the system-wide crypto policy with the NO-WEAKMAC subpolicy using command: `update-crypto-policies --set DEFAULT:NO-WEAKMAC`. Expected result: command completes successfully and updates the system crypto policy.",
+      "name": "Apply update of system-wide cryptographic policy",
+      "function": "3. Apply update of system-wide cryptographic policy using command: `update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS`. Expected result: command completes successfully and system crypto policy is updated.",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-02",
@@ -100,8 +100,8 @@
     {
       "id": "step-04",
       "type": "collect",
-      "name": "Reboot the system to make cryptographic settings effective for running services",
-      "function": "4. Reboot the system to make cryptographic settings effective for running services using command: `reboot`. Expected result: system reboots successfully.",
+      "name": "Apply reload of OpenSSH server to make cryptographic settings effective",
+      "function": "4. Apply reload of OpenSSH server to make cryptographic settings effective using command: `systemctl reload-or-restart sshd`. Expected result: sshd service reloads or restarts without errors.",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-03",
@@ -118,8 +118,8 @@
     {
       "id": "step-05",
       "type": "collect",
-      "name": "Verify that MACs less than 128 bits are disabled in the active crypto policy",
-      "function": "5. Verify that MACs less than 128 bits are disabled in the active crypto policy using command: `update-crypto-policies --show`. Expected result: output includes 'DEFAULT:NO-WEAKMAC' or equivalent showing the subpolicy is applied.",
+      "name": "Verify that the sshd Ciphers configuration is compliant",
+      "function": "5. Verify that the sshd Ciphers configuration is compliant using command: `sshd -T | grep -i ciphers`. Expected result: output shows only allowed ciphers (aes256-gcm@openssh.com, aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr) and does not include weak ciphers like 3des-cbc, aes128-cbc, aes192-cbc, aes256-cbc, or chacha20-poly1305.",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-04",
@@ -154,7 +154,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.6.4\nReference: CIS Benchmark checkpoint 1.6.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 5.1.4\nReference: CIS Benchmark checkpoint 5.1.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -179,7 +179,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.6.4 audit failed",
+      "error_message": "ERROR: CIS 5.1.4 audit failed",
       "on_success": "end"
     }
   ],
@@ -231,16 +231,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Note:\n• The commands below are written for the included DEFAULT system-wide crypto policy. If another policy is in use and follows local site policy, replace DEFAULT with the name of your system-wide crypto policy.\n• Multiple subpolicies may be assigned to a policy as a colon separated list. e.g.\nDEFAULT:NO-SHA1:NO-SSHCBC\n• Subpolicies:\no Not included in the update-crypto-policies --set command will not be applied to the system wide crypto policy.\no must exist before they can be applied to the system wide crypto policy.\no .pmod file filenames must be in all upper case, upper case, e.g. NO-WEAKMAC.pmod, or they will not be read by the update-crypto-policies\n--set command.\nCreate or edit a file in /etc/crypto-policies/policies/modules/ ending in .pmod and add or modify one of the following lines:\nmac = -*-64* # Disables weak macs\nExample:\n# printf '%s\\n' \"# This is a subpolicy to disable weak macs\" \"mac = -*-64\" >> /etc/crypto-policies/policies/modules/NO-WEAKMAC.pmod\nRun the following command to update the system-wide cryptographic policy\n# update-crypto-policies --set\n<CRYPTO_POLICY>:<CRYPTO_SUBPOLICY1>:<CRYPTO_SUBPOLICY2>:<CRYPTO_SUBPOLICY3>\nExample:\nupdate-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC\nRun the following command to reboot the system to make your cryptographic settings effective for already running services and applications:\n# reboot",
+  "reference_procedure": "Note:\n• First occurrence of an option takes precedence.\n• Though ciphers may be configured through the Ciphers option in the /etc/ssh/sshd_config file, it is recommended that the ciphers available to openSSH server are configured through system-wide-crypto-policy\n• If the recommendations in the subsection \"Configure system wide crypto policy\"\nhave been followed, this Audit should be in a passing state. Please review that section before following this Remediation Procedure\n• By default, system-wide-crypto-policy is applied to the openSSH server. If the following defaults don't exist due to modifications or upgrade from a earlier release, the system-wide-crypto-policy may not be included by the openSSH server. It is recommended that these defaults be restored, created, or the line\nInclude /etc/crypto-policies/back-ends/opensshserver.config be added before any lines containing the Cipher argument.\n• Defaults:\no The file /etc/ssh/sshd_config includes the line: Include\n/etc/ssh/sshd_config.d/*.conf. This line must appear before any lines containing the Cipher argument o This directory /etc/ssh/sshd_config.d/ includes a file\n/etc/ssh/sshd_config.d/50-redhat.conf\no The file /etc/ssh/sshd_config.d/50-redhat.conf includes the line\nInclude /etc/crypto-policies/back-ends/opensshserver.config\no The file /etc/crypto-policies/back-ends/opensshserver.config is generated by system-wide-crypto-policy\n- IF - CVE-2023-48795 has been addressed, and it meets local site policy, chacha20- poly1305 may be removed from the list of excluded ciphers.\nCreate or edit a file in /etc/crypto-policies/policies/modules/ ending in .pmod and add or modify the the following line:\ncipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\nExample:\n# printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the\nSSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod\nRun the following command to update the system-wide cryptographic policy\n# update-crypto-policies --set\n<CRYPTO_POLICY>:<CRYPTO_SUBPOLICY1>:<CRYPTO_SUBPOLICY2>:<CRYPTO_SUBPOLICY3>\nExample:\n# update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS\nRun the following command to reload the openSSH server to make your cryptographic settings effective:\n# systemctl reload-or-restart sshd\n- OR - If system-wide-crypto-policy is not being used to configure available ciphers\n(This is not recommended)\nEdit the /etc/ssh/sshd_config file and add/modify the Ciphers line to contain a comma separated list of the site unapproved (weak) Ciphers preceded with a - above any\nInclude entries:\nExample:\nCiphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305@openssh.com",
   "example_output": "",
-  "filename": "cis_remediation_1_6_4.yml",
+  "filename": "cis_remediation_5_1_4.yml",
   "output_dir": "./cis_rhel9_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-10T17:42:54",
+    "drafted_at": "2026-08-11T23:21:16",
     "revision": 1,
-    "approved_at": "2026-08-10T17:43:33",
+    "approved_at": "2026-08-11T23:21:24",
     "saved_by": null
   }
 }
