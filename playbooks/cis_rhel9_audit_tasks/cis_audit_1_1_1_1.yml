@@ -4,154 +4,108 @@
 
 - name: "Initialize data variables"
   ansible.builtin.set_fact:
+    data_01: "Not collected yet"
+    status_01: "ERROR"
+    details_01: "Not evaluated"
     task_01_name: "Not executed"
     task_01_cmd: "N/A"
     task_01_rc: -1
-    data_01: "Not collected"
-    status_01: "ERROR"
-    details_01: "Not evaluated"
+    data_02: "Not collected yet"
+    status_02: "ERROR"
+    details_02: "Not evaluated"
     task_02_name: "Not executed"
     task_02_cmd: "N/A"
     task_02_rc: -1
-    data_02: "Not collected"
-    status_02: "ERROR"
-    details_02: "Not evaluated"
+    data_03: "Not collected yet"
+    status_03: "ERROR"
+    details_03: "Not evaluated"
     task_03_name: "Not executed"
     task_03_cmd: "N/A"
     task_03_rc: -1
-    data_03: "Not collected"
-    status_03: "ERROR"
-    details_03: "Not evaluated"
+    data_04: "Not collected yet"
+    status_04: "ERROR"
+    details_04: "Not evaluated"
     task_04_name: "Not executed"
     task_04_cmd: "N/A"
     task_04_rc: -1
-    data_04: "Not collected"
-    status_04: "ERROR"
-    details_04: "Not evaluated"
 
-- name: "Req step-01 - Copy audit script to remote"
+# Requirement 1: Run the provided audit script
+- name: "Req 1 - Copy audit script to target"
   ansible.builtin.copy:
-    dest: "/tmp/cis_audit_cramfs.sh"
-    mode: "0700"
-    content: |
-      #!/usr/bin/env bash
-      {
-         l_output3="" l_dl=""
-         unset a_output; unset a_output2
-         l_mod_name="{{ kernel_module_name }}"
-         l_mod_type="fs"
-         l_mod_path="$(readlink -f /lib/modules/**/kernel/$l_mod_type | sort -u)"
-         {% raw %}
-         f_module_chk()
-         {
-            l_dl="y"
-            a_showconfig=()
-            while IFS= read -r l_showconfig; do
-               a_showconfig+=("$l_showconfig")
-            done < <(modprobe --showconfig | grep -P -- '\b(install|blacklist)\h+'"${l_mod_name//-/_}"'\b')
-            if ! lsmod | grep "$l_mod_name" &> /dev/null; then
-               a_output+=("  - kernel module: \"$l_mod_name\" is not loaded")
-            else
-               a_output2+=("  - kernel module: \"$l_mod_name\" is loaded")
-            fi
-            if grep -Pq -- '\binstall\h+'"${l_mod_name//-/_}"'\h+\/bin\/(true|false)\b' <<< "${a_showconfig[*]}"; then
-               a_output+=("  - kernel module: \"$l_mod_name\" is not loadable")
-            else
-               a_output2+=("  - kernel module: \"$l_mod_name\" is loadable")
-            fi
-            if grep -Pq -- '\bblacklist\h+'"${l_mod_name//-/_}"'\b' <<< "${a_showconfig[*]}"; then
-               a_output+=("  - kernel module: \"$l_mod_name\" is deny listed")
-            else
-               a_output2+=("  - kernel module: \"$l_mod_name\" is not deny listed")
-            fi
-         }
-         for l_mod_base_directory in $l_mod_path; do
-            if [ -d "$l_mod_base_directory/${l_mod_name/-/\/}" ] && [ -n "$(ls -A $l_mod_base_directory/${l_mod_name/-/\/})" ]; then
-               l_output3="$l_output3\n  - \"$l_mod_base_directory\""
-               [[ "$l_mod_name" =~ overlay ]] && l_mod_name="${l_mod_name::-2}"
-               [ "$l_dl" != "y" ] && f_module_chk
-            else
-               a_output+=(" - kernel module: \"$l_mod_name\" doesn't exist in \"$l_mod_base_directory\"")
-            fi
-         done
-         [ -n "$l_output3" ] && echo -e "\n\n -- INFO --\n - module: \"$l_mod_name\" exists in:$l_output3"
-         if [ "${#a_output2[@]}" -le 0 ]; then
-            printf '%s\n' "" "- Audit Result:" "  ** PASS **" "${a_output[@]}"
-         else
-            printf '%s\n' "" "- Audit Result:" "  ** FAIL **" " - Reason(s) for audit failure:" "${a_output2[@]}"
-            [ "${#a_output[@]}" -gt 0 ] && printf '%s\n' "- Correctly set:" "${a_output[@]}"
-         fi
-         {% endraw %}
-      }
+    dest: "{{ audit_script }}"
+    content: "{{ audit_script_content }}"
+    mode: '0700'
+  failed_when: false
   changed_when: false
 
-- name: "Req step-01 - Run the provided audit script to verify Ensure cramfs kernel module is not available"
-  ansible.builtin.shell: "/bin/bash /tmp/cis_audit_cramfs.sh"
+- name: "Req step-01 - Execute audit script"
+  ansible.builtin.shell: "/bin/bash {{ audit_script }}"
   args:
     executable: /bin/bash
   register: _audit_output
   failed_when: false
   changed_when: false
 
-- name: "Req step-01 - Store requirement 01 details"
+- name: "Req 1 - Remove temporary script"
+  ansible.builtin.file:
+    path: "{{ audit_script }}"
+    state: absent
+  failed_when: false
+  changed_when: false
+
+- name: "Req 1 - Store requirement 1 details"
   ansible.builtin.set_fact:
-    task_01_name: "Execute audit script for cramfs"
-    task_01_cmd: "/bin/bash /tmp/cis_audit_cramfs.sh"
-    task_01_rc: "{{ _audit_output.rc | default(-1) }}"
+    task_01_name: "Run CIS audit script for cramfs module"
+    task_01_cmd: "/bin/bash {{ audit_script }}"
+    task_01_rc: "{{ _audit_output.rc }}"
     data_01: "{{ _audit_output.stdout | default('') | trim }}"
-    status_01: "{{ ('PASS' if (_audit_output.rc | default(-1)) == 0 else 'ERROR') | trim }}"
-    details_01: "{{ 'Script executed successfully' if (_audit_output.rc | default(-1)) == 0 else 'Script execution failed' | trim }}"
+    status_01: "{{ 'PASS' if _audit_output.rc | default(-1) == 0 else 'FAIL' }}"
+    details_01: "{{ 'Script executed successfully' if _audit_output.rc | default(-1) == 0 else 'Script execution failed with rc ' ~ _audit_output.rc }}"
 
-- name: "Req step-02 - Determine compliance status from audit output"
+# Requirement 2: Summarise compliance status
+- name: "Req step-02 - Determine compliance status from output"
   ansible.builtin.set_fact:
-    status_02: >-
-      {%- if '** PASS **' in (_audit_output.stdout | default('')) %}
-      PASS
-      {%- elif '** FAIL **' in (_audit_output.stdout | default('')) %}
-      FAIL
-      {%- else %}
-      ERROR
-      {%- endif %}
+    compliance_status: >-
+      {%- set out = _audit_output.stdout | default('') -%}
+      {%- if '** PASS **' in out %}PASS{%- elif '** FAIL **' in out %}FAIL{%- else %}ERROR{%- endif %}
     _cis_status: >-
-      {%- if '** PASS **' in (_audit_output.stdout | default('')) %}
-      PASS
-      {%- elif '** FAIL **' in (_audit_output.stdout | default('')) %}
-      FAIL
-      {%- else %}
-      ERROR
-      {%- endif %}
+      {%- set out = _audit_output.stdout | default('') -%}
+      {%- if '** PASS **' in out %}PASS{%- elif '** FAIL **' in out %}FAIL{%- else %}ERROR{%- endif %}
 
-- name: "Req step-02 - Store requirement 02 details"
+- name: "Req 2 - Store requirement 2 details"
   ansible.builtin.set_fact:
-    task_02_name: "Parse audit output for compliance"
-    task_02_cmd: "N/A"
-    task_02_rc: "N/A"
-    data_02: "{{ _audit_output.stdout | default('') | trim }}"
-    details_02: "Compliance status derived from audit output"
+    task_02_name: "Determine compliance status from audit output"
+    task_02_cmd: "set_fact"
+    task_02_rc: "0"
+    data_02: "Compliance: {{ compliance_status }}"
+    status_02: "{{ compliance_status }}"
+    details_02: "Compliance status determined from script output."
 
-- name: "Req step-03 - Store final audit result in cis_result"
+# Requirement 3: Store final audit result in cis_result
+- name: "Req step-03 - Set cis_result from compliance status"
   ansible.builtin.set_fact:
-    cis_result: "{{ _cis_status | default('ERROR') | trim }}"
+    cis_result: "{{ compliance_status }}"
 
-- name: "Req step-03 - Store requirement 03 details"
+- name: "Req 3 - Store requirement 3 details"
   ansible.builtin.set_fact:
-    task_03_name: "Set cis_result"
-    task_03_cmd: "N/A"
-    task_03_rc: "N/A"
-    data_03: "cis_result={{ cis_result }}"
-    status_03: "{{ cis_result | trim }}"
-    details_03: "Overall compliance status stored as cis_result"
+    task_03_name: "Store final audit result in cis_result"
+    task_03_cmd: "set_fact"
+    task_03_rc: "0"
+    data_03: "{{ cis_result }}"
+    status_03: "PASS"
+    details_03: "cis_result set to {{ cis_result }}."
 
-- name: "Req step-04 - Set report task details"
+# Requirement 4: Generate audit report
+- name: "Req 4 - Store requirement 4 details"
   ansible.builtin.set_fact:
     task_04_name: "Generate audit report"
-    task_04_cmd: "N/A"
-    task_04_rc: "N/A"
+    task_04_cmd: "debug"
+    task_04_rc: "0"
     data_04: "Report generated"
     status_04: "PASS"
-    details_04: "Audit report displayed successfully"
+    details_04: "Audit report displayed"
 
-- name: "Req step-04 - Generate audit report"
+- name: "Req 4 - Generate audit report"
   ansible.builtin.debug:
     msg:
     - "AUDIT REPORT — CIS 1.1.1.1"
