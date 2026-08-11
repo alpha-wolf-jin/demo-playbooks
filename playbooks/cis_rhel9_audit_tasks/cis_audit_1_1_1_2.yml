@@ -1,0 +1,117 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_1_1_1_2.yml
+
+- name: "Initialize data variables"
+  ansible.builtin.set_fact:
+    data_01: "Not collected yet"
+    status_01: "ERROR"
+    details_01: "Not evaluated"
+    task_01_name: "Not executed"
+    task_01_cmd: "N/A"
+    task_01_rc: -1
+    data_02: "Not collected yet"
+    status_02: "ERROR"
+    details_02: "Not evaluated"
+    task_02_name: "Not executed"
+    task_02_cmd: "N/A"
+    task_02_rc: -1
+    data_03: "Not collected yet"
+    status_03: "ERROR"
+    details_03: "Not evaluated"
+    task_03_name: "Not executed"
+    task_03_cmd: "N/A"
+    task_03_rc: -1
+
+- name: "Req step-01 - Copy audit script to target"
+  ansible.builtin.copy:
+    dest: "{{ audit_script_path }}"
+    mode: '0700'
+    content: "{{ audit_script_content }}"
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-01 - Execute audit script for freevxfs"
+  ansible.builtin.shell: /bin/bash "{{ audit_script_path }}"
+  args:
+    executable: /bin/bash
+  register: _audit_output
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-01 - Store requirement 01 details"
+  ansible.builtin.set_fact:
+    task_01_name: "Execute freevxfs audit script"
+    task_01_cmd: "/bin/bash {{ audit_script_path }}"
+    task_01_rc: "{{ _audit_output.rc | default(-1) }}"
+    data_01: "{{ _audit_output.stdout | default('') | trim }}"
+    status_01: "{{ 'PASS' if _audit_output.rc | default(-1) == 0 else 'ERROR' }}"
+    details_01: "{{ 'Script executed successfully' if _audit_output.rc | default(-1) == 0 else 'Script execution error' }}"
+
+- name: "Req step-01 - Remove temporary audit script"
+  ansible.builtin.file:
+    path: "{{ audit_script_path }}"
+    state: absent
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-02 - Set compliance status from audit result"
+  ansible.builtin.set_fact:
+    task_02_name: "Execute freevxfs audit script"
+    task_02_cmd: "/bin/bash {{ audit_script_path }}"
+    task_02_rc: "{{ _audit_output.rc | default(-1) }}"
+    data_02: "{{ _audit_output.stdout | default('') | trim }}"
+    status_02: >-
+      {{ 'PASS' if '** PASS **' in (_audit_output.stdout | default('') | trim) else
+         ('FAIL' if '** FAIL **' in (_audit_output.stdout | default('') | trim) else 'ERROR') }}
+    details_02: >-
+      {{ 'Compliant' if '** PASS **' in (_audit_output.stdout | default('') | trim) else
+         ('Non-compliant' if '** FAIL **' in (_audit_output.stdout | default('') | trim) else 'Script execution error') }}
+    _cis_status: >-
+      {{ 'PASS' if '** PASS **' in (_audit_output.stdout | default('') | trim) else
+         ('FAIL' if '** FAIL **' in (_audit_output.stdout | default('') | trim) else 'ERROR') }}
+
+- name: "Req step-03 - Store final audit result in cis_result"
+  ansible.builtin.set_fact:
+    task_03_name: "Set cis_result variable"
+    task_03_cmd: "set_fact: cis_result = status_02"
+    task_03_rc: 0
+    data_03: "cis_result set to {{ status_02 | trim }}"
+    status_03: "PASS"
+    details_03: "Final compliance result stored"
+    cis_result: "{{ status_02 | default('ERROR') | trim }}"
+
+- name: "Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 1.1.1.2"
+    - "Reference: CIS Benchmark checkpoint 1.1.1.2"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: {{ task_01_name | default('Not recorded') }}"
+    - "  Command: {{ task_01_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_01_rc | default(-1) }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: {{ task_02_name | default('Not recorded') }}"
+    - "  Command: {{ task_02_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_02_rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: {{ task_03_name | default('Not recorded') }}"
+    - "  Command: {{ task_03_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_03_rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "========================================================"
