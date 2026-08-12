@@ -2,239 +2,272 @@
 - name: Initialize meta data variables
   include_vars: cis_remediation_var_5_1_4.yml
 
-- name: "Snapshot - Create backup directory"
+- name: "Snapshot - Remove stale checkpoint if exists"
   ansible.builtin.file:
-    path: "{{ backup_dir }}"
+    path: "{{ state_guard_dir }}"
+    state: absent
+  tags: [snapshot]
+- name: "Snapshot - Create checkpoint directory"
+  ansible.builtin.file:
+    path: "{{ state_guard_dir }}"
     state: directory
-    mode: '0700'
+    mode: "0700"
   tags: [snapshot]
 - name: "Snapshot - Check if NO-SSHWEAKCIPHERS.pmod exists"
   ansible.builtin.stat:
-    path: "{{ subpolicy_file }}"
-  register: _subpolicy_snap_stat
+    path: "/etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod"
+  register: _sg_pmod_stat
   tags: [snapshot]
-- name: "Snapshot - Backup NO-SSHWEAKCIPHERS.pmod if exists"
+- name: "Snapshot - Backup pmod file if exists"
   ansible.builtin.copy:
-    src: "{{ subpolicy_file }}"
-    dest: "{{ backup_dir }}/NO-SSHWEAKCIPHERS.pmod.bak"
+    src: "/etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod"
+    dest: "{{ state_guard_dir }}/NO-SSHWEAKCIPHERS.pmod.present"
     remote_src: true
-  when: _subpolicy_snap_stat.stat.exists
+  when: _sg_pmod_stat.stat.exists
   tags: [snapshot]
-- name: "Snapshot - Mark NO-SSHWEAKCIPHERS.pmod as absent if not exists"
-  ansible.builtin.file:
-    path: "{{ backup_dir }}/NO-SSHWEAKCIPHERS.pmod.absent"
-    state: touch
-    mode: '0600'
-  when: not _subpolicy_snap_stat.stat.exists
+- name: "Snapshot - Mark pmod file as absent if not exists"
+  ansible.builtin.copy:
+    content: "absent"
+    dest: "{{ state_guard_dir }}/NO-SSHWEAKCIPHERS.pmod.absent"
+  when: not _sg_pmod_stat.stat.exists
   tags: [snapshot]
 - name: "Snapshot - Capture current crypto policy"
   ansible.builtin.shell: update-crypto-policies --show
   args:
     executable: /bin/bash
-  register: _snap_crypto_policy
+  register: _sg_current_policy
   failed_when: false
   changed_when: false
   tags: [snapshot]
-- name: "Snapshot - Save current crypto policy to state file"
+- name: "Snapshot - Save current policy to file"
   ansible.builtin.copy:
-    content: "{{ _snap_crypto_policy.stdout | default('') }}"
-    dest: "{{ backup_dir }}/crypto_policy_original.state"
-    mode: '0600'
-  when: _snap_crypto_policy.stdout | default('') | length > 0
+    content: "{{ _sg_current_policy.stdout | default('') }}"
+    dest: "{{ state_guard_dir }}/current_policy.state"
+  when: _sg_current_policy.stdout | default('') | length > 0
+  tags: [snapshot]
+- name: "Snapshot - List files in crypto policy modules directory"
+  ansible.builtin.shell: find /etc/crypto-policies/policies/modules/ -maxdepth 1 -type f -printf '%f\n'
+  args:
+    executable: /bin/bash
+  register: _sg_modules_files
+  changed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Save module file list"
+  ansible.builtin.copy:
+    content: "{{ _sg_modules_files.stdout | default('') }}"
+    dest: "{{ state_guard_dir }}/modules_filelist.txt"
+  when: _sg_modules_files.stdout | default('') | length > 0
+  tags: [snapshot]
+- name: "Snapshot - Create checkpoint flag"
+  ansible.builtin.copy:
+    content: "checkpoint"
+    dest: "{{ state_guard_flag }}"
   tags: [snapshot]
 
 - block:
-  - name: "Gather package facts"
-    ansible.builtin.package_facts:
-      manager: auto
-    tags: [execute]
-
-  - name: "Check if required packages are installed"
+  - name: "Initialize data variables"
     ansible.builtin.set_fact:
-      _crypto_policy_installed: "{{ 'crypto-policies-scripts' in ansible_facts.packages }}"
-      _sshd_installed: "{{ 'openssh-server' in ansible_facts.packages }}"
+      data_01: "Not collected yet"
+      status_01: "ERROR"
+      details_01: "Not evaluated"
+      data_02: "Not collected yet"
+      status_02: "ERROR"
+      details_02: "Not evaluated"
+      data_03: "Not collected yet"
+      status_03: "ERROR"
+      details_03: "Not evaluated"
+      data_04: "Not collected yet"
+      status_04: "ERROR"
+      details_04: "Not evaluated"
+      data_05: "Not collected yet"
+      status_05: "ERROR"
+      details_05: "Not evaluated"
+      data_09: "Not collected yet"
+      status_09: "ERROR"
+      details_09: "Not evaluated"
+      task_01_name: "Not executed"
+      task_01_cmd: "N/A"
+      task_01_rc: -1
+      task_02_name: "Not executed"
+      task_02_cmd: "N/A"
+      task_02_rc: -1
+      task_03_name: "Not executed"
+      task_03_cmd: "N/A"
+      task_03_rc: -1
+      task_04_name: "Not executed"
+      task_04_cmd: "N/A"
+      task_04_rc: -1
+      task_05_name: "Not executed"
+      task_05_cmd: "N/A"
+      task_05_rc: -1
+      task_09_name: "Not executed"
+      task_09_cmd: "N/A"
+      task_09_rc: -1
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 01: Prerequisite check
-# ──────────────────────────────────────────────
-  - name: "Req step-01 - Check crypto-policies-scripts version"
+# Requirement 9 - Check sshd installed
+  - name: "Req step-09 - Check sshd installed"
+    ansible.builtin.shell: rpm -q openssh-server
+    args:
+      executable: /bin/bash
+    register: result_09
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-09 - Store sshd prerequisite details"
+    ansible.builtin.set_fact:
+      task_09_name: "Check sshd installed"
+      task_09_cmd: "rpm -q openssh-server"
+      task_09_rc: "{{ result_09.rc | default(-1) }}"
+      data_09: "{{ result_09.stdout | default('') | trim }}"
+      status_09: "{{ 'PASS' if result_09.rc == 0 else 'SKIP' }}"
+      details_09: "{{ 'sshd installed' if result_09.rc == 0 else 'sshd not installed - remediation cannot proceed' }}"
+      _sshd_installed: "{{ result_09.rc == 0 }}"
+    tags: [execute]
+
+# Requirement 1 - Package prerequisite
+  - name: "Req step-01 - Check crypto-policies-scripts package"
     ansible.builtin.shell: rpm -q crypto-policies-scripts
     args:
       executable: /bin/bash
     register: _step01_output
     failed_when: false
-    when: _crypto_policy_installed | bool
+    changed_when: false
     tags: [execute]
 
-  - name: "Store requirement 01 details"
+  - name: "Req step-01 - Store package prerequisite details"
     ansible.builtin.set_fact:
-      task_01_name: "Check crypto-policies-scripts version"
+      task_01_name: "Check crypto-policies-scripts package"
       task_01_cmd: "rpm -q crypto-policies-scripts"
       task_01_rc: "{{ _step01_output.rc | default(-1) }}"
       data_01: "{{ _step01_output.stdout | default('') | trim }}"
-      status_01: >-
-        {%- if _step01_output.skipped | default(false) -%} SKIP
-        {%- elif _step01_output.rc | default(-1) == 0 -%} PASS
-        {%- else -%} FAIL
-        {%- endif -%}
-      details_01: >-
-        {%- if _step01_output.skipped | default(false) -%} crypto-policies-scripts not installed
-        {%- elif _step01_output.rc | default(-1) == 0 -%} Package version obtained successfully
-        {%- else -%} Command failed with exit code {{ _step01_output.rc }}
-        {%- endif -%}
+      status_01: "{{ 'PASS' if _step01_output.rc == 0 else 'SKIP' }}"
+      details_01: "{{ 'Package installed' if _step01_output.rc == 0 else 'Package not installed - remediation cannot proceed' }}"
+      _package_installed: "{{ _step01_output.rc == 0 }}"
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 02: Create crypto policy module
-# ──────────────────────────────────────────────
-  - name: "Req step-02 - Create NO-SSHWEAKCIPHERS policy module"
+# Requirement 2 - Create weak cipher policy module
+  - name: "Req step-02 - Create weak cipher policy module"
     ansible.builtin.shell: |
-      if grep -qF 'cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305' '{{ subpolicy_file }}' 2>/dev/null; then
+      if [ -f /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod ] && grep -q 'cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305' /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod 2>/dev/null; then
         echo "ALREADY_PRESENT"
       else
-        printf '%s\n' "# This is a subpolicy to disable weak ciphers" "# for the SSH protocol (libssh and OpenSSH)" "cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305" >> '{{ subpolicy_file }}'
-        echo "ADDED"
+        mkdir -p /etc/crypto-policies/policies/modules
+        printf '%s\n' "# This is a subpolicy to disable weak ciphers" "# for the SSH protocol (libssh and OpenSSH)" "cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod
+        echo "CREATED_OR_MODIFIED"
       fi
     args:
       executable: /bin/bash
     register: _step02_output
-    changed_when: _step02_output.stdout is search('ADDED')
     failed_when: false
-    when: _crypto_policy_installed | bool
+    changed_when: false
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-  - name: "Store requirement 02 details"
+  - name: "Req step-02 - Store policy module creation details"
     ansible.builtin.set_fact:
-      task_02_name: "Create/update NO-SSHWEAKCIPHERS subpolicy"
-      task_02_cmd: |
-        printf '%s\\n' ... >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod (via grep‑idempotent shell)
+      task_02_name: "Create crypto policy module for weak SSH ciphers"
+      task_02_cmd: "printf ... >> NO-SSHWEAKCIPHERS.pmod (with existence check)"
       task_02_rc: "{{ _step02_output.rc | default(-1) }}"
       data_02: "{{ _step02_output.stdout | default('') | trim }}"
-      status_02: >-
-        {%- if _step02_output.skipped | default(false) -%} SKIP
-        {%- elif _step02_output.rc | default(-1) == 0 -%} PASS
-        {%- else -%} FAIL
-        {%- endif -%}
-      details_02: >-
-        {%- if _step02_output.skipped | default(false) -%} crypto-policies-scripts not installed
-        {%- elif _step02_output.rc | default(-1) == 0 -%}
-          {%- if 'ALREADY_PRESENT' in _step02_output.stdout -%} Subpolicy was already present
-          {%- else -%} Subpolicy created successfully
-          {%- endif -%}
-        {%- else -%} Command failed with exit code {{ _step02_output.rc }}
-        {%- endif -%}
+      status_02: "{{ 'PASS' if _step02_output.stdout | default('') is search('ALREADY_PRESENT|CREATED_OR_MODIFIED') else 'FAIL' }}"
+      details_02: "{{ 'File already contained required content' if ('ALREADY_PRESENT' in _step02_output.stdout) else ('Created/updated file' if ('CREATED_OR_MODIFIED' in _step02_output.stdout) else 'Failed to ensure module file') }}"
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 03: Update system-wide crypto policy
-# ──────────────────────────────────────────────
+# Requirement 3 - Update system-wide crypto policy
   - name: "Req step-03 - Update system-wide cryptographic policy"
     ansible.builtin.shell: update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS
     args:
       executable: /bin/bash
     register: _step03_output
     failed_when: false
-    when: _crypto_policy_installed | bool
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-  - name: "Store requirement 03 details"
+  - name: "Req step-03 - Store policy update details"
     ansible.builtin.set_fact:
-      task_03_name: "Update system-wide crypto policy"
+      task_03_name: "Update system crypto policy"
       task_03_cmd: "update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS"
       task_03_rc: "{{ _step03_output.rc | default(-1) }}"
       data_03: "{{ _step03_output.stdout | default('') | trim }}"
-      status_03: >-
-        {%- if _step03_output.skipped | default(false) -%} SKIP
-        {%- elif _step03_output.rc | default(-1) == 0 -%} PASS
-        {%- else -%} FAIL
-        {%- endif -%}
-      details_03: >-
-        {%- if _step03_output.skipped | default(false) -%} crypto-policies-scripts not installed
-        {%- elif _step03_output.rc | default(-1) == 0 -%} Policy updated successfully
-        {%- else -%} Command failed with exit code {{ _step03_output.rc }}
-        {%- endif -%}
+      status_03: "{{ 'PASS' if _step03_output.rc == 0 else 'FAIL' }}"
+      details_03: "{{ 'Policy updated successfully' if _step03_output.rc == 0 else 'Policy update command failed' }}"
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 04: Reload sshd
-# ──────────────────────────────────────────────
-  - name: "Req step-04 - Reload sshd to apply crypto settings"
-    ansible.builtin.shell: systemctl reload-or-restart sshd
-    args:
-      executable: /bin/bash
+# Requirement 4 - Reload sshd
+  - name: "Req step-04 - Reload sshd to apply cryptographic settings"
+    ansible.builtin.service:
+      name: sshd
+      state: reloaded
     register: _step04_output
     failed_when: false
-    when: _sshd_installed | bool
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-  - name: "Store requirement 04 details"
+  - name: "Req step-04 - Store sshd reload details"
     ansible.builtin.set_fact:
       task_04_name: "Reload sshd service"
       task_04_cmd: "systemctl reload-or-restart sshd"
       task_04_rc: "{{ _step04_output.rc | default(-1) }}"
-      data_04: "{{ _step04_output.stdout | default('') | trim }}"
-      status_04: >-
-        {%- if _step04_output.skipped | default(false) -%} SKIP
-        {%- elif _step04_output.rc | default(-1) == 0 -%} PASS
-        {%- else -%} FAIL
-        {%- endif -%}
-      details_04: >-
-        {%- if _step04_output.skipped | default(false) -%} openssh-server not installed
-        {%- elif _step04_output.rc | default(-1) == 0 -%} sshd reloaded/restarted successfully
-        {%- else -%} Command failed with exit code {{ _step04_output.rc }}
-        {%- endif -%}
+      data_04: "{{ 'Service reloaded' if _step04_output.state | default('') == 'reloaded' else 'Reload status unknown' }}"
+      status_04: "{{ 'PASS' if _step04_output is success else 'FAIL' }}"
+      details_04: "{{ 'sshd reloaded successfully' if _step04_output is success else 'sshd reload failed' }}"
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 05: Verify sshd ciphers configuration
-# ──────────────────────────────────────────────
+# Requirement 5 - Verify ciphers
   - name: "Req step-05 - Verify sshd ciphers configuration"
-    ansible.builtin.shell: set -o pipefail && sshd -T | grep -i ciphers
+    ansible.builtin.shell: "set -o pipefail && sshd -T | grep -i ciphers"
     args:
       executable: /bin/bash
     register: _step05_output
     failed_when: false
     changed_when: false
-    when: _sshd_installed | bool and _crypto_policy_installed | bool
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-  - name: "Store requirement 05 details"
+  - name: "Req step-05 - Store verification details"
     ansible.builtin.set_fact:
       task_05_name: "Verify sshd ciphers"
       task_05_cmd: "sshd -T | grep -i ciphers"
       task_05_rc: "{{ _step05_output.rc | default(-1) }}"
       data_05: "{{ _step05_output.stdout | default('') | trim }}"
       status_05: >-
-        {%- if _step05_output.skipped | default(false) -%} SKIP
-        {%- elif _step05_output.stdout | default('') | regex_search('(?:3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc|chacha20-poly1305)', ignorecase=true) -%} FAIL
-        {%- elif _step05_output.rc | default(-1) == 0 -%} PASS
-        {%- else -%} FAIL
-        {%- endif -%}
+        {{ 'PASS' if (_step05_output.stdout | default('') is search('ciphers')
+            and not _step05_output.stdout | default('') is search('3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc|chacha20-poly1305'))
+            else 'FAIL' }}
       details_05: >-
-        {%- if _step05_output.skipped | default(false) -%} openssh-server or crypto-policies-scripts not installed
-        {%- elif _step05_output.stdout | default('') | regex_search('(?:3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc|chacha20-poly1305)', ignorecase=true) -%} WEAK CIPHER DETECTED
-        {%- elif _step05_output.rc | default(-1) == 0 -%} Only allowed ciphers present
-        {%- else -%} Verification command failed
-        {%- endif -%}
+        {{ 'No weak ciphers present' if (_step05_output.stdout | default('') is search('ciphers')
+            and not _step05_output.stdout | default('') is search('3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc|chacha20-poly1305'))
+            else 'Weak ciphers detected' }}
+    when: (_package_installed | default(false) | bool) and (_sshd_installed | default(false) | bool)
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 06: Store overall result in cis_result
-# ──────────────────────────────────────────────
+# Requirement 6 - Set cis_result
   - name: "Req step-06 - Store final remediation result"
     ansible.builtin.set_fact:
-      cis_result: "{{ status_05 | default('ERROR') | trim }}"
+      cis_result: >-
+        {{ 'SKIP' if (not (_package_installed | default(false))) or (not (_sshd_installed | default(false)))
+           else (status_05 | default('FAIL') | trim) }}
     tags: [execute]
 
-        # ──────────────────────────────────────────────
-        # Requirement 07: Generate remediation report
-# ──────────────────────────────────────────────
-  - name: "Generate remediation report"
+# Requirement 7 - Generate report
+  - name: "Req step-07 - Generate remediation report"
     ansible.builtin.debug:
       msg:
       - "REMEDIATION REPORT — CIS 5.1.4"
       - "Reference: CIS Benchmark checkpoint 5.1.4"
+      - ""
+      - "REQUIREMENT 09 - {{ req_09 }}:"
+      - "  Task: {{ task_09_name | default('Not recorded') }}"
+      - "  Command: {{ task_09_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_09_rc | default(-1) }}"
+      - "  Data: {{ data_09 | default('') | trim }}"
+      - "  Status: {{ status_09 | default('ERROR') | trim }}"
+      - "  Details: {{ details_09 | default('') | trim }}"
       - ""
       - "REQUIREMENT 01 - {{ req_01 }}:"
       - "  Task: {{ task_01_name | default('Not recorded') }}"
@@ -277,105 +310,152 @@
       - "  Details: {{ details_05 | default('') | trim }}"
       - ""
       - "REQUIREMENT 06 - {{ req_06 }}:"
-      - "  Task: Store cis_result variable"
+      - "  Task: Store final remediation result in cis_result"
       - "  Command: N/A"
       - "  Exit code: N/A"
       - "  Data: {{ cis_result | default('ERROR') | trim }}"
-      - "  Status: N/A"
-      - "  Details: Overall status derived from Requirement 05"
-      - ""
-      - "REQUIREMENT 07 - {{ req_07 }}:"
-      - "  Task: Generate remediation report"
-      - "  Command: N/A"
-      - "  Exit code: N/A"
-      - "  Data: Report generated"
-      - "  Status: N/A"
-      - "  Details: Report output"
+      - "  Status: {{ cis_result | default('ERROR') | trim }}"
+      - "  Details: Overall remediation status"
       - ""
       - "========================================================"
       - "OVERALL REMEDIATION:"
       - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
       - "========================================================"
     tags: [execute]
 
   always:
-  - name: "Restore - Check if NO-SSHWEAKCIPHERS.pmod backup exists"
+        # STATE GUARD — RESTORE
+
+  - name: "Restore - Check if checkpoint exists"
     ansible.builtin.stat:
-      path: "{{ backup_dir }}/NO-SSHWEAKCIPHERS.pmod.bak"
-    register: _restore_check
+      path: "{{ state_guard_flag }}"
+    register: _sg_restore_flag
     failed_when: false
+    when: not (persistent_remediation | default(true) | bool)
     tags: [restore]
 
-  - name: "Restore - Overwrite NO-SSHWEAKCIPHERS.pmod with original"
+  - name: "Restore - Check if backup of NO-SSHWEAKCIPHERS.pmod exists"
+    ansible.builtin.stat:
+      path: "{{ state_guard_dir }}/NO-SSHWEAKCIPHERS.pmod.present"
+    register: _sg_restore_pmod_backup
+    failed_when: false
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    tags: [restore]
+
+  - name: "Restore - Restore original NO-SSHWEAKCIPHERS.pmod from backup"
     ansible.builtin.copy:
-      src: "{{ backup_dir }}/NO-SSHWEAKCIPHERS.pmod.bak"
-      dest: "{{ subpolicy_file }}"
+      src: "{{ state_guard_dir }}/NO-SSHWEAKCIPHERS.pmod.present"
+      dest: "/etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod"
       remote_src: true
-    when: _restore_check.stat.exists | default(false)
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    - _sg_restore_pmod_backup.stat.exists | default(false)
     failed_when: false
     tags: [restore]
 
-  - name: "Restore - Check if absent marker exists for subpolicy file"
+  - name: "Restore - Check if NO-SSHWEAKCIPHERS.pmod was originally absent"
     ansible.builtin.stat:
-      path: "{{ backup_dir }}/NO-SSHWEAKCIPHERS.pmod.absent"
-    register: _restore_absent_marker
+      path: "{{ state_guard_dir }}/NO-SSHWEAKCIPHERS.pmod.absent"
+    register: _sg_restore_pmod_absent_marker
     failed_when: false
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
     tags: [restore]
 
-  - name: "Restore - Delete created subpolicy file"
+  - name: "Restore - Delete NO-SSHWEAKCIPHERS.pmod if originally absent"
     ansible.builtin.file:
-      path: "{{ subpolicy_file }}"
+      path: "/etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod"
       state: absent
-    when: _restore_absent_marker.stat.exists | default(false)
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    - _sg_restore_pmod_absent_marker.stat.exists | default(false)
     failed_when: false
     tags: [restore]
 
-  - name: "Restore - Check if crypto policy state file exists"
-    ansible.builtin.stat:
-      path: "{{ backup_dir }}/crypto_policy_original.state"
-    register: _restore_policy_state
-    failed_when: false
-    tags: [restore]
-
-  - name: "Restore - Read original crypto policy"
+  - name: "Restore - Read saved crypto policy"
     ansible.builtin.slurp:
-      src: "{{ backup_dir }}/crypto_policy_original.state"
-    register: _restore_original_policy
-    when: _restore_policy_state.stat.exists | default(false)
+      src: "{{ state_guard_dir }}/current_policy.state"
+    register: _sg_restore_policy_data
     failed_when: false
+    when: not (persistent_remediation | default(true) | bool)
     tags: [restore]
 
-  - name: "Restore - Apply original crypto policy"
-    ansible.builtin.shell: "update-crypto-policies --set {{ _restore_original_policy.content | b64decode | trim }}"
+  - name: "Restore - Re-apply original crypto policy"
+    ansible.builtin.shell: "update-crypto-policies --set {{ (_sg_restore_policy_data.content | b64decode | trim) }}"
     args:
       executable: /bin/bash
     when:
-    - _restore_policy_state.stat.exists | default(false)
-    - _restore_original_policy.content is defined
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    - _sg_restore_policy_data is defined and _sg_restore_policy_data.content is defined
+    - (_sg_restore_policy_data.content | b64decode | trim) != ''
     failed_when: false
     tags: [restore]
 
-  - name: "Restore - Check if sshd binary exists"
-    ansible.builtin.stat:
-      path: "/usr/sbin/sshd"
-    register: _restore_sshd_bin
+  - name: "Restore - Reload sshd to apply original crypto policy"
+    ansible.builtin.service:
+      name: sshd
+      state: reloaded
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    - _sg_restore_policy_data is defined and _sg_restore_policy_data.content is defined
+    - (_sg_restore_policy_data.content | b64decode | trim) != ''
     failed_when: false
     tags: [restore]
 
-  - name: "Restore - Reload sshd after policy restore"
-    ansible.builtin.shell: systemctl reload-or-restart sshd
+  - name: "Restore - Read original module file list"
+    ansible.builtin.slurp:
+      src: "{{ state_guard_dir }}/modules_filelist.txt"
+    register: _sg_restore_orig_list
+    failed_when: false
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    tags: [restore]
+
+  - name: "Restore - Get current module file list"
+    ansible.builtin.shell: find /etc/crypto-policies/policies/modules/ -maxdepth 1 -type f -printf '%f\n'
+    args:
+      executable: /bin/bash
+    register: _sg_restore_current_list
+    failed_when: false
+    changed_when: false
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
+    tags: [restore]
+
+  - name: "Restore - Delete extra files created during remediation"
+    ansible.builtin.shell: |
+      set -o pipefail
+      orig_files=($(echo "{{ (_sg_restore_orig_list.content | b64decode | trim | split('\n')) | join(' ') }}"))
+      curr_files=($(echo "{{ _sg_restore_current_list.stdout | trim | split('\n') | join(' ') }}"))
+      for f in "${curr_files[@]}"; do
+        if [[ ! " ${orig_files[*]} " =~ " $f " ]]; then
+          rm -f "/etc/crypto-policies/policies/modules/$f"
+        fi
+      done
     args:
       executable: /bin/bash
     when:
-    - _restore_policy_state.stat.exists | default(false)
-    - _restore_original_policy.content is defined
-    - _restore_sshd_bin.stat.exists | default(false)
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
     failed_when: false
     tags: [restore]
 
-  - name: "Restore - Remove backup directory"
+  - name: "Restore - Remove checkpoint directory"
     ansible.builtin.file:
-      path: "{{ backup_dir }}"
+      path: "{{ state_guard_dir }}"
       state: absent
+    when:
+    - not (persistent_remediation | default(true) | bool)
+    - _sg_restore_flag.stat.exists | default(false)
     failed_when: false
     tags: [restore]
