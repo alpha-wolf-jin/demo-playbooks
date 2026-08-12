@@ -12,242 +12,188 @@
       Check that none of the specific weak ciphers (3des-cbc, aes128-cbc, aes192-cbc, aes256-cbc) are present in the sshd configuration using command: `sshd -T | grep -E '^ciphers\\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'`. Expected result: no output.
     req_05: "Summarize overall compliance status: PASS if all previous checks pass (no weak ciphers returned, and if chacha20-poly1305 present, patched), SKIP if sshd is not installed, FAIL if any weak cipher is configured or chacha20-poly1305 is present without patch. Expected result: one of PASS, SKIP, or FAIL based on the checks."
     req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    cmd_01: "sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null"
-    cmd_02: |
-      sshd -T | grep -Pi -- '^ciphers\h+\"?([^#\n\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se|chacha20-poly1305@openssh\.com)\b'
-    cmd_03: |
-      sshd -T | grep -i 'chacha20-poly1305@openssh.com' && (grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795')
-    cmd_04: |
-      sshd -T | grep -E '^ciphers\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
 
   tasks:
     - name: "Initialize data variables"
-      set_fact:
-        data_01: "Not collected yet"
-        status_01: "ERROR"
+      ansible.builtin.set_fact:
+        data_01: "Not collected"
+        status_01: "SKIP"
         details_01: "Not evaluated"
-        data_02: "Not collected yet"
-        status_02: "ERROR"
-        details_02: "Not evaluated"
-        data_03: "Not collected yet"
-        status_03: "ERROR"
-        details_03: "Not evaluated"
-        data_04: "Not collected yet"
-        status_04: "ERROR"
-        details_04: "Not evaluated"
-        data_05: "Not collected yet"
-        status_05: "ERROR"
-        details_05: "Not evaluated"
-        data_06: "Not collected yet"
-        status_06: "ERROR"
-        details_06: "Not evaluated"
         task_01_name: "Not executed"
         task_01_cmd: "N/A"
         task_01_rc: -1
+        data_02: "Not collected"
+        status_02: "SKIP"
+        details_02: "Not evaluated"
         task_02_name: "Not executed"
         task_02_cmd: "N/A"
         task_02_rc: -1
+        data_03: "Not collected"
+        status_03: "SKIP"
+        details_03: "Not evaluated"
         task_03_name: "Not executed"
         task_03_cmd: "N/A"
         task_03_rc: -1
+        data_04: "Not collected"
+        status_04: "SKIP"
+        details_04: "Not evaluated"
         task_04_name: "Not executed"
         task_04_cmd: "N/A"
         task_04_rc: -1
+        data_05: "Not collected"
+        status_05: "SKIP"
+        details_05: "Not evaluated"
         task_05_name: "Not executed"
         task_05_cmd: "N/A"
         task_05_rc: -1
+        data_06: "Not collected"
+        status_06: "SKIP"
+        details_06: "Not evaluated"
         task_06_name: "Not executed"
         task_06_cmd: "N/A"
         task_06_rc: -1
 
     - name: "Req step-01 - Check if OpenSSH server is installed"
-      ansible.builtin.shell: |
-        set -o pipefail && {{ cmd_01 }}
+      ansible.builtin.shell: set -o pipefail && sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null
       args:
         executable: /bin/bash
       register: _step01_output
       failed_when: false
       changed_when: false
 
-    - name: "Req step-01 - Store requirement 01 details"
-      set_fact:
+    - name: "Req step-01 - Set sshd installation status"
+      ansible.builtin.set_fact:
         sshd_installed: "{{ _step01_output.rc == 0 }}"
-        task_01_name: "Check if OpenSSH server is installed"
-        task_01_cmd: "{{ cmd_01 }}"
-        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-        data_01: "{{ _step01_output.stdout | default('') | trim }}"
         status_01: "{{ 'PASS' if _step01_output.rc == 0 else 'SKIP' }}"
-        details_01: "{{ 'OpenSSH server package found and operational' if _step01_output.rc == 0 else 'OpenSSH server not installed' }}"
-
-    - name: "Req step-02 - Set SKIP status for all cipher checks if SSH server not installed"
-      set_fact:
-        status_02: "SKIP"
-        details_02: "SSH server not installed, skipping cipher checks"
-        status_03: "SKIP"
-        details_03: "SSH server not installed, skipping patch check"
-        status_04: "SKIP"
-        details_04: "SSH server not installed, skipping CBC cipher check"
-      when: not (sshd_installed | default(false) | bool)
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        details_01: "{{ 'sshd package found' if _step01_output.rc == 0 else 'sshd not installed' }}"
+        task_01_name: "Check sshd installation"
+        task_01_cmd: "sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null"
+        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
 
     - name: "Req step-02 - Check sshd configured ciphers for weak algorithms"
-      ansible.builtin.shell: "set -o pipefail && {{ cmd_02 }}"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -T | grep -Pi -- '^ciphers\h+\"?([^#\n\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se|chacha20-poly1305@openssh\.com)\b'
       args:
         executable: /bin/bash
       register: _step02_output
       failed_when: false
       changed_when: false
-      when: sshd_installed | default(false) | bool
+      when: sshd_installed | bool
 
-    - name: "Req step-02 - Store requirement 02 details"
-      set_fact:
-        chacha20_present: "{{ 'chacha20-poly1305@openssh.com' in _step02_output.stdout }}"
-        task_02_name: "Check sshd configured ciphers for weak algorithms"
-        task_02_cmd: "{{ cmd_02 }}"
-        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+    - name: "Req step-02 - Store weak ciphers check result"
+      ansible.builtin.set_fact:
+        status_02: "{{ 'PASS' if _step02_output.stdout | default('') | trim == '' else 'FAIL' }}"
         data_02: "{{ _step02_output.stdout | default('') | trim }}"
-        status_02: >-
-          {%- if _step02_output.rc | default(-1) == 1 and (_step02_output.stdout | default('') | trim == '') -%}
-            PASS
-          {%- elif _step02_output.rc | default(-1) == 0 -%}
-            FAIL
-          {%- else -%}
-            ERROR
-          {%- endif -%}
-        details_02: >-
-          {%- if _step02_output.rc | default(-1) == 1 and (_step02_output.stdout | default('') | trim == '') -%}
-            No weak ciphers found
-          {%- elif _step02_output.rc | default(-1) == 0 -%}
-            Weak ciphers detected: {{ _step02_output.stdout | default('') | trim }}
-          {%- else -%}
-            Error running weak cipher check
-          {%- endif -%}
-      when: sshd_installed | default(false) | bool
+        details_02: "{{ 'No weak ciphers found' if _step02_output.stdout | default('') | trim == '' else 'Weak ciphers detected: ' + _step02_output.stdout }}"
+        task_02_name: "Check weak ciphers"
+        task_02_cmd: >-
+          sshd -T | grep -Pi -- '^ciphers\h+\"?([^#\n\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se|chacha20-poly1305@openssh\.com)\b'
+        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+      when: sshd_installed | bool
 
-    - name: "Req step-03 - Check if system is patched against CVE-2023-48795 for chacha20-poly1305"
-      ansible.builtin.shell: "set -o pipefail && {{ cmd_03 }}"
+    - name: "Req step-03 - Check chacha20-poly1305 CVE-2023-48795"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -T | grep -i 'chacha20-poly1305@openssh.com' && ( grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795' )
       args:
         executable: /bin/bash
       register: _step03_output
       failed_when: false
       changed_when: false
       when:
-        - sshd_installed | default(false) | bool
-        - chacha20_present | default(false) | bool
+        - sshd_installed | bool
+        - "'chacha20-poly1305' in (_step02_output.stdout | default(''))"
 
-    - name: "Req step-03 - Store requirement 03 details (patch check)"
-      set_fact:
-        task_03_name: "Check if system is patched against CVE-2023-48795 for chacha20-poly1305"
-        task_03_cmd: "{{ cmd_03 }}"
-        task_03_rc: "{{ _step03_output.rc | default(-1) }}"
-        data_03: "{{ _step03_output.stdout | default('') | trim }}"
+    - name: "Req step-03 - Store CVE check result"
+      ansible.builtin.set_fact:
         status_03: >-
-          {%- if chacha20_present and _step03_output.rc == 0 and 'CVE-2023-48795' in _step03_output.stdout -%}
-            PASS
-          {%- elif chacha20_present -%}
-            FAIL
-          {%- else -%}
-            SKIP
+          {%- if not (sshd_installed | bool) -%}SKIP
+          {%- elif not ('chacha20-poly1305' in (_step02_output.stdout | default(''))) -%}PASS
+          {%- elif _step03_output.rc | default(1) == 0 -%}PASS
+          {%- else -%}FAIL
           {%- endif -%}
+        data_03: "{{ _step03_output.stdout | default('') | trim if (sshd_installed | bool and 'chacha20-poly1305' in (_step02_output.stdout | default(''))) else ('chacha20 not present' if sshd_installed | bool else 'N/A') }}"
         details_03: >-
-          {%- if chacha20_present and _step03_output.rc == 0 and 'CVE-2023-48795' in _step03_output.stdout -%}
-            System is patched against CVE-2023-48795
-          {%- elif chacha20_present -%}
-            System NOT patched against CVE-2023-48795
-          {%- else -%}
-            chacha20-poly1305 not used
+          {%- if not (sshd_installed | bool) -%}SSH not installed, skipped
+          {%- elif not ('chacha20-poly1305' in (_step02_output.stdout | default(''))) -%}chacha20 not present, no CVE check needed
+          {%- elif _step03_output.rc | default(1) == 0 -%}CVE-2023-48795 patch found
+          {%- else -%}chacha20 present but CVE-2023-48795 patch not found
           {%- endif -%}
-      when:
-        - sshd_installed | default(false) | bool
-        - chacha20_present | default(false) | bool
+        task_03_name: "Check CVE-2023-48795"
+        task_03_cmd: >-
+          sshd -T | grep -i 'chacha20-poly1305@openssh.com' && ( grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795' )
+        task_03_rc: "{{ _step03_output.rc | default(-1) if (sshd_installed | bool and 'chacha20-poly1305' in (_step02_output.stdout | default(''))) else -1 }}"
+      when: sshd_installed | bool
 
-    - name: "Req step-03 - Set requirement 03 status to SKIP (chacha20 not used)"
-      set_fact:
-        status_03: "SKIP"
-        details_03: "chacha20-poly1305 not used"
-      when:
-        - sshd_installed | default(false) | bool
-        - not (chacha20_present | default(false) | bool)
-
-    - name: "Req step-04 - Check for specific weak CBC ciphers"
-      ansible.builtin.shell: "set -o pipefail && {{ cmd_04 }}"
+    - name: "Req step-04 - Check for weak CBC ciphers"
+      ansible.builtin.shell: |
+        set -o pipefail && sshd -T | grep -E '^ciphers\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
       args:
         executable: /bin/bash
       register: _step04_output
       failed_when: false
       changed_when: false
-      when: sshd_installed | default(false) | bool
+      when: sshd_installed | bool
 
-    - name: "Req step-04 - Store requirement 04 details"
-      set_fact:
-        task_04_name: "Check for specific weak CBC ciphers"
-        task_04_cmd: "{{ cmd_04 }}"
-        task_04_rc: "{{ _step04_output.rc | default(-1) }}"
-        data_04: "{{ _step04_output.stdout | default('') | trim }}"
+    - name: "Req step-04 - Store CBC cipher check result"
+      ansible.builtin.set_fact:
         status_04: >-
-          {%- if _step04_output.rc | default(-1) == 1 and (_step04_output.stdout | default('') | trim == '') -%}
-            PASS
-          {%- elif _step04_output.rc | default(-1) == 0 -%}
-            FAIL
-          {%- else -%}
-            ERROR
+          {%- if not (sshd_installed | bool) -%}SKIP
+          {%- elif _step04_output.stdout | default('') | trim == '' -%}PASS
+          {%- else -%}FAIL
           {%- endif -%}
+        data_04: "{{ _step04_output.stdout | default('') | trim if sshd_installed | bool else 'N/A' }}"
         details_04: >-
-          {%- if _step04_output.rc | default(-1) == 1 and (_step04_output.stdout | default('') | trim == '') -%}
-            No weak CBC ciphers found
-          {%- elif _step04_output.rc | default(-1) == 0 -%}
-            Weak CBC ciphers detected: {{ _step04_output.stdout | default('') | trim }}
-          {%- else -%}
-            Error running CBC cipher check
+          {%- if not (sshd_installed | bool) -%}SSH not installed, skipped
+          {%- elif _step04_output.stdout | default('') | trim == '' -%}No weak CBC ciphers found
+          {%- else -%}Weak CBC ciphers detected: {{ _step04_output.stdout }}
           {%- endif -%}
-      when: sshd_installed | default(false) | bool
+        task_04_name: "Check weak CBC ciphers"
+        task_04_cmd: >-
+          sshd -T | grep -E '^ciphers\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
+        task_04_rc: "{{ _step04_output.rc | default(-1) if sshd_installed | bool else -1 }}"
+      when: sshd_installed | bool
 
-    - name: "Req step-05 - Summarize overall compliance status"
-      set_fact:
-        task_05_name: "Summarize overall compliance status"
-        task_05_cmd: "N/A (computation)"
-        task_05_rc: 0
-        data_05: "See details"
+    - name: "Req step-05 - Determine overall compliance status"
+      ansible.builtin.set_fact:
         status_05: >-
-          {%- set s1 = status_01 | default('ERROR') | trim -%}
-          {%- set s2 = status_02 | default('ERROR') | trim -%}
-          {%- set s3 = status_03 | default('ERROR') | trim -%}
-          {%- set s4 = status_04 | default('ERROR') | trim -%}
-          {%- if s1 == 'SKIP' -%}
-            SKIP
-          {%- elif s2 == 'PASS' and s4 == 'PASS' and s3 in ['PASS', 'SKIP'] -%}
-            PASS
-          {%- else -%}
-            FAIL
+          {%- if not (sshd_installed | bool) -%}SKIP
+          {%- elif (status_02 | trim == 'FAIL') or (status_03 | trim == 'FAIL') or (status_04 | trim == 'FAIL') -%}FAIL
+          {%- else -%}PASS
           {%- endif -%}
-        details_05: >-
-          {%- set s1 = status_01 | default('ERROR') | trim -%}
-          {%- set s2 = status_02 | default('ERROR') | trim -%}
-          {%- set s3 = status_03 | default('ERROR') | trim -%}
-          {%- set s4 = status_04 | default('ERROR') | trim -%}
-          {%- if s1 == 'SKIP' -%}
-            SSH server not installed, audit skipped
-          {%- elif s2 == 'PASS' and s4 == 'PASS' and s3 in ['PASS', 'SKIP'] -%}
-            Overall compliance: PASS
-          {%- else -%}
-            Overall compliance: FAIL
+        _cis_status: >-
+          {%- if not (sshd_installed | bool) -%}SKIP
+          {%- elif (status_02 | trim == 'FAIL') or (status_03 | trim == 'FAIL') or (status_04 | trim == 'FAIL') -%}FAIL
+          {%- else -%}PASS
           {%- endif -%}
 
-    - name: "Req step-05 - Store _cis_status"
-      set_fact:
-        _cis_status: "{{ status_05 | default('ERROR') | trim }}"
+    - name: "Req step-05 - Store overall compliance details"
+      ansible.builtin.set_fact:
+        data_05: "{{ status_05 }}"
+        details_05: >-
+          {%- if status_05 | trim == 'SKIP' -%}SSH server not installed
+          {%- elif status_05 | trim == 'FAIL' -%}One or more checks failed
+          {%- else -%}All checks passed
+          {%- endif -%}
+        task_05_name: "Overall compliance"
+        task_05_cmd: "N/A"
+        task_05_rc: 0
 
     - name: "Req step-06 - Store final audit result in cis_result"
-      set_fact:
-        task_06_name: "Store final audit result in cis_result"
-        task_06_cmd: "N/A (assignment)"
-        task_06_rc: 0
-        data_06: "cis_result set to {{ status_05 | default('ERROR') | trim }}"
+      ansible.builtin.set_fact:
         cis_result: "{{ status_05 | default('ERROR') | trim }}"
-        status_06: "{{ status_05 | default('ERROR') | trim }}"
-        details_06: "Final audit result stored"
 
-    - name: "Generate audit report"
-      debug:
+    - name: "Req step-06 - Store final audit result metadata"
+      ansible.builtin.set_fact:
+        data_06: "{{ cis_result }}"
+        details_06: "{{ details_05 }}"
+        task_06_name: "Store cis_result"
+        task_06_cmd: "N/A"
+        task_06_rc: 0
+        status_06: "{{ cis_result }}"
+
+    - name: "Req step-07 - Generate audit report"
+      ansible.builtin.debug:
         msg:
           - "AUDIT REPORT — CIS 5.1.4"
           - "Reference: CIS Benchmark checkpoint 5.1.4"
@@ -303,5 +249,4 @@
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
-          - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
           - "========================================================"
