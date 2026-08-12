@@ -1,7 +1,6 @@
-playbook_name: "cis_5_1_4_remediation"
-backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
-state_guard_dir: "{{ backup_dir }}"
-rollback: false
+checkpoint_id: "cis_5_1_4"
+state_guard_dir: "/usr/local/bin/cis/.cis_state_guard/{{ checkpoint_id }}"
+state_guard_flag: "{{ state_guard_dir }}/checkpoint.flag"
 req_01: "Apply prerequisite check for system-wide crypto policy package using command: `rpm -q crypto-policies-scripts`. Expected result: package is installed and version is displayed."
 req_02: |
   Apply creation of a crypto policy module to disable weak SSH ciphers using command: `printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the SSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod`. Expected result: file /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod is created with the specified content.
