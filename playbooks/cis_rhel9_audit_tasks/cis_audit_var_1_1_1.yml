@@ -1,0 +1,10 @@
+password_history_min: "24"
+req_01: "Check if the audit target is a Windows system with Group Policy Management available using command: `Get-Command Get-GPO -ErrorAction SilentlyContinue`."
+req_02: "Check if the 'Enforce password history' policy is set to '{{ password_history_min }} or more password(s)' using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength`."
+req_03: |
+  Check if the 'Enforce password history' policy is configured via the Default Domain Policy GPO using command: `Get-GPO -Name \"Default Domain Policy\" | Select-Object -ExpandProperty GpoStatus`.
+req_04: |
+  Check if the 'Enforce password history' setting in the Default Domain Policy GPO is set to '{{ password_history_min }} or more password(s)' using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5`.
+req_05: "Check if the 'Minimum password age' policy is set to a value that prevents users from repeatedly changing passwords using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge`."
+req_06: "Overall compliance status: PASS if all above checks pass, SKIP if the system is not a domain controller or Active Directory is not present, FAIL if the feature exists but the password history is set to less than {{ password_history_min }} or not configured via Default Domain Policy."
+req_07: "Store the final audit result in a variable named 'cis_result' using set_fact."
