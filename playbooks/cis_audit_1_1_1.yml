@@ -1,0 +1,265 @@
+---
+- name: "Audit CIS checkpoint 1.1.1: Ensure 'Enforce password history' is set to '24 or more password(s)'"
+  hosts: 192.168.122.57
+  become: yes
+  gather_facts: false
+  vars:
+    password_history_min: "24"
+    req_01: "Check if the audit target is a Windows system with Group Policy Management available using command: `Get-Command Get-GPO -ErrorAction SilentlyContinue`."
+    req_02: "Check if the 'Enforce password history' policy is set to '{{ password_history_min }} or more password(s)' using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength`."
+    req_03: |
+      Check if the 'Enforce password history' policy is configured via the Default Domain Policy GPO using command: `Get-GPO -Name \"Default Domain Policy\" | Select-Object -ExpandProperty GpoStatus`.
+    req_04: |
+      Check if the 'Enforce password history' setting in the Default Domain Policy GPO is set to '{{ password_history_min }} or more password(s)' using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5`.
+    req_05: "Check if the 'Minimum password age' policy is set to a value that prevents users from repeatedly changing passwords using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge`."
+    req_06: "Overall compliance status: PASS if all above checks pass, SKIP if the system is not a domain controller or Active Directory is not present, FAIL if the feature exists but the password history is set to less than {{ password_history_min }} or not configured via Default Domain Policy."
+    req_07: "Store the final audit result in a variable named 'cis_result' using set_fact."
+
+  tasks:
+    - name: "Initialize data variables"
+      set_fact:
+        data_01: "Not collected yet"
+        status_01: "ERROR"
+        details_01: "Not evaluated"
+        data_02: "Not collected yet"
+        status_02: "ERROR"
+        details_02: "Not evaluated"
+        data_03: "Not collected yet"
+        status_03: "ERROR"
+        details_03: "Not evaluated"
+        data_04: "Not collected yet"
+        status_04: "ERROR"
+        details_04: "Not evaluated"
+        data_05: "Not collected yet"
+        status_05: "ERROR"
+        details_05: "Not evaluated"
+        data_06: "Not collected yet"
+        status_06: "ERROR"
+        details_06: "Not evaluated"
+        data_07: "Not collected yet"
+        status_07: "ERROR"
+        details_07: "Not evaluated"
+
+    # Requirement 01
+    - name: "Req 01 - Check if Group Policy Management is available"
+      ansible.windows.win_shell: |
+        Get-Command Get-GPO -ErrorAction SilentlyContinue
+      register: result_01
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 01 details"
+      set_fact:
+        task_01_name: "Check Group Policy Management availability"
+        task_01_cmd: "Get-Command Get-GPO -ErrorAction SilentlyContinue"
+        task_01_rc: "{{ result_01.rc | default(-1) }}"
+        data_01: "{{ result_01.stdout | default('') | trim }}"
+        status_01: "{{ ('PASS' if (result_01.rc | default(-1)) == 0 and (result_01.stdout | default('') | trim) != '' else 'FAIL') | trim }}"
+
+    - name: "Set requirement 01 rationale"
+      set_fact:
+        details_01: "{{ ('PASS: GPO cmdlet found' if status_01 | trim == 'PASS' else 'FAIL: GPO cmdlet not found') | trim }}"
+
+    # Requirement 02
+    - name: "Req 02 - Check password history length"
+      ansible.windows.win_shell: |
+        Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength
+      register: result_02
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 02 details"
+      set_fact:
+        task_02_name: "Check AD default domain password history"
+        task_02_cmd: "Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength"
+        task_02_rc: "{{ result_02.rc | default(-1) }}"
+        data_02: "{{ result_02.stdout | default('') | trim }}"
+        status_02: "{{ ('PASS' if (result_02.rc | default(-1)) == 0 and (result_02.stdout | default('0') | trim | int >= (password_history_min | int)) else 'FAIL') | trim }}"
+
+    - name: "Set requirement 02 rationale"
+      set_fact:
+        details_02: "{{ ('PASS: HistoryLength >= ' ~ password_history_min if status_02 | trim == 'PASS' else 'FAIL: HistoryLength < ' ~ password_history_min ~ ' or command failed') | trim }}"
+
+    # Requirement 03
+    - name: "Req 03 - Check Default Domain Policy GPO status"
+      ansible.windows.win_shell: |
+        Get-GPO -Name "Default Domain Policy" | Select-Object -ExpandProperty GpoStatus
+      register: result_03
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 03 details"
+      set_fact:
+        task_03_name: "Check Default Domain Policy GPO enabled"
+        task_03_cmd: |
+          Get-GPO -Name \"Default Domain Policy\" | Select-Object -ExpandProperty GpoStatus
+        task_03_rc: "{{ result_03.rc | default(-1) }}"
+        data_03: "{{ result_03.stdout | default('') | trim }}"
+        status_03: "{{ ('PASS' if (result_03.rc | default(-1)) == 0 and (result_03.stdout | default('') | trim) in ['Enabled', 'AllSettingsEnabled'] else 'FAIL') | trim }}"
+
+    - name: "Set requirement 03 rationale"
+      set_fact:
+        details_03: "{{ ('PASS: GPO status is ' + (data_03 | trim) if status_03 | trim == 'PASS' else 'FAIL: GPO status not Enabled or AllSettingsEnabled') | trim }}"
+
+    # Requirement 04
+    - name: "Req 04 - Check Enforce password history setting in GPO report"
+      ansible.windows.win_shell: |
+        Get-GPO -Name "Default Domain Policy" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5
+      register: result_04
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 04 details (data & status)"
+      set_fact:
+        task_04_name: "Check Enforce password history setting in GPO report"
+        task_04_cmd: |
+          Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5
+        task_04_rc: "{{ result_04.rc | default(-1) }}"
+        data_04: "{{ result_04.stdout | default('') | trim }}"
+        status_04: >-
+          {%- set output = result_04.stdout | default('') | trim -%}
+          {%- set rc = result_04.rc | default(-1) -%}
+          {%- if rc == 0 and output != '' -%}
+            {%- set match_list = output | regex_findall('<SettingNumber>(\\d+)</SettingNumber>') -%}
+            {%- if match_list -%}
+              {%- set value = match_list[0] | int -%}
+              {%- if value >= (password_history_min | int) -%}
+                PASS
+              {%- else -%}
+                FAIL
+              {%- endif -%}
+            {%- else -%}
+              FAIL
+            {%- endif -%}
+          {%- else -%}
+            FAIL
+          {%- endif -%}
+
+    - name: "Set requirement 04 rationale"
+      set_fact:
+        details_04: >-
+          {%- if status_04 | trim == 'PASS' -%}
+            PASS: Enforce password history value >= {{ password_history_min }}
+          {%- else -%}
+            FAIL: Setting not found or value < {{ password_history_min }}
+          {%- endif -%}
+
+    # Requirement 05
+    - name: "Req 05 - Check Minimum password age"
+      ansible.windows.win_shell: |
+        Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge
+      register: result_05
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 05 details"
+      set_fact:
+        task_05_name: "Check Minimum password age"
+        task_05_cmd: "Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge"
+        task_05_rc: "{{ result_05.rc | default(-1) }}"
+        data_05: "{{ result_05.stdout | default('') | trim }}"
+        status_05: "{{ ('PASS' if (result_05.rc | default(-1)) == 0 and (result_05.stdout | default('0') | trim | int > 0) else 'FAIL') | trim }}"
+
+    - name: "Set requirement 05 rationale"
+      set_fact:
+        details_05: "{{ ('PASS: MinPasswordAge > 0' if status_05 | trim == 'PASS' else 'FAIL: MinPasswordAge <= 0 or command failed') | trim }}"
+
+    # Requirement 06 – overall compliance evaluation
+    - name: "Req 06 - Determine overall compliance status"
+      set_fact:
+        status_06: >-
+          {%- if status_01 | trim == 'FAIL' -%}
+            SKIP
+          {%- elif status_02 | trim == 'PASS' and status_03 | trim == 'PASS' and status_04 | trim == 'PASS' and status_05 | trim == 'PASS' -%}
+            PASS
+          {%- else -%}
+            FAIL
+          {%- endif -%}
+
+    - name: "Store requirement 06 details"
+      set_fact:
+        task_06_name: "Overall compliance evaluation"
+        task_06_cmd: "N/A"
+        task_06_rc: -1
+        data_06: "N/A"
+        details_06: "{{ 'Overall compliance: ' + status_06 }}"
+
+    # Requirement 07 – store cis_result
+    - name: "Req 07 - Store final audit result in cis_result"
+      set_fact:
+        cis_result: "{{ status_06 | default('ERROR') | trim }}"
+        task_07_name: "Store cis_result"
+        task_07_cmd: "N/A"
+        task_07_rc: -1
+        status_07: "{{ status_06 | default('ERROR') | trim }}"
+        data_07: "N/A"
+        details_07: "cis_result set to {{ cis_result }}"
+
+    # Final report
+    - name: "Generate audit report"
+      debug:
+        msg:
+          - "AUDIT REPORT — CIS 1.1.1"
+          - "Reference: CIS Benchmark checkpoint 1.1.1"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 05 - {{ req_05 }}:"
+          - "  Task: {{ task_05_name | default('Not recorded') }}"
+          - "  Command: {{ task_05_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_05_rc | default(-1) }}"
+          - "  Data: {{ data_05 | default('') | trim }}"
+          - "  Status: {{ status_05 | default('ERROR') | trim }}"
+          - "  Details: {{ details_05 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 06 - {{ req_06 }}:"
+          - "  Task: {{ task_06_name | default('Not recorded') }}"
+          - "  Command: {{ task_06_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_06_rc | default(-1) }}"
+          - "  Data: {{ data_06 | default('') | trim }}"
+          - "  Status: {{ status_06 | default('ERROR') | trim }}"
+          - "  Details: {{ details_06 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 07 - {{ req_07 }}:"
+          - "  Task: {{ task_07_name | default('Not recorded') }}"
+          - "  Command: {{ task_07_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_07_rc | default(-1) }}"
+          - "  Data: {{ data_07 | default('') | trim }}"
+          - "  Status: {{ status_07 | default('ERROR') | trim }}"
+          - "  Details: {{ details_07 | default('') | trim }}"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: {{ details_07 | default('Not evaluated') | trim }}"
+          - "========================================================"
