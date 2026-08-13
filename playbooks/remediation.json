@@ -1,14 +1,40 @@
 {
   "schema": "cis-spec/v2",
-  "benchmark": "rhel9",
-  "checkpoint_id": "5.1.4",
-  "title": "Ensure sshd Ciphers are configured",
+  "benchmark": "win2022",
+  "checkpoint_id": "1.1.1",
+  "title": "Ensure 'Enforce password history' is set to '24 or more password(s)'",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
-  "transport": "ssh",
-  "connection_risk": true,
-  "objective": "Remediate CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured",
+  "transport": "winrm",
+  "connection_risk": false,
+  "profile_applicability": "•  Level 1 - Domain Controller\n•  Level 1 - Member Server",
+  "branching": {
+    "type": "windows_server_role",
+    "detection_step": "step-01",
+    "detection_var": "is_dc",
+    "secondary_var": "is_member",
+    "branches": {
+      "dc": {
+        "when": "is_dc | bool",
+        "steps": [
+          "step-02",
+          "step-06"
+        ]
+      },
+      "member": {
+        "when": "is_member | bool",
+        "steps": [
+          "step-03",
+          "step-04",
+          "step-05",
+          "step-07"
+        ]
+      }
+    },
+    "result_aggregation": "PASS if the active branch verify step confirms the change took effect; SKIP if a branch step is not applicable to this host (the other role); FAIL if any active branch apply-or-verify step fails; ERROR if role detection fails or neither branch ran. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
+  },
+  "objective": "Remediate CIS checkpoint 1.1.1: Ensure 'Enforce password history' is set to '24 or more password(s)'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -30,7 +56,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "SSH user with sudo access"
+        "description": "WinRM user (Windows Administrator login)"
       }
     ]
   },
@@ -52,21 +78,22 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Apply prerequisite check for system-wide crypto policy package",
-      "function": "1. Apply prerequisite check for system-wide crypto policy package using command: `rpm -q crypto-policies-scripts`. Expected result: package is installed and version is displayed.",
-      "module": "ansible.builtin.shell",
+      "name": "Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain…",
+      "function": "1. Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1-3 for Member Server.",
+      "module": "ansible.windows.win_shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-09"
+      "on_fail": "step-11",
+      "branch": "detect"
     },
     {
       "id": "step-02",
       "type": "action",
-      "name": "Apply creation of a crypto policy module to disable weak SSH ciphers",
-      "function": "2. Apply creation of a crypto policy module to disable weak SSH ciphers using command: `printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the SSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod`. Expected result: file /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod is created with the specified content.",
-      "module": "ansible.builtin.shell",
+      "name": "If Domain Controller, apply password history of 24 via command: `Set-ADDefaultDomainPasswordPolicy -Identity <DomainDN>…",
+      "function": "2. If Domain Controller, apply password history of 24 via command: `Set-ADDefaultDomainPasswordPolicy -Identity <DomainDN> -PasswordHistoryCount 24`. Expected result: policy updated.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
         "fields": [
@@ -77,14 +104,15 @@
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-09"
+      "on_fail": "step-11",
+      "branch": "dc"
     },
     {
       "id": "step-03",
       "type": "collect",
-      "name": "Apply update of system-wide cryptographic policy",
-      "function": "3. Apply update of system-wide cryptographic policy using command: `update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS`. Expected result: command completes successfully and system crypto policy is updated.",
-      "module": "ansible.builtin.shell",
+      "name": "If Member Server, export current security policy",
+      "function": "3. If Member Server, export current security policy using command: `secedit /export /cfg C:\\secpol.cfg`. Expected result: configuration file created.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-02",
         "fields": [
@@ -95,14 +123,15 @@
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-09"
+      "on_fail": "step-11",
+      "branch": "member"
     },
     {
       "id": "step-04",
-      "type": "collect",
-      "name": "Apply reload of OpenSSH server to make cryptographic settings effective",
-      "function": "4. Apply reload of OpenSSH server to make cryptographic settings effective using command: `systemctl reload-or-restart sshd`. Expected result: sshd service reloads or restarts without errors.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "If Member Server, edit C:\\secpol.cfg to set `PasswordHistorySize = 24` under [System Access]",
+      "function": "4. If Member Server, edit C:\\secpol.cfg to set `PasswordHistorySize = 24` under [System Access]. Expected result: value changed.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-03",
         "fields": [
@@ -113,14 +142,15 @@
         "_step04_output"
       ],
       "on_success": "step-05",
-      "on_fail": "step-09"
+      "on_fail": "step-11",
+      "branch": "member"
     },
     {
       "id": "step-05",
-      "type": "collect",
-      "name": "Verify that the sshd Ciphers configuration is compliant",
-      "function": "5. Verify that the sshd Ciphers configuration is compliant using command: `sshd -T | grep -i ciphers`. Expected result: output shows only allowed ciphers (aes256-gcm@openssh.com, aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr) and does not include weak ciphers like 3des-cbc, aes128-cbc, aes192-cbc, aes256-cbc, or chacha20-poly1305.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "If Member Server, apply policy",
+      "function": "5. If Member Server, apply policy using command: `secedit /configure /db secedit.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: policy applied.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-04",
         "fields": [
@@ -131,14 +161,15 @@
         "_step05_output"
       ],
       "on_success": "step-06",
-      "on_fail": "step-09"
+      "on_fail": "step-11",
+      "branch": "member"
     },
     {
       "id": "step-06",
-      "type": "transform",
-      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
-      "function": "6. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "collect",
+      "name": "Verify Domain Controller setting",
+      "function": "6. Verify Domain Controller setting using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty PasswordHistoryCount`. Expected result: 24.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-05",
         "fields": [
@@ -146,41 +177,83 @@
         ]
       },
       "stores": [
-        "cis_result"
+        "_step06_output"
       ],
-      "on_success": "step-07"
+      "on_success": "step-07",
+      "on_fail": "step-11",
+      "branch": "dc"
     },
     {
       "id": "step-07",
-      "type": "emit",
-      "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 5.1.4\nReference: CIS Benchmark checkpoint 5.1.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
+      "type": "collect",
+      "name": "Verify Member Server setting then check `PasswordHistorySize` equals 24",
+      "function": "7. Verify Member Server setting using command: `secedit /export /cfg C:\\verify.cfg` then check `PasswordHistorySize` equals 24. Expected result: value confirmed.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-06",
+        "fields": [
+          "_step06_output"
+        ]
+      },
+      "stores": [
+        "_step07_output"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-11",
+      "branch": "member"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
+      "function": "8. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_step07_output"
+        ]
+      },
+      "stores": [
+        "cis_result"
+      ],
+      "on_success": "step-09",
+      "branch": "common"
+    },
+    {
+      "id": "step-09",
+      "type": "emit",
+      "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
+      "function": "9. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.1\nReference: CIS Benchmark checkpoint 1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
+      "input": {
+        "source": "step-08",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-08"
+      "on_success": "step-10",
+      "branch": "common"
     },
     {
-      "id": "step-08",
+      "id": "step-10",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
       "output_fields": {
         "cis_result": "{{ cis_result }}"
       },
-      "on_success": "end"
+      "on_success": "end",
+      "branch": "common"
     },
     {
-      "id": "step-09",
+      "id": "step-11",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 5.1.4 audit failed",
-      "on_success": "end"
+      "error_message": "ERROR: CIS 1.1.1 audit failed",
+      "on_success": "end",
+      "branch": "common"
     }
   ],
   "phases": [
@@ -188,7 +261,9 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-02"
+        "step-02",
+        "step-04",
+        "step-05"
       ]
     },
     {
@@ -197,50 +272,51 @@
       "steps": [
         "step-01",
         "step-03",
-        "step-04",
-        "step-05"
+        "step-06",
+        "step-07"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-06"
+        "step-08"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-07",
-        "step-08"
+        "step-09",
+        "step-10"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-09"
+        "step-11"
       ]
     }
   ],
   "compliance_constraints": [
+    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg → secedit /configure /areas SECURITYPOLICY. Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
     "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Note:\n• First occurrence of an option takes precedence.\n• Though ciphers may be configured through the Ciphers option in the /etc/ssh/sshd_config file, it is recommended that the ciphers available to openSSH server are configured through system-wide-crypto-policy\n• If the recommendations in the subsection \"Configure system wide crypto policy\"\nhave been followed, this Audit should be in a passing state. Please review that section before following this Remediation Procedure\n• By default, system-wide-crypto-policy is applied to the openSSH server. If the following defaults don't exist due to modifications or upgrade from a earlier release, the system-wide-crypto-policy may not be included by the openSSH server. It is recommended that these defaults be restored, created, or the line\nInclude /etc/crypto-policies/back-ends/opensshserver.config be added before any lines containing the Cipher argument.\n• Defaults:\no The file /etc/ssh/sshd_config includes the line: Include\n/etc/ssh/sshd_config.d/*.conf. This line must appear before any lines containing the Cipher argument o This directory /etc/ssh/sshd_config.d/ includes a file\n/etc/ssh/sshd_config.d/50-redhat.conf\no The file /etc/ssh/sshd_config.d/50-redhat.conf includes the line\nInclude /etc/crypto-policies/back-ends/opensshserver.config\no The file /etc/crypto-policies/back-ends/opensshserver.config is generated by system-wide-crypto-policy\n- IF - CVE-2023-48795 has been addressed, and it meets local site policy, chacha20- poly1305 may be removed from the list of excluded ciphers.\nCreate or edit a file in /etc/crypto-policies/policies/modules/ ending in .pmod and add or modify the the following line:\ncipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\nExample:\n# printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the\nSSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod\nRun the following command to update the system-wide cryptographic policy\n# update-crypto-policies --set\n<CRYPTO_POLICY>:<CRYPTO_SUBPOLICY1>:<CRYPTO_SUBPOLICY2>:<CRYPTO_SUBPOLICY3>\nExample:\n# update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS\nRun the following command to reload the openSSH server to make your cryptographic settings effective:\n# systemctl reload-or-restart sshd\n- OR - If system-wide-crypto-policy is not being used to configure available ciphers\n(This is not recommended)\nEdit the /etc/ssh/sshd_config file and add/modify the Ciphers line to contain a comma separated list of the site unapproved (weak) Ciphers preceded with a - above any\nInclude entries:\nExample:\nCiphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305@openssh.com",
+  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 24 or more password(s):\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Password Policy\\Enforce password history",
   "example_output": "",
-  "filename": "cis_remediation_5_1_4.yml",
-  "output_dir": "./cis_rhel9_remediation_playbooks",
+  "filename": "cis_remediation_1_1_1.yml",
+  "output_dir": "./cis_win2022_remediation_playbooks",
   "provenance": {
-    "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
-    "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-11T23:21:16",
-    "revision": 1,
-    "approved_at": "2026-08-11T23:21:24",
+    "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
+    "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
+    "drafted_at": "2026-08-13T14:48:23",
+    "revision": 8,
+    "approved_at": "2026-08-13T14:48:36",
     "saved_by": null
   }
 }
