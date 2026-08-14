@@ -1,0 +1,528 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_2_2_1.yml
+
+- name: "Snapshot - Remove stale backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: absent
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: directory
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Detect server role"
+  ansible.windows.win_shell: |
+    $role = (Get-WmiObject Win32_ComputerSystem).DomainRole; if ($role -eq 4 -or $role -eq 5) { 'DC' } else { 'Member' }
+  register: _snap_role
+  changed_when: false
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Record original DC GPO AccessCredentialManagerAsTrustedCaller value"
+  ansible.windows.win_shell: |
+    $path = [System.IO.Path]::GetFullPath("{{ backup_dir }}/dc_gpo_accesscredman.original")
+    if (-not (Get-Command Get-GPRegistryValue -ErrorAction SilentlyContinue)) {
+      Set-Content -LiteralPath $path -Value 'MODULE_MISSING' -Force
+      Write-Output 'SNAPSHOT_MODULE_MISSING'
+      exit 0
+    }
+    try {
+      $v = Get-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -ErrorAction Stop
+      if ($null -eq $v) {
+        Set-Content -LiteralPath $path -Value 'ABSENT' -Force
+        Write-Output 'SNAPSHOT_ABSENT'
+      } else {
+        $value = ($v | Select-Object -ExpandProperty Value) -join ';'
+        Set-Content -LiteralPath $path -Value $value -Force
+        Write-Output "SNAPSHOT_VALUE=$value"
+      }
+      exit 0
+    } catch {
+      Set-Content -LiteralPath $path -Value "SNAPSHOT_ERROR: $($_.Exception.Message)" -Force
+      Write-Output "SNAPSHOT_ERROR: $($_.Exception.Message)"
+      exit 0
+    }
+  when: (_snap_role.stdout | default('') | trim) == 'DC'
+  changed_when: false
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Check if secpol.cfg exists"
+  ansible.windows.win_stat:
+    path: "{{ secpol_cfg_path }}"
+  register: _snap_secpol_stat
+  changed_when: false
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Backup secpol.cfg if present"
+  ansible.windows.win_copy:
+    src: "{{ secpol_cfg_path }}"
+    dest: "{{ backup_dir }}/secpol.cfg.present"
+    remote_src: true
+  when: _snap_secpol_stat.stat.exists | default(false)
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Mark secpol.cfg absent if missing"
+  ansible.windows.win_copy:
+    content: "absent"
+    dest: "{{ backup_dir }}/secpol.cfg.absent"
+  when: not (_snap_secpol_stat.stat.exists | default(false))
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Export current Member Server security policy baseline"
+  ansible.windows.win_shell: |
+    $out = [System.IO.Path]::GetFullPath("{{ backup_dir }}/secpol_original.cfg")
+    secedit /export /cfg "$out" /areas SECURITYPOLICY /quiet
+  register: _snap_secedit_export
+  changed_when: false
+  failed_when: false
+  when: (_snap_role.stdout | default('') | trim) == 'Member'
+  tags: [snapshot]
+
+- block:
+  - name: "Req step-01 - Detect server role using Win32_ComputerSystem DomainRole"
+    ansible.windows.win_shell: |
+      $role = (Get-WmiObject Win32_ComputerSystem).DomainRole; if ($role -eq 4 -or $role -eq 5) { 'DC' } else { 'Member' }
+    register: _step01_output
+    changed_when: false
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set is_dc and is_member role flags"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) == 'DC' }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) == 'Member' }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set Access Credential Manager as trusted caller to No One via GPO"
+    ansible.windows.win_shell: |
+      if (-not (Get-Command Set-GPRegistryValue -ErrorAction SilentlyContinue)) {
+        Write-Output "MODULE_MISSING"
+        exit 3
+      }
+      try {
+        Set-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -Type String -Value 'No One'
+        Write-Output "GPO_UPDATED"
+        exit 0
+      } catch {
+        Write-Output "GPO_ERROR: $($_.Exception.Message)"
+        exit 1
+      }
+    register: _step02_output
+    failed_when: false
+    changed_when: true
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-03 - Export current security policy using secedit"
+    ansible.windows.win_shell: |
+      $out = [System.IO.Path]::GetFullPath("{{ secpol_cfg_path }}")
+      secedit /export /cfg "$out" /areas SECURITYPOLICY /quiet
+      if ($LASTEXITCODE -eq 0) {
+        Write-Output "EXPORT_OK"
+        exit 0
+      } else {
+        Write-Output "EXPORT_FAILED"
+        exit 2
+      }
+    register: _step03_output
+    changed_when: false
+    failed_when: false
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-04 - Edit exported security policy to empty SeTrustedCredManAccessPrivilege"
+    ansible.windows.win_shell: |
+      $path = "{{ secpol_cfg_path }}"
+      if (-not (Test-Path -LiteralPath $path)) {
+        Write-Output "FAIL: $path not found"
+        exit 1
+      }
+      $before = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Unicode)
+      $lines = [System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::Unicode)
+      $newLines = New-Object System.Collections.Generic.List[string]
+      $found = $false
+      foreach ($line in $lines) {
+        if ($line -match '^\s*SeTrustedCredManAccessPrivilege\s*=') {
+          $found = $true
+          $newLines.Add('SeTrustedCredManAccessPrivilege = ')
+        } else {
+          $newLines.Add($line)
+        }
+      }
+      if (-not $found) {
+        $newLines.Add('SeTrustedCredManAccessPrivilege = ')
+      }
+      [System.IO.File]::WriteAllLines($path, $newLines.ToArray(), [System.Text.Encoding]::Unicode)
+      $after = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Unicode)
+      Write-Output "BEFORE:`n$before`nAFTER:`n$after"
+      exit 0
+    register: _step04_output
+    changed_when: true
+    failed_when: false
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-05 - Apply edited security policy using secedit configure"
+    ansible.windows.win_shell: |
+      $db = [System.IO.Path]::GetFullPath("C:/Windows/security/local.sdb")
+      $cfg = [System.IO.Path]::GetFullPath("{{ secpol_cfg_path }}")
+      $out = secedit /configure /db "$db" /cfg "$cfg" /areas SECURITYPOLICY 2>&1
+      $rc = $LASTEXITCODE
+      Write-Output "secedit_rc=$rc"
+      if ($out) {
+        $out | ForEach-Object { Write-Output $_ }
+      }
+      if ($rc -eq 0) {
+        exit 0
+      } else {
+        exit 1
+      }
+    register: _step05_output
+    failed_when: false
+    changed_when: true
+    async: 120
+    poll: 10
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-06 - Remove temporary security policy export file"
+    ansible.windows.win_shell: |
+      $path = "{{ secpol_cfg_path }}"
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+      if (Test-Path -LiteralPath $path) {
+        Write-Output "CLEANUP_FAILED"
+        exit 1
+      } else {
+        Write-Output "CLEANUP_OK"
+        exit 0
+      }
+    register: _step06_output
+    failed_when: false
+    changed_when: true
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-07 - Verify Domain Controller GPO setting for SeTrustedCredManAccessPrivilege"
+    ansible.windows.win_shell: |
+      if (-not (Get-Command Get-GPResultantSetOfPolicy -ErrorAction SilentlyContinue) -or -not (Get-Command Get-ADUser -ErrorAction SilentlyContinue)) {
+        Write-Output "MODULE_MISSING"
+        exit 3
+      }
+      $line = Get-GPResultantSetOfPolicy -User (Get-ADUser -Identity 'Administrator') -ReportType Xml | Select-String 'SeTrustedCredManAccessPrivilege'
+      if ($line) {
+        Write-Output $line.Line
+        if ($line.Line -match 'SeTrustedCredManAccessPrivilege\s*=\s*$') {
+          Write-Output "VERIFY_PASS"
+          exit 0
+        } else {
+          Write-Output "VERIFY_FAIL"
+          exit 1
+        }
+      } else {
+        Write-Output "VERIFY_FAIL: SeTrustedCredManAccessPrivilege not found"
+        exit 1
+      }
+    register: _step07_output
+    changed_when: false
+    failed_when: false
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-08 - Verify Member Server security policy for SeTrustedCredManAccessPrivilege"
+    ansible.windows.win_shell: |
+      $out = [System.IO.Path]::GetFullPath("{{ verify_cfg_path }}")
+      secedit /export /cfg "$out" /areas SECURITYPOLICY /quiet
+      if ($LASTEXITCODE -ne 0) {
+        Write-Output "VERIFY_ERROR: secedit export failed"
+        exit 2
+      }
+      $passed = $false
+      $match = Select-String -Path $out -Pattern 'SeTrustedCredManAccessPrivilege' -Encoding Unicode -ErrorAction SilentlyContinue
+      if ($match) {
+        $text = $match.Line
+        Write-Output $text
+        if ($text -match 'SeTrustedCredManAccessPrivilege\s*=\s*$') {
+          Write-Output "VERIFY_PASS"
+          $passed = $true
+        }
+      } else {
+        Write-Output "SeTrustedCredManAccessPrivilege not present; interpreted as no accounts assigned"
+        Write-Output "VERIFY_PASS"
+        $passed = $true
+      }
+      Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+      if ($passed) {
+        exit 0
+      } else {
+        Write-Output "VERIFY_FAIL"
+        exit 1
+      }
+    register: _step08_output
+    changed_when: false
+    failed_when: false
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Store detailed requirement status and command data for report"
+    ansible.builtin.set_fact:
+      task_01_name: "Detect server role"
+      task_01_cmd: "$role = (Get-WmiObject Win32_ComputerSystem).DomainRole; if ($role -eq 4 -or $role -eq 5) { 'DC' } else { 'Member' }"
+      task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+      data_01: "{{ _step01_output.stdout | default('') | trim }}"
+      status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0 and _step01_output.stdout | default('') | trim in ['DC', 'Member']) else 'ERROR' }}"
+      details_01: "{{ 'Role detection output: ' ~ (_step01_output.stdout | default('') | trim) }}"
+
+      task_02_name: "Set Access Credential Manager as trusted caller to No One via GPO"
+      task_02_cmd: |-
+        Set-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -Type String -Value 'No One'
+      task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+      data_02: "{{ _step02_output.stdout | default('') | trim }}"
+      status_02: >-
+        {{ 'SKIP' if not (is_dc | bool) else
+           'SKIP' if _step02_output.rc | default(-1) == 3 or 'MODULE_MISSING' in (_step02_output.stdout | default('')) else
+           'PASS' if _step02_output.rc | default(-1) == 0 else
+           'FAIL' }}
+      details_02: "{{ 'DC branch executed' if is_dc | bool else 'Not applicable - SKIP' }}"
+
+      task_03_name: "Export current security policy"
+      task_03_cmd: |-
+        secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY
+      task_03_rc: "{{ _step03_output.rc | default(-1) }}"
+      data_03: "{{ _step03_output.stdout | default('') | trim }}"
+      status_03: "{{ 'SKIP' if not (is_member | bool) else ('PASS' if _step03_output.rc | default(-1) == 0 else 'FAIL') }}"
+      details_03: "{{ 'Member export executed' if is_member | bool else 'Not applicable - SKIP' }}"
+
+      task_04_name: "Edit exported security policy to empty SeTrustedCredManAccessPrivilege"
+      task_04_cmd: |-
+        (Get-Content C:\\secpol.cfg) -replace 'SeTrustedCredManAccessPrivilege = .*', 'SeTrustedCredManAccessPrivilege = ' | Set-Content C:\\secpol.cfg
+      task_04_rc: "{{ _step04_output.rc | default(-1) }}"
+      data_04: "{{ _step04_output.stdout | default('') | trim }}"
+      status_04: "{{ 'SKIP' if not (is_member | bool) else ('PASS' if _step04_output.rc | default(-1) == 0 else 'FAIL') }}"
+      details_04: "{{ 'Member policy edit executed' if is_member | bool else 'Not applicable - SKIP' }}"
+
+      task_05_name: "Apply edited security policy using secedit configure"
+      task_05_cmd: |-
+        secedit /configure /db C:\\Windows\\security\\local.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY
+      task_05_rc: "{{ _step05_output.rc | default(-1) }}"
+      data_05: "{{ _step05_output.stdout | default('') | trim }}"
+      status_05: "{{ 'SKIP' if not (is_member | bool) else ('PASS' if _step05_output.rc | default(-1) == 0 else 'FAIL') }}"
+      details_05: "{{ 'Member policy apply executed' if is_member | bool else 'Not applicable - SKIP' }}"
+
+      task_06_name: "Remove temporary security policy export file"
+      task_06_cmd: |-
+        Remove-Item C:\\secpol.cfg -Force
+      task_06_rc: "{{ _step06_output.rc | default(-1) }}"
+      data_06: "{{ _step06_output.stdout | default('') | trim }}"
+      status_06: "{{ 'SKIP' if not (is_member | bool) else ('PASS' if _step06_output.rc | default(-1) == 0 and 'CLEANUP_OK' in (_step06_output.stdout | default('')) else 'FAIL') }}"
+      details_06: "{{ 'Member cleanup executed' if is_member | bool else 'Not applicable - SKIP' }}"
+
+      task_07_name: "Verify Domain Controller GPO setting for SeTrustedCredManAccessPrivilege"
+      task_07_cmd: "Get-GPResultantSetOfPolicy -User (Get-ADUser -Identity 'Administrator') -ReportType Xml | Select-String 'SeTrustedCredManAccessPrivilege'"
+      task_07_rc: "{{ _step07_output.rc | default(-1) }}"
+      data_07: "{{ _step07_output.stdout | default('') | trim }}"
+      status_07: >-
+        {{ 'SKIP' if not (is_dc | bool) else
+           'SKIP' if _step07_output.rc | default(-1) == 3 or 'MODULE_MISSING' in (_step07_output.stdout | default('')) else
+           'PASS' if _step07_output.rc | default(-1) == 0 and 'VERIFY_PASS' in (_step07_output.stdout | default('')) else
+           'FAIL' }}
+      details_07: "{{ 'DC verify executed' if is_dc | bool else 'Not applicable - SKIP' }}"
+
+      task_08_name: "Verify Member Server security policy for SeTrustedCredManAccessPrivilege"
+      task_08_cmd: |-
+        secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String 'SeTrustedCredManAccessPrivilege' C:\\verify.cfg; Remove-Item C:\\verify.cfg
+      task_08_rc: "{{ _step08_output.rc | default(-1) }}"
+      data_08: "{{ _step08_output.stdout | default('') | trim }}"
+      status_08: "{{ 'SKIP' if not (is_member | bool) else ('PASS' if _step08_output.rc | default(-1) == 0 and 'VERIFY_PASS' in (_step08_output.stdout | default('')) else 'FAIL') }}"
+      details_08: "{{ 'Member verify executed' if is_member | bool else 'Not applicable - SKIP' }}"
+    tags: [execute]
+
+  - name: "Req step-09 - Set cis_result based on active branch verify statuses"
+    ansible.builtin.set_fact:
+      cis_result: >-
+        {{ 'ERROR' if not ((_step01_output.rc | default(-1) == 0) and (_step01_output.stdout | default('') | trim in ['DC', 'Member'])) else
+           'ERROR' if (is_dc | bool and ('ERROR' in [status_02, status_07])) or (is_member | bool and ('ERROR' in [status_03, status_04, status_05, status_06, status_08])) else
+           'FAIL' if (is_dc | bool and ('FAIL' in [status_02, status_07])) or (is_member | bool and ('FAIL' in [status_03, status_04, status_05, status_06, status_08])) else
+           'PASS' if (is_dc | bool and (status_07 | trim == 'PASS')) or (is_member | bool and (status_08 | trim == 'PASS')) else
+           'SKIP' }}
+    tags: [execute]
+
+  - name: "Req step-09 - Store final remediation result detail"
+    ansible.builtin.set_fact:
+      task_09_name: "Set cis_result fact"
+      task_09_cmd: "set_fact cis_result"
+      task_09_rc: 0
+      data_09: "{{ cis_result | default('ERROR') | trim }}"
+      status_09: "{{ cis_result | default('ERROR') | trim }}"
+      details_09: "{{ 'Overall remediation result: ' ~ (cis_result | default('ERROR') | trim) }}"
+    tags: [execute]
+
+  - name: "Req step-10 - Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 2.2.1"
+      - "Reference: CIS Benchmark checkpoint 2.2.1"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: {{ task_01_name | default('Not recorded') }}"
+      - "  Command: {{ task_01_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_01_rc | default(-1) }}"
+      - "  Data: {{ data_01 | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: {{ task_02_name | default('Not recorded') }}"
+      - "  Command: {{ task_02_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_02_rc | default(-1) }}"
+      - "  Data: {{ data_02 | default('') | trim }}"
+      - "  Status: {{ status_02 | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: {{ task_03_name | default('Not recorded') }}"
+      - "  Command: {{ task_03_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_03_rc | default(-1) }}"
+      - "  Data: {{ data_03 | default('') | trim }}"
+      - "  Status: {{ status_03 | default('ERROR') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: {{ task_04_name | default('Not recorded') }}"
+      - "  Command: {{ task_04_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_04_rc | default(-1) }}"
+      - "  Data: {{ data_04 | default('') | trim }}"
+      - "  Status: {{ status_04 | default('ERROR') | trim }}"
+      - "  Details: {{ details_04 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: {{ task_05_name | default('Not recorded') }}"
+      - "  Command: {{ task_05_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_05_rc | default(-1) }}"
+      - "  Data: {{ data_05 | default('') | trim }}"
+      - "  Status: {{ status_05 | default('ERROR') | trim }}"
+      - "  Details: {{ details_05 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: {{ task_06_name | default('Not recorded') }}"
+      - "  Command: {{ task_06_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_06_rc | default(-1) }}"
+      - "  Data: {{ data_06 | default('') | trim }}"
+      - "  Status: {{ status_06 | default('ERROR') | trim }}"
+      - "  Details: {{ details_06 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 07 - {{ req_07 }}:"
+      - "  Task: {{ task_07_name | default('Not recorded') }}"
+      - "  Command: {{ task_07_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_07_rc | default(-1) }}"
+      - "  Data: {{ data_07 | default('') | trim }}"
+      - "  Status: {{ status_07 | default('ERROR') | trim }}"
+      - "  Details: {{ details_07 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 08 - {{ req_08 }}:"
+      - "  Task: {{ task_08_name | default('Not recorded') }}"
+      - "  Command: {{ task_08_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_08_rc | default(-1) }}"
+      - "  Data: {{ data_08 | default('') | trim }}"
+      - "  Status: {{ status_08 | default('ERROR') | trim }}"
+      - "  Details: {{ details_08 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 09 - {{ req_09 }}:"
+      - "  Task: {{ task_09_name | default('Not recorded') }}"
+      - "  Command: {{ task_09_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_09_rc | default(-1) }}"
+      - "  Data: {{ data_09 | default('') | trim }}"
+      - "  Status: {{ status_09 | default('ERROR') | trim }}"
+      - "  Details: {{ details_09 | default('') | trim }}"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Start restore and cleanup"
+    ansible.windows.win_shell: |
+      $ErrorActionPreference = 'Continue'
+      $bak = "{{ backup_dir }}"
+      if (-not (Test-Path -LiteralPath $bak)) {
+        Write-Output "RESTORE_NOTHING"
+        exit 0
+      }
+      $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
+      if ($role -eq 4 -or $role -eq 5) {
+        $dcSnap = Join-Path $bak 'dc_gpo_accesscredman.original'
+        if (Test-Path -LiteralPath $dcSnap) {
+          $orig = (Get-Content -LiteralPath $dcSnap -Raw).Trim()
+          if ($orig -eq 'MODULE_MISSING') {
+            Write-Output "RESTORE_DC_MODULE_MISSING"
+          } elseif ($orig -eq 'ABSENT') {
+            if (Get-Command Remove-GPRegistryValue -ErrorAction SilentlyContinue) {
+              try {
+                Remove-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -ErrorAction Stop
+                Write-Output "RESTORED_DC_VALUE_ABSENT"
+              } catch {
+                Write-Output "RESTORE_DC_ABSENT_FAILED: $($_.Exception.Message)"
+              }
+            } else {
+              Write-Output "RESTORE_DC_REMOVE_MODULE_MISSING"
+            }
+          } elseif ($orig.StartsWith('SNAPSHOT_ERROR')) {
+            Write-Output "RESTORE_DC_SNAPSHOT_ERROR"
+          } else {
+            if (Get-Command Set-GPRegistryValue -ErrorAction SilentlyContinue) {
+              try {
+                Set-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -Type String -Value $orig
+                Write-Output "RESTORED_DC_VALUE=$orig"
+              } catch {
+                Write-Output "RESTORE_DC_SET_FAILED: $($_.Exception.Message)"
+              }
+            } else {
+              Write-Output "RESTORE_DC_SET_MODULE_MISSING"
+            }
+          }
+        } else {
+          Write-Output "RESTORE_DC_NO_SNAPSHOT"
+        }
+      } else {
+        $origCfg = Join-Path $bak 'secpol_original.cfg'
+        if (Test-Path -LiteralPath $origCfg) {
+          $liveDb = [System.IO.Path]::GetFullPath("C:/Windows/security/local.sdb")
+          secedit /configure /db "$liveDb" /cfg "$origCfg" /areas SECURITYPOLICY /quiet
+          Write-Output "RESTORED_MEMBER_POLICY"
+        }
+        $present = Join-Path $bak 'secpol.cfg.present'
+        if (Test-Path -LiteralPath $present) {
+          Copy-Item -LiteralPath $present -Destination "{{ secpol_cfg_path }}" -Force
+          Write-Output "RESTORED_SECPOL_CFG"
+        }
+        $absent = Join-Path $bak 'secpol.cfg.absent'
+        if (Test-Path -LiteralPath $absent) {
+          Remove-Item -LiteralPath "{{ secpol_cfg_path }}" -Force -ErrorAction SilentlyContinue
+          Write-Output "REMOVED_SECPOL_CFG"
+        }
+        Remove-Item -LiteralPath "{{ verify_cfg_path }}" -Force -ErrorAction SilentlyContinue
+        Write-Output "RESTORED_MEMBER_FILES"
+      }
+      Remove-Item -LiteralPath $bak -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Output "RESTORE_COMPLETED"
+    register: _restore_job
+    failed_when: false
+    changed_when: false
+    async: 300
+    poll: 0
+    tags: [restore]
+
+  - name: "Restore - Wait for restore to complete"
+    ansible.builtin.async_status:
+      jid: "{{ _restore_job.ansible_job_id }}"
+    register: _restore_result
+    until: _restore_result.finished
+    retries: 30
+    delay: 10
+    failed_when: false
+    when: _restore_job.ansible_job_id is defined
+    tags: [restore]
