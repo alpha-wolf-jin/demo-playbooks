@@ -1,10 +1,7 @@
 playbook_name: "cis_1_1_2_remediation"
-backup_dir: |-
-  C:\\ai-playbooks-backup\\{{ playbook_name | trim }}
-secpol_cfg_path: |-
-  C:\\secpol.cfg
-verify_cfg_path: |-
-  C:\\verify.cfg
+backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+secpol_cfg_path: "C:/secpol.cfg"
+verify_cfg_path: "C:/verify.cfg"
 max_password_age_days: "180"
 req_01: "Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1, 2, or 3 for Member Server."
 req_02: "If Domain Controller, apply maximum password age of {{ max_password_age_days }} days using command: `Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MaxPasswordAge (New-TimeSpan -Days {{ max_password_age_days }})`. Expected result: policy updated."
