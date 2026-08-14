@@ -1,0 +1,10 @@
+req_01: "Check if the server role is Domain Controller or Member Server using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for DC, 0-3 for Member Server."
+req_02: "Check if the 'Access Credential Manager as a trusted caller' policy is set to 'No One' on Domain Controller using command: `Get-GPO -All | ForEach-Object { $_.SecurityInfo } | Select-String 'SeTrustedCredManAccessPrivilege'`. Expected result: No accounts listed."
+req_03: |-
+  Check if the 'Access Credential Manager as a trusted caller' policy is set to 'No One' on Member Server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'SeTrustedCredManAccessPrivilege'`. Expected result: No accounts listed.
+req_04: "Check overall compliance: PASS if both role-specific checks pass, FAIL if the policy is misconfigured, SKIP only if the OS is not Windows."
+req_05: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+os_facts: {}
+role_result: {}
+dc_policy_result: {}
+member_policy_result: {}
