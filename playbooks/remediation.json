@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "1.1.1",
-  "title": "Ensure 'Enforce password history' is set to '24 or more password(s)'",
+  "checkpoint_id": "1.1.2",
+  "title": "Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
@@ -19,22 +19,22 @@
         "when": "is_dc | bool",
         "steps": [
           "step-02",
-          "step-06"
+          "step-03"
         ]
       },
       "member": {
         "when": "is_member | bool",
         "steps": [
-          "step-03",
           "step-04",
           "step-05",
+          "step-06",
           "step-07"
         ]
       }
     },
     "result_aggregation": "PASS if the active branch verify step confirms the change took effect; SKIP if a branch step is not applicable to this host (the other role); FAIL if any active branch apply-or-verify step fails; ERROR if role detection fails or neither branch ran. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Remediate CIS checkpoint 1.1.1: Ensure 'Enforce password history' is set to '24 or more password(s)'",
+  "objective": "Remediate CIS checkpoint 1.1.2: Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -57,6 +57,14 @@
         "default": null,
         "unit": null,
         "description": "WinRM user (Windows Administrator login)"
+      },
+      {
+        "name": "max_password_age_days",
+        "type": "integer",
+        "required": false,
+        "default": 180,
+        "unit": "days",
+        "description": "Maximum password age in days (must be 365 or fewer, but not 0)"
       }
     ]
   },
@@ -79,20 +87,20 @@
       "id": "step-01",
       "type": "collect",
       "name": "Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain…",
-      "function": "1. Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1-3 for Member Server.",
+      "function": "1. Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1, 2, or 3 for Member Server.",
       "module": "ansible.windows.win_shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-11",
+      "on_fail": "step-12",
       "branch": "detect"
     },
     {
       "id": "step-02",
       "type": "action",
-      "name": "If Domain Controller, apply password history of 24 via command: `Set-ADDefaultDomainPasswordPolicy -Identity <DomainDN>…",
-      "function": "2. If Domain Controller, apply password history of 24 via command: `Set-ADDefaultDomainPasswordPolicy -Identity <DomainDN> -PasswordHistoryCount 24`. Expected result: policy updated.",
+      "name": "If Domain Controller, apply maximum password age of {{ max_password_age_days }} days",
+      "function": "2. If Domain Controller, apply maximum password age of {{ max_password_age_days }} days using command: `Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MaxPasswordAge (New-TimeSpan -Days {{ max_password_age_days }})`. Expected result: policy updated.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
@@ -104,14 +112,14 @@
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-11",
+      "on_fail": "step-12",
       "branch": "dc"
     },
     {
       "id": "step-03",
       "type": "collect",
-      "name": "If Member Server, export current security policy",
-      "function": "3. If Member Server, export current security policy using command: `secedit /export /cfg C:\\secpol.cfg`. Expected result: configuration file created.",
+      "name": "If Domain Controller, verify maximum password age",
+      "function": "3. If Domain Controller, verify maximum password age using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MaxPasswordAge`. Expected result: {{ max_password_age_days }} days.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-02",
@@ -123,14 +131,14 @@
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-11",
-      "branch": "member"
+      "on_fail": "step-12",
+      "branch": "dc"
     },
     {
       "id": "step-04",
-      "type": "action",
-      "name": "If Member Server, edit C:\\secpol.cfg to set `PasswordHistorySize = 24` under [System Access]",
-      "function": "4. If Member Server, edit C:\\secpol.cfg to set `PasswordHistorySize = 24` under [System Access]. Expected result: value changed.",
+      "type": "collect",
+      "name": "If Member Server, export current security policy",
+      "function": "4. If Member Server, export current security policy using command: `secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: configuration file created.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-03",
@@ -142,14 +150,14 @@
         "_step04_output"
       ],
       "on_success": "step-05",
-      "on_fail": "step-11",
+      "on_fail": "step-12",
       "branch": "member"
     },
     {
       "id": "step-05",
       "type": "action",
-      "name": "If Member Server, apply policy",
-      "function": "5. If Member Server, apply policy using command: `secedit /configure /db secedit.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: policy applied.",
+      "name": "If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = {{ max_password_age_days }}'",
+      "function": "5. If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = {{ max_password_age_days }}'. The file is UTF-16 LE; MUST use `[System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::Unicode)` to read and `[System.IO.File]::WriteAllLines($path, $newLines, [System.Text.Encoding]::Unicode)` to write — NEVER use `Get-Content -Encoding Unicode | Set-Content -Encoding Unicode` as it produces a double-BOM that secedit rejects. Expected result: file updated with MaximumPasswordAge = {{ max_password_age_days }}.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-04",
@@ -161,14 +169,14 @@
         "_step05_output"
       ],
       "on_success": "step-06",
-      "on_fail": "step-11",
+      "on_fail": "step-12",
       "branch": "member"
     },
     {
       "id": "step-06",
-      "type": "collect",
-      "name": "Verify Domain Controller setting",
-      "function": "6. Verify Domain Controller setting using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty PasswordHistoryCount`. Expected result: 24.",
+      "type": "action",
+      "name": "If Member Server, apply modified security policy",
+      "function": "6. If Member Server, apply modified security policy using a FRESH TEMP database — NEVER use local.sdb or C:\\Windows\\security\\local.sdb (system database always locked by scesrv service, causes Error 1208). Use: `secedit /configure /db \"{{ backup_dir }}\\cis_secedit.sdb\" /cfg \"{{ secpol_cfg_path | trim }}\" /areas SECURITYPOLICY /quiet`. The temp .sdb does not need to exist beforehand — secedit creates it. Use `async: 120 / poll: 10`. Expected result: policy applied (rc=0).",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-05",
@@ -180,14 +188,14 @@
         "_step06_output"
       ],
       "on_success": "step-07",
-      "on_fail": "step-11",
-      "branch": "dc"
+      "on_fail": "step-12",
+      "branch": "member"
     },
     {
       "id": "step-07",
       "type": "collect",
-      "name": "Verify Member Server setting then check `PasswordHistorySize` equals 24",
-      "function": "7. Verify Member Server setting using command: `secedit /export /cfg C:\\verify.cfg` then check `PasswordHistorySize` equals 24. Expected result: value confirmed.",
+      "name": "If Member Server, verify maximum password age",
+      "function": "7. If Member Server, verify maximum password age using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String -Path C:\\verify.cfg -Pattern 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge = {{ max_password_age_days }}.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-06",
@@ -199,15 +207,15 @@
         "_step07_output"
       ],
       "on_success": "step-08",
-      "on_fail": "step-11",
+      "on_fail": "step-12",
       "branch": "member"
     },
     {
       "id": "step-08",
-      "type": "transform",
-      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
-      "function": "8. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "collect",
+      "name": "Clean up temporary files",
+      "function": "8. Clean up temporary files using command: `Remove-Item C:\\secpol.cfg, C:\\verify.cfg -ErrorAction SilentlyContinue`. Expected result: files removed.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-07",
         "fields": [
@@ -215,28 +223,47 @@
         ]
       },
       "stores": [
-        "cis_result"
+        "_step08_output"
       ],
       "on_success": "step-09",
+      "on_fail": "step-12",
       "branch": "common"
     },
     {
       "id": "step-09",
-      "type": "emit",
-      "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "9. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.1\nReference: CIS Benchmark checkpoint 1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
+      "type": "transform",
+      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
+      "function": "9. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable. On any failure, set cis_result to ERROR.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-08",
         "fields": [
-          "cis_result"
+          "_step08_output"
         ]
       },
+      "stores": [
+        "cis_result"
+      ],
       "on_success": "step-10",
       "branch": "common"
     },
     {
       "id": "step-10",
+      "type": "emit",
+      "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
+      "function": "10. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.2\nReference: CIS Benchmark checkpoint 1.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "cis_result"
+        ]
+      },
+      "on_success": "step-11",
+      "branch": "common"
+    },
+    {
+      "id": "step-11",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -247,11 +274,11 @@
       "branch": "common"
     },
     {
-      "id": "step-11",
+      "id": "step-12",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.1 audit failed",
+      "error_message": "ERROR: CIS 1.1.2 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -262,8 +289,8 @@
       "description": "Apply remediation changes on the target host.",
       "steps": [
         "step-02",
-        "step-04",
-        "step-05"
+        "step-05",
+        "step-06"
       ]
     },
     {
@@ -272,51 +299,53 @@
       "steps": [
         "step-01",
         "step-03",
-        "step-06",
-        "step-07"
+        "step-04",
+        "step-07",
+        "step-08"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-08"
+        "step-09"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-09",
-        "step-10"
+        "step-10",
+        "step-11"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-11"
+        "step-12"
       ]
     }
   ],
   "compliance_constraints": [
-    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg → secedit /configure /areas SECURITYPOLICY. Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
+    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg (UTF-16 LE with ReadAllLines/WriteAllLines) → secedit /configure with a FRESH TEMP .sdb under backup_dir (NEVER local.sdb — it is locked by the scesrv service and causes Error 1208). Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
-    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages."
+    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages.",
+    "On any failure, report cis_result as ERROR."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 24 or more password(s):\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Password Policy\\Enforce password history",
+  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 365 or fewer days, but not 0:\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Password Policy\\Maximum password age",
   "example_output": "",
-  "filename": "cis_remediation_1_1_1.yml",
+  "filename": "cis_remediation_1_1_2.yml",
   "output_dir": "./cis_win2022_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-13T14:48:23",
-    "revision": 8,
-    "approved_at": "2026-08-13T14:48:36",
+    "drafted_at": "2026-08-14T14:01:03",
+    "revision": 1,
+    "approved_at": "2026-08-14T14:03:03",
     "saved_by": null
   }
 }
