@@ -87,7 +87,7 @@
       "id": "step-01",
       "type": "collect",
       "name": "Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain…",
-      "function": "1. Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1, 2, or 3 for Member Server.",
+      "function": "1. Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1-3 for Member Server.",
       "module": "ansible.windows.win_shell",
       "stores": [
         "_step01_output"
@@ -99,8 +99,8 @@
     {
       "id": "step-02",
       "type": "action",
-      "name": "If Domain Controller, apply maximum password age of {{ max_password_age_days }} days",
-      "function": "2. If Domain Controller, apply maximum password age of {{ max_password_age_days }} days using command: `Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MaxPasswordAge (New-TimeSpan -Days {{ max_password_age_days }})`. Expected result: policy updated.",
+      "name": "If Domain Controller, apply maximum password age to 365 days",
+      "function": "2. If Domain Controller, apply maximum password age to 365 days using command: `Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MaxPasswordAge (New-TimeSpan -Days 365)`. Expected result: policy updated.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
@@ -119,7 +119,7 @@
       "id": "step-03",
       "type": "collect",
       "name": "If Domain Controller, verify maximum password age",
-      "function": "3. If Domain Controller, verify maximum password age using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MaxPasswordAge`. Expected result: {{ max_password_age_days }} days.",
+      "function": "3. If Domain Controller, verify maximum password age using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MaxPasswordAge`. Expected result: 365 days.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-02",
@@ -139,7 +139,7 @@
       "type": "collect",
       "name": "If Member Server, export current security policy",
       "function": "4. If Member Server, export current security policy using command: `secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: configuration file created.",
-      "module": "ansible.windows.win_shell",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-03",
         "fields": [
@@ -156,9 +156,9 @@
     {
       "id": "step-05",
       "type": "action",
-      "name": "If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = {{ max_password_age_days }}'",
-      "function": "5. If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = {{ max_password_age_days }}'. The file is UTF-16 LE; MUST use `[System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::Unicode)` to read and `[System.IO.File]::WriteAllLines($path, $newLines, [System.Text.Encoding]::Unicode)` to write — NEVER use `Get-Content -Encoding Unicode | Set-Content -Encoding Unicode` as it produces a double-BOM that secedit rejects. Expected result: file updated with MaximumPasswordAge = {{ max_password_age_days }}.",
-      "module": "ansible.windows.win_shell",
+      "name": "If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = 365'",
+      "function": "5. If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = 365' using command: `(Get-Content C:\\secpol.cfg) -replace 'MaximumPasswordAge = \\d+', 'MaximumPasswordAge = 365' | Set-Content C:\\secpol.cfg`. Expected result: file updated.",
+      "module": "community.windows.win_lineinfile",
       "input": {
         "source": "step-04",
         "fields": [
@@ -176,8 +176,8 @@
       "id": "step-06",
       "type": "action",
       "name": "If Member Server, apply modified security policy",
-      "function": "6. If Member Server, apply modified security policy using a FRESH TEMP database — NEVER use local.sdb or C:\\Windows\\security\\local.sdb (system database always locked by scesrv service, causes Error 1208). Use: `secedit /configure /db \"{{ backup_dir }}\\cis_secedit.sdb\" /cfg \"{{ secpol_cfg_path | trim }}\" /areas SECURITYPOLICY /quiet`. The temp .sdb does not need to exist beforehand — secedit creates it. Use `async: 120 / poll: 10`. Expected result: policy applied (rc=0).",
-      "module": "ansible.windows.win_shell",
+      "function": "6. If Member Server, apply modified security policy using command: `secedit /configure /db C:\\Windows\\security\\local.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY /quiet`. Expected result: policy applied.",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-05",
         "fields": [
@@ -195,8 +195,8 @@
       "id": "step-07",
       "type": "collect",
       "name": "If Member Server, verify maximum password age",
-      "function": "7. If Member Server, verify maximum password age using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String -Path C:\\verify.cfg -Pattern 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge = {{ max_password_age_days }}.",
-      "module": "ansible.windows.win_shell",
+      "function": "7. If Member Server, verify maximum password age using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String -Path C:\\verify.cfg -Pattern 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge = 365.",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-06",
         "fields": [
@@ -233,7 +233,7 @@
       "id": "step-09",
       "type": "transform",
       "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
-      "function": "9. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable. On any failure, set cis_result to ERROR.",
+      "function": "9. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
       "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-08",
@@ -277,8 +277,8 @@
       "id": "step-12",
       "type": "abort",
       "name": "Handle task failure",
-      "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.2 audit failed",
+      "function": "Reached via rescue block on any unexpected task failure. Report the failing step ID and its error message.",
+      "error_message": "ERROR: CIS 1.1.2 remediation failed at step {{ ansible_failed_task.name }}: {{ ansible_failed_result.msg }}",
       "on_success": "end",
       "branch": "common"
     }
@@ -328,10 +328,11 @@
     }
   ],
   "compliance_constraints": [
-    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg (UTF-16 LE with ReadAllLines/WriteAllLines) → secedit /configure with a FRESH TEMP .sdb under backup_dir (NEVER local.sdb — it is locked by the scesrv service and causes Error 1208). Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
+    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg → secedit /configure /areas SECURITYPOLICY. Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
     "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages.",
-    "On any failure, report cis_result as ERROR."
+    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg (UTF-16 LE with ReadAllLines/WriteAllLines) → secedit /configure with a FRESH TEMP .sdb under backup_dir (NEVER local.sdb — it is locked by the scesrv service and causes Error 1208). Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
+    "On any failure, report cis_result as ERROR and include the failing step ID and error message in the abort step."
   ],
   "error_handling": {
     "no_silent_exit": true
@@ -343,9 +344,9 @@
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-14T14:01:03",
-    "revision": 1,
-    "approved_at": "2026-08-14T14:03:03",
+    "drafted_at": "2026-08-15T04:22:50",
+    "revision": 2,
+    "approved_at": "2026-08-15T04:24:42",
     "saved_by": null
   }
 }
