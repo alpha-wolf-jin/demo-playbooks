@@ -1,0 +1,131 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_2_2_1.yml
+
+- name: "Req step-01 - Gather Windows OS family"
+  ansible.builtin.setup:
+    filter: ansible_os_family
+  register: _step01_output
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-01 - Set OS is Windows flag"
+  ansible.builtin.set_fact:
+    os_is_windows: "{{ (_step01_output.ansible_facts.ansible_os_family | default('')) == 'Windows' }}"
+
+- name: "Req step-01 - Detect server role"
+  ansible.windows.win_shell: |
+    (Get-WmiObject Win32_ComputerSystem).DomainRole
+  register: role_result
+  failed_when: false
+  changed_when: false
+  when: os_is_windows | bool
+
+- name: "Req step-01 - Set role flags and status"
+  ansible.builtin.set_fact:
+    is_dc: "{{ (os_is_windows | bool) and ((role_result.stdout | default('') | trim) in ['4','5']) }}"
+    is_member: "{{ (os_is_windows | bool) and ((role_result.stdout | default('') | trim) in ['1','2','3']) }}"
+    status_01: >-
+      {{ 'SKIP' if not (os_is_windows | bool) else
+         'ERROR' if (role_result.rc | default(-1)) != 0 or ((role_result.stdout | default('') | trim) not in ['0','1','2','3','4','5']) else
+         'PASS' }}
+
+- name: "Req step-02 - Check DC policy"
+  ansible.windows.win_shell: |
+    Get-GPO -All | ForEach-Object { $_.SecurityInfo } | Select-String 'SeTrustedCredManAccessPrivilege'
+  register: _step02_output
+  failed_when: false
+  changed_when: false
+  when: is_dc | bool
+
+- name: "Req step-02 - Set DC policy status"
+  ansible.builtin.set_fact:
+    status_02: >-
+      {{ 'SKIP' if not (is_dc | bool) else
+         'ERROR' if (_step02_output.rc | default(-1)) != 0 else
+         'PASS' if ((_step02_output.stdout | default('') | trim) == '') else
+         'FAIL' }}
+  when: is_dc | bool
+
+- name: "Req step-03 - Check Member policy"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"
+    secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet
+    Get-Content $tmp | Select-String 'SeTrustedCredManAccessPrivilege'
+  register: _step03_output
+  failed_when: false
+  changed_when: false
+  when: is_member | bool
+
+- name: "Req step-03 - Set Member policy status"
+  ansible.builtin.set_fact:
+    status_03: >-
+      {{ 'SKIP' if not (is_member | bool) else
+         'ERROR' if (_step03_output.rc | default(-1)) != 0 else
+         'PASS' if ((_step03_output.stdout | default('') | trim) == '') else
+         'FAIL' }}
+  when: is_member | bool
+
+- name: "Req step-04 - Set overall compliance status"
+  ansible.builtin.set_fact:
+    status_04: >-
+      {{ 'SKIP' if not (os_is_windows | bool) else
+         'ERROR' if (status_01 | default('ERROR') | trim) == 'ERROR' else
+         (status_02 | default('SKIP') | trim) if is_dc | bool else
+         (status_03 | default('SKIP') | trim) if is_member | bool else
+         'ERROR' }}
+  register: _step04_output
+
+- name: "Req step-05 - Store final audit result in cis_result"
+  ansible.builtin.set_fact:
+    cis_result: "{{ status_04 | default('ERROR') | trim }}"
+    status_05: "{{ status_04 | default('ERROR') | trim }}"
+
+- name: "Generate audit report"
+  debug:
+    msg:
+    - "AUDIT REPORT — CIS 2.2.1"
+    - "Reference: CIS Benchmark checkpoint 2.2.1"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: Req step-01 - Detect server role"
+    - "  Command: (Get-WmiObject Win32_ComputerSystem).DomainRole"
+    - "  Exit code: {{ role_result.rc | default(-1) }}"
+    - "  Data: {{ role_result.stdout | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: Role detection result"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: Req step-02 - Check DC policy"
+    - "  Command: Get-GPO -All | ForEach-Object { $_.SecurityInfo } | Select-String 'SeTrustedCredManAccessPrivilege'"
+    - "  Exit code: {{ _step02_output.rc | default(-1) }}"
+    - "  Data: {{ _step02_output.stdout | default('') | trim }}"
+    - "  Status: {{ status_02 | default('SKIP') | trim }}"
+    - "  Details: DC policy result"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: Req step-03 - Check Member policy"
+    - '  Command: $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String ''SeTrustedCredManAccessPrivilege'''
+    - "  Exit code: {{ _step03_output.rc | default(-1) }}"
+    - "  Data: {{ _step03_output.stdout | default('') | trim }}"
+    - "  Status: {{ status_03 | default('SKIP') | trim }}"
+    - "  Details: Member policy result"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: Req step-04 - Set overall compliance status"
+    - "  Command: N/A"
+    - "  Exit code: 0"
+    - "  Data: {{ status_04 | default('ERROR') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: Overall status"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: Req step-05 - Store final audit result in cis_result"
+    - "  Command: N/A"
+    - "  Exit code: 0"
+    - "  Data: {{ cis_result | default('ERROR') | trim }}"
+    - "  Status: {{ status_05 | default('ERROR') | trim }}"
+    - "  Details: Final audit result stored"
+    - ""
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
