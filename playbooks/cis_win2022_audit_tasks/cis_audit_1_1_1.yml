@@ -1,0 +1,431 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_1_1_1.yml
+
+- name: "Req step-05 - Check if OS is Windows"
+  ansible.windows.win_shell: "$env:OS"
+  register: _step05_output
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-01 - Detect server role using WMI DomainRole"
+  ansible.windows.win_shell: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+  register: _step01_output
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-01 - Set role flags"
+  ansible.builtin.set_fact:
+    is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+    is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+
+- name: "Req step-06 - Check Active Directory module availability"
+  ansible.windows.win_shell: |
+    if (Get-Module -Name ActiveDirectory -ListAvailable) {
+      Write-Output 'AVAILABLE'
+    } else {
+      Write-Output 'UNAVAILABLE'
+    }
+  register: _step06_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-07 - Check secedit command availability"
+  ansible.windows.win_shell: "Get-Command secedit | Select-Object -ExpandProperty Name"
+  register: _step07_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-02 - Check DC password history policy"
+  ansible.windows.win_shell: |
+    Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty PasswordHistoryCount
+  register: _step02_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-03 - Check DC GPO enforcement status"
+  ansible.windows.win_shell: |
+    Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty GpoStatus
+  register: _step03_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-08 - Check DC password history via GPO registry"
+  ansible.windows.win_shell: |
+    Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String 'PasswordHistorySize'
+  register: _step08_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-10 - Check DC domain functional level"
+  ansible.windows.win_shell: |
+    Get-ADDomain | Select-Object -ExpandProperty DomainMode
+  register: _step10_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-12 - Check DC default naming context via ADSI"
+  ansible.windows.win_shell: |
+    ([ADSI]'LDAP://RootDSE').defaultNamingContext
+  register: _step12_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-14 - Check DC GPO link status"
+  ansible.windows.win_shell: |
+    Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty Links
+  register: _step14_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-16 - Check DC password history for sample user"
+  ansible.windows.win_shell: |
+    Get-ADUser -Filter * -Properties PasswordHistoryCount | Select-Object -First 1 -ExpandProperty PasswordHistoryCount
+  register: _step16_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-18 - Check DC GPO security filter"
+  ansible.windows.win_shell: |
+    Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty SecurityFilter
+  register: _step18_output
+  when: is_dc | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-04 - Check Member Server local password history"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'PasswordHistorySize'
+  register: _step04_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-09 - Check Member Server effective policy for PasswordHistorySize"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Content $tmp | Select-String 'PasswordHistorySize').ToString()
+  register: _step09_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-11 - Check Member Server security policy export success"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Test-Path $tmp
+  register: _step11_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-13 - Check Member Server policy file contains PasswordHistorySize"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Select-String -Path $tmp -Pattern 'PasswordHistorySize'
+  register: _step13_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-15 - Check Member Server secedit exit code"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; $LASTEXITCODE
+  register: _step15_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-17 - Check Member Server policy value is numeric"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; [int]((Get-Content $tmp | Select-String 'PasswordHistorySize').ToString().Split('=')[1].Trim())
+  register: _step17_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-19 - Check Member Server policy file is not empty"
+  ansible.windows.win_shell: |
+    $tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Item $tmp).Length
+  register: _step19_output
+  when: is_member | bool
+  failed_when: false
+  changed_when: false
+
+- name: "Req step-20 - Compute per-requirement statuses and branch flags"
+  ansible.builtin.set_fact:
+    data_01: "{{ _step01_output.stdout | default('') | trim }}"
+    status_01: "{{ ('PASS' if ((_step01_output.stdout | default('') | trim) in ['0','1','2','3','4','5']) else 'ERROR') | trim }}"
+    details_01: "{{ _step01_output.stdout | default('') | trim }}"
+
+    data_02: "{{ _step02_output.stdout | default('') | trim }}"
+    status_02: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ((_step02_output.stdout | default('0') | trim | int) >= (password_history_min | int)) else 'FAIL')) | trim }}"
+    details_02: "{{ _step02_output.stdout | default('') | trim }}"
+
+    data_03: "{{ _step03_output.stdout | default('') | trim }}"
+    status_03: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if (_step03_output.stdout | default('') | trim == 'AllSettingsEnabled') else 'FAIL')) | trim }}"
+    details_03: "{{ _step03_output.stdout | default('') | trim }}"
+
+    data_04: "{{ _step04_output.stdout | default('') | trim }}"
+    status_04: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if ('PasswordHistorySize' in (_step04_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_04: "{{ _step04_output.stdout | default('') | trim }}"
+
+    data_05: "{{ _step05_output.stdout | default('') | trim }}"
+    status_05: "{{ ('PASS' if (_step05_output.stdout | default('') | trim == 'Windows_NT') else 'FAIL') | trim }}"
+    details_05: "{{ _step05_output.stdout | default('') | trim }}"
+
+    data_06: "{{ _step06_output.stdout | default('') | trim }}"
+    status_06: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if (_step06_output.stdout | default('') | trim == 'AVAILABLE') else 'FAIL')) | trim }}"
+    details_06: "{{ _step06_output.stdout | default('') | trim }}"
+
+    data_07: "{{ _step07_output.stdout | default('') | trim }}"
+    status_07: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if ('secedit' in (_step07_output.stdout | default('') | trim | lower)) else 'FAIL')) | trim }}"
+    details_07: "{{ _step07_output.stdout | default('') | trim }}"
+
+    data_08: "{{ _step08_output.stdout | default('') | trim }}"
+    status_08: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ('PasswordHistorySize' in (_step08_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_08: "{{ _step08_output.stdout | default('') | trim }}"
+
+    data_09: "{{ _step09_output.stdout | default('') | trim }}"
+    status_09: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if ('PasswordHistorySize' in (_step09_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_09: "{{ _step09_output.stdout | default('') | trim }}"
+
+    data_10: "{{ _step10_output.stdout | default('') | trim }}"
+    status_10: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ('Windows' in (_step10_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_10: "{{ _step10_output.stdout | default('') | trim }}"
+
+    data_11: "{{ _step11_output.stdout | default('') | trim }}"
+    status_11: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if (_step11_output.stdout | default('') | trim == 'True') else 'FAIL')) | trim }}"
+    details_11: "{{ _step11_output.stdout | default('') | trim }}"
+
+    data_12: "{{ _step12_output.stdout | default('') | trim }}"
+    status_12: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ('DC=' in (_step12_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_12: "{{ _step12_output.stdout | default('') | trim }}"
+
+    data_13: "{{ _step13_output.stdout | default('') | trim }}"
+    status_13: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if ('PasswordHistorySize' in (_step13_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_13: "{{ _step13_output.stdout | default('') | trim }}"
+
+    data_14: "{{ _step14_output.stdout | default('') | trim }}"
+    status_14: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ((_step14_output.stdout | default('') | trim) != '') else 'FAIL')) | trim }}"
+    details_14: "{{ _step14_output.stdout | default('') | trim }}"
+
+    data_15: "{{ _step15_output.stdout | default('') | trim }}"
+    status_15: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if (_step15_output.stdout | default('') | trim == '0') else 'FAIL')) | trim }}"
+    details_15: "{{ _step15_output.stdout | default('') | trim }}"
+
+    data_16: "{{ _step16_output.stdout | default('') | trim }}"
+    status_16: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ((_step16_output.stdout | default('0') | trim | int) >= (password_history_min | int)) else 'FAIL')) | trim }}"
+    details_16: "{{ _step16_output.stdout | default('') | trim }}"
+
+    data_17: "{{ _step17_output.stdout | default('') | trim }}"
+    status_17: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if ((_step17_output.stdout | default('0') | trim | int) >= (password_history_min | int)) else 'FAIL')) | trim }}"
+    details_17: "{{ _step17_output.stdout | default('') | trim }}"
+
+    data_18: "{{ _step18_output.stdout | default('') | trim }}"
+    status_18: "{{ ('SKIP' if not (is_dc | bool) else ('PASS' if ('Domain Users' in (_step18_output.stdout | default('') | trim)) else 'FAIL')) | trim }}"
+    details_18: "{{ _step18_output.stdout | default('') | trim }}"
+
+    data_19: "{{ _step19_output.stdout | default('') | trim }}"
+    status_19: "{{ ('SKIP' if not (is_member | bool) else ('PASS' if ((_step19_output.stdout | default('0') | trim | int) > 0) else 'FAIL')) | trim }}"
+    details_19: "{{ _step19_output.stdout | default('') | trim }}"
+
+    _role_valid: "{{ (is_dc | bool) or (is_member | bool) }}"
+    _dc_ok: "{{ (is_dc | bool) and ((_step02_output.stdout | default('0') | trim | int) >= (password_history_min | int)) and (_step03_output.stdout | default('') | trim == 'AllSettingsEnabled') }}"
+    _member_ok: "{{ (is_member | bool) and ((_step17_output.stdout | default('0') | trim | int) >= (password_history_min | int)) }}"
+
+  register: _step20_output
+
+- name: "Req step-20 - Compute overall compliance status"
+  ansible.builtin.set_fact:
+    _overall_status: "{{ ('ERROR' if not (_role_valid | bool) else ('PASS' if ((is_dc | bool) and (_dc_ok | bool)) or ((is_member | bool) and (_member_ok | bool)) else 'FAIL')) | trim }}"
+
+- name: "Req step-21 - Store final audit result in cis_result"
+  ansible.builtin.set_fact:
+    cis_result: "{{ _overall_status | default('ERROR') | trim }}"
+
+- name: "Req step-22 - Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 1.1.1"
+    - "Reference: CIS Benchmark checkpoint 1.1.1"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: Req step-01 - Detect server role using WMI DomainRole"
+    - "  Command: (Get-WmiObject Win32_ComputerSystem).DomainRole"
+    - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: Req step-02 - Check DC password history policy"
+    - "  Command: Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty PasswordHistoryCount"
+    - "  Exit code: {{ _step02_output.rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: Req step-03 - Check DC GPO enforcement status"
+    - "  Command: Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty GpoStatus"
+    - "  Exit code: {{ _step03_output.rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: Req step-04 - Check Member Server local password history"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'PasswordHistorySize'"
+    - "  Exit code: {{ _step04_output.rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: Req step-05 - Check if OS is Windows"
+    - "  Command: $env:OS"
+    - "  Exit code: {{ _step05_output.rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
+    - "  Status: {{ status_05 | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 06 - {{ req_06 }}:"
+    - "  Task: Req step-06 - Check Active Directory module availability"
+    - "  Command: if (Get-Module -Name ActiveDirectory -ListAvailable) { Write-Output 'AVAILABLE' } else { Write-Output 'UNAVAILABLE' }"
+    - "  Exit code: {{ _step06_output.rc | default(-1) }}"
+    - "  Data: {{ data_06 | default('') | trim }}"
+    - "  Status: {{ status_06 | default('ERROR') | trim }}"
+    - "  Details: {{ details_06 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 07 - {{ req_07 }}:"
+    - "  Task: Req step-07 - Check secedit command availability"
+    - "  Command: Get-Command secedit | Select-Object -ExpandProperty Name"
+    - "  Exit code: {{ _step07_output.rc | default(-1) }}"
+    - "  Data: {{ data_07 | default('') | trim }}"
+    - "  Status: {{ status_07 | default('ERROR') | trim }}"
+    - "  Details: {{ details_07 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 08 - {{ req_08 }}:"
+    - "  Task: Req step-08 - Check DC password history via GPO registry"
+    - "  Command: Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String 'PasswordHistorySize'"
+    - "  Exit code: {{ _step08_output.rc | default(-1) }}"
+    - "  Data: {{ data_08 | default('') | trim }}"
+    - "  Status: {{ status_08 | default('ERROR') | trim }}"
+    - "  Details: {{ details_08 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 09 - {{ req_09 }}:"
+    - "  Task: Req step-09 - Check Member Server effective policy for PasswordHistorySize"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Content $tmp | Select-String 'PasswordHistorySize').ToString()"
+    - "  Exit code: {{ _step09_output.rc | default(-1) }}"
+    - "  Data: {{ data_09 | default('') | trim }}"
+    - "  Status: {{ status_09 | default('ERROR') | trim }}"
+    - "  Details: {{ details_09 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 10 - {{ req_10 }}:"
+    - "  Task: Req step-10 - Check DC domain functional level"
+    - "  Command: Get-ADDomain | Select-Object -ExpandProperty DomainMode"
+    - "  Exit code: {{ _step10_output.rc | default(-1) }}"
+    - "  Data: {{ data_10 | default('') | trim }}"
+    - "  Status: {{ status_10 | default('ERROR') | trim }}"
+    - "  Details: {{ details_10 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 11 - {{ req_11 }}:"
+    - "  Task: Req step-11 - Check Member Server security policy export success"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Test-Path $tmp"
+    - "  Exit code: {{ _step11_output.rc | default(-1) }}"
+    - "  Data: {{ data_11 | default('') | trim }}"
+    - "  Status: {{ status_11 | default('ERROR') | trim }}"
+    - "  Details: {{ details_11 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 12 - {{ req_12 }}:"
+    - "  Task: Req step-12 - Check DC default naming context via ADSI"
+    - "  Command: ([ADSI]'LDAP://RootDSE').defaultNamingContext"
+    - "  Exit code: {{ _step12_output.rc | default(-1) }}"
+    - "  Data: {{ data_12 | default('') | trim }}"
+    - "  Status: {{ status_12 | default('ERROR') | trim }}"
+    - "  Details: {{ details_12 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 13 - {{ req_13 }}:"
+    - "  Task: Req step-13 - Check Member Server policy file contains PasswordHistorySize"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Select-String -Path $tmp -Pattern 'PasswordHistorySize'"
+    - "  Exit code: {{ _step13_output.rc | default(-1) }}"
+    - "  Data: {{ data_13 | default('') | trim }}"
+    - "  Status: {{ status_13 | default('ERROR') | trim }}"
+    - "  Details: {{ details_13 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 14 - {{ req_14 }}:"
+    - "  Task: Req step-14 - Check DC GPO link status"
+    - "  Command: Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty Links"
+    - "  Exit code: {{ _step14_output.rc | default(-1) }}"
+    - "  Data: {{ data_14 | default('') | trim }}"
+    - "  Status: {{ status_14 | default('ERROR') | trim }}"
+    - "  Details: {{ details_14 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 15 - {{ req_15 }}:"
+    - "  Task: Req step-15 - Check Member Server secedit exit code"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; $LASTEXITCODE"
+    - "  Exit code: {{ _step15_output.rc | default(-1) }}"
+    - "  Data: {{ data_15 | default('') | trim }}"
+    - "  Status: {{ status_15 | default('ERROR') | trim }}"
+    - "  Details: {{ details_15 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 16 - {{ req_16 }}:"
+    - "  Task: Req step-16 - Check DC password history for sample user"
+    - "  Command: Get-ADUser -Filter * -Properties PasswordHistoryCount | Select-Object -First 1 -ExpandProperty PasswordHistoryCount"
+    - "  Exit code: {{ _step16_output.rc | default(-1) }}"
+    - "  Data: {{ data_16 | default('') | trim }}"
+    - "  Status: {{ status_16 | default('ERROR') | trim }}"
+    - "  Details: {{ details_16 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 17 - {{ req_17 }}:"
+    - "  Task: Req step-17 - Check Member Server policy value is numeric"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; [int]((Get-Content $tmp | Select-String 'PasswordHistorySize').ToString().Split('=')[1].Trim())"
+    - "  Exit code: {{ _step17_output.rc | default(-1) }}"
+    - "  Data: {{ data_17 | default('') | trim }}"
+    - "  Status: {{ status_17 | default('ERROR') | trim }}"
+    - "  Details: {{ details_17 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 18 - {{ req_18 }}:"
+    - "  Task: Req step-18 - Check DC GPO security filter"
+    - "  Command: Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty SecurityFilter"
+    - "  Exit code: {{ _step18_output.rc | default(-1) }}"
+    - "  Data: {{ data_18 | default('') | trim }}"
+    - "  Status: {{ status_18 | default('ERROR') | trim }}"
+    - "  Details: {{ details_18 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 19 - {{ req_19 }}:"
+    - "  Task: Req step-19 - Check Member Server policy file is not empty"
+    - "  Command: $tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Item $tmp).Length"
+    - "  Exit code: {{ _step19_output.rc | default(-1) }}"
+    - "  Data: {{ data_19 | default('') | trim }}"
+    - "  Status: {{ status_19 | default('ERROR') | trim }}"
+    - "  Details: {{ details_19 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 20 - {{ req_20 }}:"
+    - "  Task: Req step-20 - Compute overall compliance status"
+    - "  Command: N/A"
+    - "  Exit code: N/A"
+    - "  Data: {{ _overall_status | default('') | trim }}"
+    - "  Status: {{ _overall_status | default('ERROR') | trim }}"
+    - "  Details: Overall compliance computed for active branch."
+    - ""
+    - "REQUIREMENT 21 - {{ req_21 }}:"
+    - "  Task: Req step-21 - Store final audit result in cis_result"
+    - "  Command: N/A"
+    - "  Exit code: N/A"
+    - "  Data: {{ cis_result | default('') | trim }}"
+    - "  Status: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: Stored final audit result."
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: {{ _overall_status | default('Not evaluated') | trim }}"
+    - "========================================================"
