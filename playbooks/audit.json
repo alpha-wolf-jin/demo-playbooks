@@ -8,6 +8,41 @@
   "effect": "transient",
   "transport": "winrm",
   "connection_risk": false,
+  "profile_applicability": "•  Level 1 - Domain Controller\n•  Level 1 - Member Server",
+  "branching": {
+    "type": "windows_server_role",
+    "detection_step": "step-01",
+    "detection_var": "is_dc",
+    "secondary_var": "is_member",
+    "branches": {
+      "dc": {
+        "when": "is_dc | bool",
+        "steps": [
+          "step-02",
+          "step-03",
+          "step-08",
+          "step-10",
+          "step-12",
+          "step-14",
+          "step-16",
+          "step-18"
+        ]
+      },
+      "member": {
+        "when": "is_member | bool",
+        "steps": [
+          "step-04",
+          "step-09",
+          "step-11",
+          "step-13",
+          "step-15",
+          "step-17",
+          "step-19"
+        ]
+      }
+    },
+    "result_aggregation": "PASS if the active branch verify step passes; SKIP if a branch is not applicable to this host (the other role); FAIL if the active branch check fails; ERROR if role detection fails or DomainRole value is unrecognised. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
+  },
   "objective": "Audit CIS checkpoint 1.1.1: Ensure 'Enforce password history' is set to '24 or more password(s)'",
   "connection": {
     "hosts": "{{ target_host }}",
@@ -30,7 +65,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "SSH user with sudo access"
+        "description": "WinRM user (Windows Administrator login)"
       },
       {
         "name": "password_history_min",
@@ -59,22 +94,23 @@
   "steps": [
     {
       "id": "step-01",
-      "type": "collect",
-      "name": "Check if the audit target is a Windows system with Group Policy Management available",
-      "function": "1. Check if the audit target is a Windows system with Group Policy Management available using command: `Get-Command Get-GPO -ErrorAction SilentlyContinue`. Expected result: The command returns a valid cmdlet object.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "Check if the server is a Domain Controller or Member Server using: `(Get-WmiObject Win32_ComputerSystem).DomainRole`",
+      "function": "1. Check if the server is a Domain Controller or Member Server using: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for DC, 0-3 for Member Server.",
+      "module": "ansible.windows.win_shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-10"
+      "on_fail": "step-24",
+      "branch": "detect"
     },
     {
       "id": "step-02",
-      "type": "collect",
-      "name": "Check if the 'Enforce password history' policy is set to '24 or more password(s)'",
-      "function": "2. Check if the 'Enforce password history' policy is set to '{{ password_history_min }} or more password(s)' using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength`. Expected result: The value is {{ password_history_min }} or greater.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "Check DC password history policy using: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty…",
+      "function": "2. Check DC password history policy using: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty PasswordHistoryCount`. Expected result: 24 or more.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
         "fields": [
@@ -85,14 +121,15 @@
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-10"
+      "on_fail": "step-24",
+      "branch": "dc"
     },
     {
       "id": "step-03",
-      "type": "collect",
-      "name": "Check if the 'Enforce password history' policy is configured via the Default Domain Policy GPO",
-      "function": "3. Check if the 'Enforce password history' policy is configured via the Default Domain Policy GPO using command: `Get-GPO -Name \"Default Domain Policy\" | Select-Object -ExpandProperty GpoStatus`. Expected result: The GPO status is 'Enabled' or 'AllSettingsEnabled'.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "Check DC GPO enforcement using: `Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty GpoStatus`",
+      "function": "3. Check DC GPO enforcement using: `Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty GpoStatus`. Expected result: AllSettingsEnabled.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-02",
         "fields": [
@@ -103,14 +140,15 @@
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-10"
+      "on_fail": "step-24",
+      "branch": "dc"
     },
     {
       "id": "step-04",
-      "type": "collect",
-      "name": "Check if the 'Enforce password history' setting in the Default Domain Policy GPO is set to '24 or more password(s)'",
-      "function": "4. Check if the 'Enforce password history' setting in the Default Domain Policy GPO is set to '{{ password_history_min }} or more password(s)' using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5`. Expected result: The XML report contains a setting for 'Enforce password history' with a value of {{ password_history_min }} or greater.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "Check Member Server local password history using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas…",
+      "function": "4. Check Member Server local password history using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'PasswordHistorySize'`. Expected result: PasswordHistorySize = 24 or more.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-03",
         "fields": [
@@ -121,14 +159,15 @@
         "_step04_output"
       ],
       "on_success": "step-05",
-      "on_fail": "step-10"
+      "on_fail": "step-24",
+      "branch": "member"
     },
     {
       "id": "step-05",
-      "type": "collect",
-      "name": "Check if the 'Minimum password age' policy is set to a value that prevents users from repeatedly changing passwords (to…",
-      "function": "5. Check if the 'Minimum password age' policy is set to a value that prevents users from repeatedly changing passwords (to support password history effectiveness) using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge`. Expected result: The value is greater than 0 days.",
-      "module": "ansible.builtin.shell",
+      "type": "action",
+      "name": "Check if the OS is Windows using: `$env:OS`",
+      "function": "5. Check if the OS is Windows using: `$env:OS`. Expected result: Windows_NT.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-04",
         "fields": [
@@ -139,14 +178,15 @@
         "_step05_output"
       ],
       "on_success": "step-06",
-      "on_fail": "step-10"
+      "on_fail": "step-24",
+      "branch": "common"
     },
     {
       "id": "step-06",
       "type": "action",
-      "name": "Overall compliance status: PASS if all above checks pass, SKIP if the system is not a domain controller or Active…",
-      "function": "6. Overall compliance status: PASS if all above checks pass, SKIP if the system is not a domain controller or Active Directory is not present, FAIL if the feature exists but the password history is set to less than {{ password_history_min }} or not configured via Default Domain Policy.",
-      "module": "ansible.builtin.shell",
+      "name": "Check if Active Directory module is available for DC path using: `Get-Module -Name ActiveDirectory -ListAvailable`",
+      "function": "6. Check if Active Directory module is available for DC path using: `Get-Module -Name ActiveDirectory -ListAvailable`. Expected result: Module present.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-05",
         "fields": [
@@ -157,14 +197,15 @@
         "_step06_output"
       ],
       "on_success": "step-07",
-      "on_fail": "step-10"
+      "on_fail": "step-24",
+      "branch": "common"
     },
     {
       "id": "step-07",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "7. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "collect",
+      "name": "Check if secedit is available for Member Server path using: `Get-Command secedit`",
+      "function": "7. Check if secedit is available for Member Server path using: `Get-Command secedit`. Expected result: Command exists.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-06",
         "fields": [
@@ -172,41 +213,311 @@
         ]
       },
       "stores": [
-        "cis_result"
+        "_step07_output"
       ],
-      "on_success": "step-08"
+      "on_success": "step-08",
+      "on_fail": "step-24",
+      "branch": "common"
     },
     {
       "id": "step-08",
-      "type": "emit",
-      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "8. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.1\nReference: CIS Benchmark checkpoint 1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
+      "type": "action",
+      "name": "Check DC password history via GPO registry using: `Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType…",
+      "function": "8. Check DC password history via GPO registry using: `Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String 'PasswordHistorySize'`. Expected result: Value set to 24 or more.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-07",
+        "fields": [
+          "_step07_output"
+        ]
+      },
+      "stores": [
+        "_step08_output"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-24",
+      "branch": "dc"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Check Member Server effective policy via secedit for PasswordHistorySize using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit…",
+      "function": "9. Check Member Server effective policy via secedit for PasswordHistorySize using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Content $tmp | Select-String 'PasswordHistorySize').ToString()`. Expected result: Contains 'PasswordHistorySize = 24' or higher.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-08",
+        "fields": [
+          "_step08_output"
+        ]
+      },
+      "stores": [
+        "_step09_output"
+      ],
+      "on_success": "step-10",
+      "on_fail": "step-24",
+      "branch": "member"
+    },
+    {
+      "id": "step-10",
+      "type": "action",
+      "name": "Check DC domain functional level supports PSOs using: `Get-ADDomain | Select-Object -ExpandProperty DomainMode`",
+      "function": "10. Check DC domain functional level supports PSOs using: `Get-ADDomain | Select-Object -ExpandProperty DomainMode`. Expected result: Windows2008 or higher.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_step09_output"
+        ]
+      },
+      "stores": [
+        "_step10_output"
+      ],
+      "on_success": "step-11",
+      "on_fail": "step-24",
+      "branch": "dc"
+    },
+    {
+      "id": "step-11",
+      "type": "action",
+      "name": "Check Member Server local security policy export success using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg…",
+      "function": "11. Check Member Server local security policy export success using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Test-Path $tmp`. Expected result: True.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_step10_output"
+        ]
+      },
+      "stores": [
+        "_step11_output"
+      ],
+      "on_success": "step-12",
+      "on_fail": "step-24",
+      "branch": "member"
+    },
+    {
+      "id": "step-12",
+      "type": "action",
+      "name": "Check DC password history via ADSI using: `([ADSI]'LDAP://RootDSE').defaultNamingContext`",
+      "function": "12. Check DC password history via ADSI using: `([ADSI]'LDAP://RootDSE').defaultNamingContext`. Expected result: Valid distinguished name.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-11",
+        "fields": [
+          "_step11_output"
+        ]
+      },
+      "stores": [
+        "_step12_output"
+      ],
+      "on_success": "step-13",
+      "on_fail": "step-24",
+      "branch": "dc"
+    },
+    {
+      "id": "step-13",
+      "type": "action",
+      "name": "Check Member Server policy file contains PasswordHistorySize using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export…",
+      "function": "13. Check Member Server policy file contains PasswordHistorySize using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Select-String -Path $tmp -Pattern 'PasswordHistorySize'`. Expected result: Match found.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-12",
+        "fields": [
+          "_step12_output"
+        ]
+      },
+      "stores": [
+        "_step13_output"
+      ],
+      "on_success": "step-14",
+      "on_fail": "step-24",
+      "branch": "member"
+    },
+    {
+      "id": "step-14",
+      "type": "action",
+      "name": "Check DC GPO link status using: `Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty Links`",
+      "function": "14. Check DC GPO link status using: `Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty Links`. Expected result: Linked to domain.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-13",
+        "fields": [
+          "_step13_output"
+        ]
+      },
+      "stores": [
+        "_step14_output"
+      ],
+      "on_success": "step-15",
+      "on_fail": "step-24",
+      "branch": "dc"
+    },
+    {
+      "id": "step-15",
+      "type": "collect",
+      "name": "Check Member Server secedit command exit code using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas…",
+      "function": "15. Check Member Server secedit command exit code using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; $LASTEXITCODE`. Expected result: 0.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-14",
+        "fields": [
+          "_step14_output"
+        ]
+      },
+      "stores": [
+        "_step15_output"
+      ],
+      "on_success": "step-16",
+      "on_fail": "step-24",
+      "branch": "member"
+    },
+    {
+      "id": "step-16",
+      "type": "action",
+      "name": "Check DC password history via Get-ADUser for a sample user using: `Get-ADUser -Filter * -Properties…",
+      "function": "16. Check DC password history via Get-ADUser for a sample user using: `Get-ADUser -Filter * -Properties PasswordHistoryCount | Select-Object -First 1 -ExpandProperty PasswordHistoryCount`. Expected result: 24 or more.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-15",
+        "fields": [
+          "_step15_output"
+        ]
+      },
+      "stores": [
+        "_step16_output"
+      ],
+      "on_success": "step-17",
+      "on_fail": "step-24",
+      "branch": "dc"
+    },
+    {
+      "id": "step-17",
+      "type": "action",
+      "name": "Check Member Server policy value is numeric using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas…",
+      "function": "17. Check Member Server policy value is numeric using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; [int]((Get-Content $tmp | Select-String 'PasswordHistorySize').ToString().Split('=')[1].Trim())`. Expected result: Integer >= 24.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-16",
+        "fields": [
+          "_step16_output"
+        ]
+      },
+      "stores": [
+        "_step17_output"
+      ],
+      "on_success": "step-18",
+      "on_fail": "step-24",
+      "branch": "member"
+    },
+    {
+      "id": "step-18",
+      "type": "action",
+      "name": "Check DC GPO security filter includes Domain Users using: `Get-GPO -Name 'Default Domain Policy' | Select-Object…",
+      "function": "18. Check DC GPO security filter includes Domain Users using: `Get-GPO -Name 'Default Domain Policy' | Select-Object -ExpandProperty SecurityFilter`. Expected result: Contains 'Domain Users'.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-17",
+        "fields": [
+          "_step17_output"
+        ]
+      },
+      "stores": [
+        "_step18_output"
+      ],
+      "on_success": "step-19",
+      "on_fail": "step-24",
+      "branch": "dc"
+    },
+    {
+      "id": "step-19",
+      "type": "action",
+      "name": "Check Member Server policy file is not empty using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas…",
+      "function": "19. Check Member Server policy file is not empty using: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Item $tmp).Length`. Expected result: Greater than 0.",
+      "module": "ansible.windows.win_shell",
+      "input": {
+        "source": "step-18",
+        "fields": [
+          "_step18_output"
+        ]
+      },
+      "stores": [
+        "_step19_output"
+      ],
+      "on_success": "step-20",
+      "on_fail": "step-24",
+      "branch": "member"
+    },
+    {
+      "id": "step-20",
+      "type": "action",
+      "name": "Check overall compliance: For DC, if PasswordHistoryCount >= 24 and GPO enforced, PASS; for Member Server, if…",
+      "function": "20. Check overall compliance: For DC, if PasswordHistoryCount >= 24 and GPO enforced, PASS; for Member Server, if PasswordHistorySize >= 24, PASS; otherwise FAIL. Do not return SKIP for valid Windows roles.",
+      "module": "ansible.windows.win_feature",
+      "input": {
+        "source": "step-19",
+        "fields": [
+          "_step19_output"
+        ]
+      },
+      "stores": [
+        "_step20_output"
+      ],
+      "on_success": "step-21",
+      "on_fail": "step-24",
+      "branch": "common"
+    },
+    {
+      "id": "step-21",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "21. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
+      "input": {
+        "source": "step-20",
+        "fields": [
+          "_step20_output"
+        ]
+      },
+      "stores": [
+        "cis_result"
+      ],
+      "on_success": "step-22",
+      "branch": "common"
+    },
+    {
+      "id": "step-22",
+      "type": "emit",
+      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
+      "function": "22. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.1\nReference: CIS Benchmark checkpoint 1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
+      "input": {
+        "source": "step-21",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-09"
+      "on_success": "step-23",
+      "branch": "common"
     },
     {
-      "id": "step-09",
+      "id": "step-23",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
       "output_fields": {
         "cis_result": "{{ cis_result }}"
       },
-      "on_success": "end"
+      "on_success": "end",
+      "branch": "common"
     },
     {
-      "id": "step-10",
+      "id": "step-24",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
       "error_message": "ERROR: CIS 1.1.1 audit failed",
-      "on_success": "end"
+      "on_success": "end",
+      "branch": "common"
     }
   ],
   "phases": [
@@ -214,44 +525,59 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-06"
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-08",
+        "step-09",
+        "step-10",
+        "step-11",
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-16",
+        "step-17",
+        "step-18",
+        "step-19",
+        "step-20"
       ]
     },
     {
       "name": "Data Collection",
       "description": "Execute read-only commands on the target host.",
       "steps": [
-        "step-01",
-        "step-02",
-        "step-03",
-        "step-04",
-        "step-05"
+        "step-07",
+        "step-15"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-07"
+        "step-21"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-08",
-        "step-09"
+        "step-22",
+        "step-23"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-10"
+        "step-24"
       ]
     }
   ],
   "compliance_constraints": [
+    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then audit via the correct path: DC → Active Directory / GPO cmdlets; Member Server → secedit /export /areas SECURITYPOLICY. Do NOT return SKIP for a Member Server — it is a valid audit target.",
     "Use failed_when: false on all audit tasks (except set_fact, debug) so all checks complete and report status",
     "If the audit targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, report SKIP for all checks.",
     "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.)."
@@ -266,9 +592,9 @@
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-12T17:29:44",
-    "revision": 1,
-    "approved_at": "2026-08-12T19:56:08",
+    "drafted_at": "2026-08-14T13:06:35",
+    "revision": 4,
+    "approved_at": "2026-08-14T13:07:05",
     "saved_by": null
   }
 }
