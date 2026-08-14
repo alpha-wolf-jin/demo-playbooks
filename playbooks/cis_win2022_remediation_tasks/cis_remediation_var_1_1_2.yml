@@ -1,0 +1,22 @@
+playbook_name: "cis_1_1_2_remediation"
+backup_dir: |-
+  C:\\ai-playbooks-backup\\{{ playbook_name | trim }}
+secpol_cfg_path: |-
+  C:\\secpol.cfg
+verify_cfg_path: |-
+  C:\\verify.cfg
+max_password_age_days: "180"
+req_01: "Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1, 2, or 3 for Member Server."
+req_02: "If Domain Controller, apply maximum password age of {{ max_password_age_days }} days using command: `Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MaxPasswordAge (New-TimeSpan -Days {{ max_password_age_days }})`. Expected result: policy updated."
+req_03: "If Domain Controller, verify maximum password age using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MaxPasswordAge`. Expected result: {{ max_password_age_days }} days."
+req_04: |-
+  If Member Server, export current security policy using command: `secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: configuration file created.
+req_05: |-
+  If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = {{ max_password_age_days }}'. The file is UTF-16 LE; MUST use `[System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::Unicode)` to read and `[System.IO.File]::WriteAllLines($path, $newLines, [System.Text.Encoding]::Unicode)` to write — NEVER use `Get-Content -Encoding Unicode | Set-Content -Encoding Unicode` as it produces a double-BOM that secedit rejects. Expected result: file updated with MaximumPasswordAge = {{ max_password_age_days }}.
+req_06: |-
+  If Member Server, apply modified security policy using a FRESH TEMP database — NEVER use local.sdb or C:\\Windows\\security\\local.sdb (system database always locked by scesrv service, causes Error 1208). Use: `secedit /configure /db \"{{ backup_dir }}\\cis_secedit.sdb\" /cfg \"{{ secpol_cfg_path | trim }}\" /areas SECURITYPOLICY /quiet`. The temp .sdb does not need to exist beforehand — secedit creates it. Use `async: 120 / poll: 10`. Expected result: policy applied (rc=0).
+req_07: |-
+  If Member Server, verify maximum password age using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String -Path C:\\verify.cfg -Pattern 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge = {{ max_password_age_days }}.
+req_08: |-
+  Clean up temporary files using command: `Remove-Item C:\\secpol.cfg, C:\\verify.cfg -ErrorAction SilentlyContinue`. Expected result: files removed.
+req_09: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable. On any failure, set cis_result to ERROR."
