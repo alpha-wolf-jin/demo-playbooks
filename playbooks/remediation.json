@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "1.1.2",
-  "title": "Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
+  "checkpoint_id": "2.2.1",
+  "title": "Ensure 'Access Credential Manager as a trusted caller' is set to 'No One'",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
@@ -19,22 +19,22 @@
         "when": "is_dc | bool",
         "steps": [
           "step-02",
-          "step-03"
+          "step-07"
         ]
       },
       "member": {
         "when": "is_member | bool",
         "steps": [
+          "step-03",
           "step-04",
           "step-05",
-          "step-06",
-          "step-07"
+          "step-08"
         ]
       }
     },
     "result_aggregation": "PASS if the active branch verify step confirms the change took effect; SKIP if a branch step is not applicable to this host (the other role); FAIL if any active branch apply-or-verify step fails; ERROR if role detection fails or neither branch ran. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Remediate CIS checkpoint 1.1.2: Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
+  "objective": "Remediate CIS checkpoint 2.2.1: Ensure 'Access Credential Manager as a trusted caller' is set to 'No One'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -57,14 +57,6 @@
         "default": null,
         "unit": null,
         "description": "WinRM user (Windows Administrator login)"
-      },
-      {
-        "name": "max_password_age_days",
-        "type": "integer",
-        "required": false,
-        "default": 180,
-        "unit": "days",
-        "description": "Maximum password age in days (must be 365 or fewer, but not 0)"
       }
     ]
   },
@@ -86,8 +78,8 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain…",
-      "function": "1. Detect server role using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for Domain Controller, 1-3 for Member Server.",
+      "name": "Apply role detection",
+      "function": "1. Apply role detection using command: `$role = (Get-WmiObject Win32_ComputerSystem).DomainRole; if ($role -eq 4 -or $role -eq 5) { 'DC' } else { 'Member' }`. Expected result: outputs 'DC' or 'Member'.",
       "module": "ansible.windows.win_shell",
       "stores": [
         "_step01_output"
@@ -99,8 +91,8 @@
     {
       "id": "step-02",
       "type": "action",
-      "name": "If Domain Controller, apply maximum password age to 365 days",
-      "function": "2. If Domain Controller, apply maximum password age to 365 days using command: `Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MaxPasswordAge (New-TimeSpan -Days 365)`. Expected result: policy updated.",
+      "name": "Apply Domain Controller remediation by setting 'Access Credential Manager as a trusted caller' to 'No One' via GPO (or…",
+      "function": "2. Apply Domain Controller remediation by setting 'Access Credential Manager as a trusted caller' to 'No One' via GPO using command: `Set-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -Type String -Value 'No One'` (or use AD GPO cmdlets). Expected result: GPO updated.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
@@ -117,10 +109,10 @@
     },
     {
       "id": "step-03",
-      "type": "collect",
-      "name": "If Domain Controller, verify maximum password age",
-      "function": "3. If Domain Controller, verify maximum password age using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MaxPasswordAge`. Expected result: 365 days.",
-      "module": "ansible.windows.win_shell",
+      "type": "action",
+      "name": "Apply Member Server remediation by exporting current security policy",
+      "function": "3. Apply Member Server remediation by exporting current security policy using command: `secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: file C:\\secpol.cfg created.",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-02",
         "fields": [
@@ -132,14 +124,14 @@
       ],
       "on_success": "step-04",
       "on_fail": "step-12",
-      "branch": "dc"
+      "branch": "member"
     },
     {
       "id": "step-04",
-      "type": "collect",
-      "name": "If Member Server, export current security policy",
-      "function": "4. If Member Server, export current security policy using command: `secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: configuration file created.",
-      "module": "community.windows.win_security_policy",
+      "type": "action",
+      "name": "Apply Member Server remediation by editing the exported policy to set 'SeTrustedCredManAccessPrivilege' to empty",
+      "function": "4. Apply Member Server remediation by editing the exported policy to set 'SeTrustedCredManAccessPrivilege' to empty using command: `(Get-Content C:\\secpol.cfg) -replace 'SeTrustedCredManAccessPrivilege = .*', 'SeTrustedCredManAccessPrivilege = ' | Set-Content C:\\secpol.cfg`. Expected result: line updated in C:\\secpol.cfg.",
+      "module": "ansible.windows.win_lineinfile",
       "input": {
         "source": "step-03",
         "fields": [
@@ -156,9 +148,9 @@
     {
       "id": "step-05",
       "type": "action",
-      "name": "If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = 365'",
-      "function": "5. If Member Server, edit C:\\secpol.cfg to set 'MaximumPasswordAge = 365' using command: `(Get-Content C:\\secpol.cfg) -replace 'MaximumPasswordAge = \\d+', 'MaximumPasswordAge = 365' | Set-Content C:\\secpol.cfg`. Expected result: file updated.",
-      "module": "community.windows.win_lineinfile",
+      "name": "Apply Member Server remediation by configuring the edited policy",
+      "function": "5. Apply Member Server remediation by configuring the edited policy using command: `secedit /configure /db C:\\Windows\\security\\local.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: security policy applied.",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-04",
         "fields": [
@@ -174,10 +166,10 @@
     },
     {
       "id": "step-06",
-      "type": "action",
-      "name": "If Member Server, apply modified security policy",
-      "function": "6. If Member Server, apply modified security policy using command: `secedit /configure /db C:\\Windows\\security\\local.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY /quiet`. Expected result: policy applied.",
-      "module": "community.windows.win_security_policy",
+      "type": "collect",
+      "name": "Apply cleanup of temporary policy file",
+      "function": "6. Apply cleanup of temporary policy file using command: `Remove-Item C:\\secpol.cfg -Force`. Expected result: file removed.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-05",
         "fields": [
@@ -189,14 +181,14 @@
       ],
       "on_success": "step-07",
       "on_fail": "step-12",
-      "branch": "member"
+      "branch": "common"
     },
     {
       "id": "step-07",
       "type": "collect",
-      "name": "If Member Server, verify maximum password age",
-      "function": "7. If Member Server, verify maximum password age using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String -Path C:\\verify.cfg -Pattern 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge = 365.",
-      "module": "community.windows.win_security_policy",
+      "name": "Verify Domain Controller setting",
+      "function": "7. Verify Domain Controller setting using command: `Get-GPResultantSetOfPolicy -User (Get-ADUser -Identity 'Administrator') -ReportType Xml | Select-String 'SeTrustedCredManAccessPrivilege'`. Expected result: shows no accounts assigned.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-06",
         "fields": [
@@ -208,14 +200,14 @@
       ],
       "on_success": "step-08",
       "on_fail": "step-12",
-      "branch": "member"
+      "branch": "dc"
     },
     {
       "id": "step-08",
       "type": "collect",
-      "name": "Clean up temporary files",
-      "function": "8. Clean up temporary files using command: `Remove-Item C:\\secpol.cfg, C:\\verify.cfg -ErrorAction SilentlyContinue`. Expected result: files removed.",
-      "module": "ansible.windows.win_shell",
+      "name": "Verify Member Server setting",
+      "function": "8. Verify Member Server setting using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String 'SeTrustedCredManAccessPrivilege' C:\\verify.cfg; Remove-Item C:\\verify.cfg`. Expected result: line shows empty or no accounts.",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-07",
         "fields": [
@@ -227,7 +219,7 @@
       ],
       "on_success": "step-09",
       "on_fail": "step-12",
-      "branch": "common"
+      "branch": "member"
     },
     {
       "id": "step-09",
@@ -251,7 +243,7 @@
       "id": "step-10",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "10. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.2\nReference: CIS Benchmark checkpoint 1.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "10. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 2.2.1\nReference: CIS Benchmark checkpoint 2.2.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-09",
@@ -277,8 +269,8 @@
       "id": "step-12",
       "type": "abort",
       "name": "Handle task failure",
-      "function": "Reached via rescue block on any unexpected task failure. Report the failing step ID and its error message.",
-      "error_message": "ERROR: CIS 1.1.2 remediation failed at step {{ ansible_failed_task.name }}: {{ ansible_failed_result.msg }}",
+      "function": "Reached via rescue block on any unexpected task failure.",
+      "error_message": "ERROR: CIS 2.2.1 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -289,8 +281,9 @@
       "description": "Apply remediation changes on the target host.",
       "steps": [
         "step-02",
-        "step-05",
-        "step-06"
+        "step-03",
+        "step-04",
+        "step-05"
       ]
     },
     {
@@ -298,8 +291,7 @@
       "description": "Execute read-only commands on the target host.",
       "steps": [
         "step-01",
-        "step-03",
-        "step-04",
+        "step-06",
         "step-07",
         "step-08"
       ]
@@ -330,23 +322,21 @@
   "compliance_constraints": [
     "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg → secedit /configure /areas SECURITYPOLICY. Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
-    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages.",
-    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg (UTF-16 LE with ReadAllLines/WriteAllLines) → secedit /configure with a FRESH TEMP .sdb under backup_dir (NEVER local.sdb — it is locked by the scesrv service and causes Error 1208). Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step.",
-    "On any failure, report cis_result as ERROR and include the failing step ID and error message in the abort step."
+    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 365 or fewer days, but not 0:\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Password Policy\\Maximum password age",
+  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to No\nOne:\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Local\nPolicies\\User Rights Assignment\\Access Credential Manager as a trusted caller",
   "example_output": "",
-  "filename": "cis_remediation_1_1_2.yml",
+  "filename": "cis_remediation_2_2_1.yml",
   "output_dir": "./cis_win2022_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-15T04:22:50",
-    "revision": 2,
-    "approved_at": "2026-08-15T04:24:42",
+    "drafted_at": "2026-08-15T05:39:00",
+    "revision": 1,
+    "approved_at": "2026-08-15T05:39:04",
     "saved_by": null
   }
 }
