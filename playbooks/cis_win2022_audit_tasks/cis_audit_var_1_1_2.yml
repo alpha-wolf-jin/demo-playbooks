@@ -2,21 +2,29 @@ max_password_age_days: "180"
 req_01: "Check if the Windows server role is Domain Controller or Member Server using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for DC, 0-3 for Member Server."
 req_02: "Check if Active Directory module is available for DC path using command: `Get-Module -ListAvailable -Name ActiveDirectory`. Expected result: module present."
 req_03: "Check DC default domain password policy MaxPasswordAge using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: days ≤ {{ max_password_age_days }} and > 0."
-req_04: "Check DC GPO setting for Maximum password age using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType XML`. Expected result: MaxPwdAge value ≤ {{ max_password_age_days }} and not 0."
-req_05: "Check member server effective local policy Maximum password age using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: value ≤ {{ max_password_age_days }} and not 0."
+req_04: |-
+  Check DC GPO setting for Maximum password age using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType XML`. Expected result: MaxPwdAge value ≤ {{ max_password_age_days }} and not 0.
+req_05: |-
+  Check member server effective local policy Maximum password age using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: value ≤ {{ max_password_age_days }} and not 0.
 req_06: "Check if the policy value is not 0 for DC path using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: value > 0."
-req_07: "Check if the policy value is not 0 for member server path using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: value > 0."
+req_07: |-
+  Check if the policy value is not 0 for member server path using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: value > 0.
 req_08: "Check if the policy value is ≤ {{ max_password_age_days }} days for DC path using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: value ≤ {{ max_password_age_days }} days."
-req_09: "Check if the policy value is ≤ {{ max_password_age_days }} days for member server path using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: value ≤ {{ max_password_age_days }} days."
+req_09: |-
+  Check if the policy value is ≤ {{ max_password_age_days }} days for member server path using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: value ≤ {{ max_password_age_days }} days.
 req_10: "Check if the DC path is compliant using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: PASS if ≤{{ max_password_age_days }} and >0, FAIL otherwise."
-req_11: "Check if the member server path is compliant using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: PASS if ≤{{ max_password_age_days }} and >0, FAIL otherwise."
+req_11: |-
+  Check if the member server path is compliant using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: PASS if ≤{{ max_password_age_days }} and >0, FAIL otherwise.
 req_12: "Check if the OS is Windows using command: `$env:OS`. Expected result: Windows_NT."
 req_13: "Check if the domain controller role is detected using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5."
 req_14: "Check if the member server role is detected using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 0, 1, 2, or 3."
 req_15: "Check if the DC path uses Group Policy cmdlets using command: `Get-Command Get-ADDefaultDomainPasswordPolicy`. Expected result: command exists."
 req_16: "Check if the member server path uses secedit using command: `Get-Command secedit`. Expected result: command exists."
 req_17: "Check if the DC path returns PASS using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: PASS if ≤{{ max_password_age_days }} and >0."
-req_18: "Check if the member server path returns PASS using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: PASS if ≤{{ max_password_age_days }} and >0."
+req_18: |-
+  Check if the member server path returns PASS using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: PASS if ≤{{ max_password_age_days }} and >0.
 req_19: "Check if the DC path returns FAIL using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: FAIL if >{{ max_password_age_days }} or 0."
-req_20: "Check if the member server path returns FAIL using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: FAIL if >{{ max_password_age_days }} or 0."
+req_20: |-
+  Check if the member server path returns FAIL using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: FAIL if >{{ max_password_age_days }} or 0.
 req_21: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable. Also store the actual password age value in 'password_age_days' from the active branch output."
+req_22: "Create a task named 'Generate audit report' using debug msg with the specified audit report format."
