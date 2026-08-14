@@ -1,0 +1,19 @@
+playbook_name: "cis_2_2_1_remediation"
+backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+secpol_cfg_path: "C:/secpol.cfg"
+verify_cfg_path: "C:/verify.cfg"
+req_01: "Apply role detection using command: `$role = (Get-WmiObject Win32_ComputerSystem).DomainRole; if ($role -eq 4 -or $role -eq 5) { 'DC' } else { 'Member' }`. Expected result: outputs 'DC' or 'Member'."
+req_02: |-
+  Apply Domain Controller remediation by setting 'Access Credential Manager as a trusted caller' to 'No One' via GPO using command: `Set-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Secrets' -ValueName 'AccessCredentialManagerAsTrustedCaller' -Type String -Value 'No One'` (or use AD GPO cmdlets). Expected result: GPO updated.
+req_03: |-
+  Apply Member Server remediation by exporting current security policy using command: `secedit /export /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: file C:\\secpol.cfg created.
+req_04: |-
+  Apply Member Server remediation by editing the exported policy to set 'SeTrustedCredManAccessPrivilege' to empty using command: `(Get-Content C:\\secpol.cfg) -replace 'SeTrustedCredManAccessPrivilege = .*', 'SeTrustedCredManAccessPrivilege = ' | Set-Content C:\\secpol.cfg`. Expected result: line updated in C:\\secpol.cfg.
+req_05: |-
+  Apply Member Server remediation by configuring the edited policy using command: `secedit /configure /db C:\\Windows\\security\\local.sdb /cfg C:\\secpol.cfg /areas SECURITYPOLICY`. Expected result: security policy applied.
+req_06: |-
+  Apply cleanup of temporary policy file using command: `Remove-Item C:\\secpol.cfg -Force`. Expected result: file removed.
+req_07: "Verify Domain Controller setting using command: `Get-GPResultantSetOfPolicy -User (Get-ADUser -Identity 'Administrator') -ReportType Xml | Select-String 'SeTrustedCredManAccessPrivilege'`. Expected result: shows no accounts assigned."
+req_08: |-
+  Verify Member Server setting using command: `secedit /export /cfg C:\\verify.cfg /areas SECURITYPOLICY; Select-String 'SeTrustedCredManAccessPrivilege' C:\\verify.cfg; Remove-Item C:\\verify.cfg`. Expected result: line shows empty or no accounts.
+req_09: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
