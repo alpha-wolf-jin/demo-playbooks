@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "1.1.2",
-  "title": "Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
+  "checkpoint_id": "2.2.1",
+  "title": "Ensure 'Access Credential Manager as a trusted caller' is set to 'No One'",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
@@ -17,21 +17,16 @@
     "branches": {
       "dc": {
         "when": "is_dc | bool",
-        "steps": [
-          "step-03",
-          "step-04"
-        ]
+        "steps": []
       },
       "member": {
         "when": "is_member | bool",
-        "steps": [
-          "step-05"
-        ]
+        "steps": []
       }
     },
     "result_aggregation": "PASS if the active branch verify step passes; SKIP if a branch is not applicable to this host (the other role); FAIL if the active branch check fails; ERROR if role detection fails or DomainRole value is unrecognised. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Audit CIS checkpoint 1.1.2: Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
+  "objective": "Audit CIS checkpoint 2.2.1: Ensure 'Access Credential Manager as a trusted caller' is set to 'No One'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -67,13 +62,6 @@
         "nullable": false,
         "required_by_sop": true,
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
-      },
-      {
-        "name": "password_age_days",
-        "type": "integer",
-        "nullable": true,
-        "required_by_sop": false,
-        "description": "Actual maximum password age in days as detected on the target host"
       }
     ]
   },
@@ -82,21 +70,21 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Check if the Windows server role is Domain Controller or Member Server",
-      "function": "1. Check if the Windows server role is Domain Controller or Member Server using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: DomainRole 4 or 5 for DC, 0-3 for Member Server.",
+      "name": "Check if the server role is Domain Controller or Member Server",
+      "function": "1. Check if the server role is Domain Controller or Member Server using command: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for DC, 0-3 for Member Server.",
       "module": "ansible.windows.win_shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-24",
+      "on_fail": "step-08",
       "branch": "detect"
     },
     {
       "id": "step-02",
       "type": "collect",
-      "name": "Check if Active Directory module is available for DC path",
-      "function": "2. Check if Active Directory module is available for DC path using command: `Get-Module -ListAvailable -Name ActiveDirectory`. Expected result: Module present.",
+      "name": "Check if the 'Access Credential Manager as a trusted caller' policy is set to 'No One' on Domain Controller",
+      "function": "2. Check if the 'Access Credential Manager as a trusted caller' policy is set to 'No One' on Domain Controller using command: `Get-GPO -All | ForEach-Object { $_.SecurityInfo } | Select-String 'SeTrustedCredManAccessPrivilege'`. Expected result: No accounts listed.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
@@ -108,15 +96,15 @@
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-24",
+      "on_fail": "step-08",
       "branch": "common"
     },
     {
       "id": "step-03",
       "type": "collect",
-      "name": "Check DC default domain password policy maximum password age",
-      "function": "3. Check DC default domain password policy maximum password age using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: Days ≤ 365 and > 0.",
-      "module": "ansible.windows.win_shell",
+      "name": "Check if the 'Access Credential Manager as a trusted caller' policy is set to 'No One' on Member Server",
+      "function": "3. Check if the 'Access Credential Manager as a trusted caller' policy is set to 'No One' on Member Server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'SeTrustedCredManAccessPrivilege'`. Expected result: No accounts listed.",
+      "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-02",
         "fields": [
@@ -127,14 +115,14 @@
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-24",
-      "branch": "dc"
+      "on_fail": "step-08",
+      "branch": "common"
     },
     {
       "id": "step-04",
-      "type": "collect",
-      "name": "Check DC GPO setting for maximum password age",
-      "function": "4. Check DC GPO setting for maximum password age using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml`. Expected result: MaxPasswordAge ≤ 365 and > 0.",
+      "type": "action",
+      "name": "Check overall compliance: PASS if both role-specific checks pass, FAIL if the policy is misconfigured, SKIP only if the…",
+      "function": "4. Check overall compliance: PASS if both role-specific checks pass, FAIL if the policy is misconfigured, SKIP only if the OS is not Windows.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-03",
@@ -146,15 +134,15 @@
         "_step04_output"
       ],
       "on_success": "step-05",
-      "on_fail": "step-24",
-      "branch": "dc"
+      "on_fail": "step-08",
+      "branch": "common"
     },
     {
       "id": "step-05",
-      "type": "collect",
-      "name": "Check member server effective local policy maximum password age",
-      "function": "5. Check member server effective local policy maximum password age using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Value ≤ 365 and > 0.",
-      "module": "community.windows.win_security_policy",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "5. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-04",
         "fields": [
@@ -162,332 +150,28 @@
         ]
       },
       "stores": [
-        "_step05_output"
+        "cis_result"
       ],
       "on_success": "step-06",
-      "on_fail": "step-24",
-      "branch": "member"
+      "branch": "common"
     },
     {
       "id": "step-06",
-      "type": "collect",
-      "name": "Check if the policy setting is not set to 0 (never expires)",
-      "function": "6. Check if the policy setting is not set to 0 (never expires) using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: Value > 0.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-05",
-        "fields": [
-          "_step05_output"
-        ]
-      },
-      "stores": [
-        "_step06_output"
-      ],
-      "on_success": "step-07",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-07",
-      "type": "collect",
-      "name": "Check if the policy setting is not set to 0 on member server",
-      "function": "7. Check if the policy setting is not set to 0 on member server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Value > 0.",
-      "module": "community.windows.win_security_policy",
-      "input": {
-        "source": "step-06",
-        "fields": [
-          "_step06_output"
-        ]
-      },
-      "stores": [
-        "_step07_output"
-      ],
-      "on_success": "step-08",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-08",
-      "type": "collect",
-      "name": "Check if the policy setting is set to 365 or fewer days on DC",
-      "function": "8. Check if the policy setting is set to 365 or fewer days on DC using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: Days ≤ 365.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-07",
-        "fields": [
-          "_step07_output"
-        ]
-      },
-      "stores": [
-        "_step08_output"
-      ],
-      "on_success": "step-09",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-09",
-      "type": "collect",
-      "name": "Check if the policy setting is set to 365 or fewer days on member server",
-      "function": "9. Check if the policy setting is set to 365 or fewer days on member server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Value ≤ 365.",
-      "module": "community.windows.win_security_policy",
-      "input": {
-        "source": "step-08",
-        "fields": [
-          "_step08_output"
-        ]
-      },
-      "stores": [
-        "_step09_output"
-      ],
-      "on_success": "step-10",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-10",
-      "type": "collect",
-      "name": "Check if the policy is applied via Default Domain Policy GPO on DC",
-      "function": "10. Check if the policy is applied via Default Domain Policy GPO on DC using command: `Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml`. Expected result: Setting present and configured.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-09",
-        "fields": [
-          "_step09_output"
-        ]
-      },
-      "stores": [
-        "_step10_output"
-      ],
-      "on_success": "step-11",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-11",
-      "type": "collect",
-      "name": "Check if the policy is applied via local security policy on member server",
-      "function": "11. Check if the policy is applied via local security policy on member server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Setting present and configured.",
-      "module": "community.windows.win_security_policy",
-      "input": {
-        "source": "step-10",
-        "fields": [
-          "_step10_output"
-        ]
-      },
-      "stores": [
-        "_step11_output"
-      ],
-      "on_success": "step-12",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-12",
-      "type": "collect",
-      "name": "Check if the policy value is within range 1-365 on DC",
-      "function": "12. Check if the policy value is within range 1-365 on DC using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: Days between 1 and 365.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-11",
-        "fields": [
-          "_step11_output"
-        ]
-      },
-      "stores": [
-        "_step12_output"
-      ],
-      "on_success": "step-13",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-13",
-      "type": "collect",
-      "name": "Check if the policy value is within range 1-365 on member server",
-      "function": "13. Check if the policy value is within range 1-365 on member server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Value between 1 and 365.",
-      "module": "community.windows.win_security_policy",
-      "input": {
-        "source": "step-12",
-        "fields": [
-          "_step12_output"
-        ]
-      },
-      "stores": [
-        "_step13_output"
-      ],
-      "on_success": "step-14",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-14",
-      "type": "collect",
-      "name": "Check if the policy is not set to 0 on DC",
-      "function": "14. Check if the policy is not set to 0 on DC using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: Value > 0.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-13",
-        "fields": [
-          "_step13_output"
-        ]
-      },
-      "stores": [
-        "_step14_output"
-      ],
-      "on_success": "step-15",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-15",
-      "type": "collect",
-      "name": "Check if the policy is not set to 0 on member server",
-      "function": "15. Check if the policy is not set to 0 on member server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Value > 0.",
-      "module": "community.windows.win_security_policy",
-      "input": {
-        "source": "step-14",
-        "fields": [
-          "_step14_output"
-        ]
-      },
-      "stores": [
-        "_step15_output"
-      ],
-      "on_success": "step-16",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-16",
-      "type": "collect",
-      "name": "Check if the policy is set to 365 or fewer days on DC",
-      "function": "16. Check if the policy is set to 365 or fewer days on DC using command: `(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge`. Expected result: Days ≤ 365.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-15",
-        "fields": [
-          "_step15_output"
-        ]
-      },
-      "stores": [
-        "_step16_output"
-      ],
-      "on_success": "step-17",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-17",
-      "type": "collect",
-      "name": "Check if the policy is set to 365 or fewer days on member server",
-      "function": "17. Check if the policy is set to 365 or fewer days on member server using command: `$tmp = \"$env:TEMP\\secpol.cfg\"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String 'MaximumPasswordAge'`. Expected result: Value ≤ 365.",
-      "module": "community.windows.win_security_policy",
-      "input": {
-        "source": "step-16",
-        "fields": [
-          "_step16_output"
-        ]
-      },
-      "stores": [
-        "_step17_output"
-      ],
-      "on_success": "step-18",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-18",
-      "type": "collect",
-      "name": "Check if the policy is configured via PSO for specific users on DC",
-      "function": "18. Check if the policy is configured via PSO for specific users on DC using command: `Get-ADFineGrainedPasswordPolicy`. Expected result: PSOs if any, with MaxPasswordAge ≤ 365 and > 0.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-17",
-        "fields": [
-          "_step17_output"
-        ]
-      },
-      "stores": [
-        "_step18_output"
-      ],
-      "on_success": "step-19",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-19",
-      "type": "collect",
-      "name": "Check if the policy is configured via PSO for specific users on DC",
-      "function": "19. Check if the policy is configured via PSO for specific users on DC using command: `Get-ADFineGrainedPasswordPolicy | Select-Object Name, MaxPasswordAge`. Expected result: All PSOs have MaxPasswordAge ≤ 365 and > 0.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-18",
-        "fields": [
-          "_step18_output"
-        ]
-      },
-      "stores": [
-        "_step19_output"
-      ],
-      "on_success": "step-20",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-20",
-      "type": "action",
-      "name": "Check overall compliance: For DC, PASS if all DC checks pass; for Member Server, PASS if all member server checks pass…",
-      "function": "20. Check overall compliance: For DC, PASS if all DC checks pass; for Member Server, PASS if all member server checks pass; FAIL if any check fails; SKIP only if OS is not Windows. Expected result: PASS or FAIL based on checks.",
-      "module": "ansible.windows.win_shell",
-      "input": {
-        "source": "step-19",
-        "fields": [
-          "_step19_output"
-        ]
-      },
-      "stores": [
-        "_step20_output"
-      ],
-      "on_success": "step-21",
-      "on_fail": "step-24",
-      "branch": "common"
-    },
-    {
-      "id": "step-21",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "21. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
-      "input": {
-        "source": "step-20",
-        "fields": [
-          "_step20_output"
-        ]
-      },
-      "stores": [
-        "cis_result"
-      ],
-      "on_success": "step-22",
-      "branch": "common"
-    },
-    {
-      "id": "step-22",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "22. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.2\nReference: CIS Benchmark checkpoint 1.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "6. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 2.2.1\nReference: CIS Benchmark checkpoint 2.2.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-21",
+        "source": "step-05",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-23",
+      "on_success": "step-07",
       "branch": "common"
     },
     {
-      "id": "step-23",
+      "id": "step-07",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -498,11 +182,11 @@
       "branch": "common"
     },
     {
-      "id": "step-24",
+      "id": "step-08",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.2 audit failed",
+      "error_message": "ERROR: CIS 2.2.1 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -512,7 +196,7 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-20"
+        "step-04"
       ]
     },
     {
@@ -521,45 +205,29 @@
       "steps": [
         "step-01",
         "step-02",
-        "step-03",
-        "step-04",
-        "step-05",
-        "step-06",
-        "step-07",
-        "step-08",
-        "step-09",
-        "step-10",
-        "step-11",
-        "step-12",
-        "step-13",
-        "step-14",
-        "step-15",
-        "step-16",
-        "step-17",
-        "step-18",
-        "step-19"
+        "step-03"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-21"
+        "step-05"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-22",
-        "step-23"
+        "step-06",
+        "step-07"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-24"
+        "step-08"
       ]
     }
   ],
@@ -567,22 +235,21 @@
     "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then audit via the correct path: DC → Active Directory / GPO cmdlets; Member Server → secedit /export /areas SECURITYPOLICY. Do NOT return SKIP for a Member Server — it is a valid audit target.",
     "Use failed_when: false on all audit tasks (except set_fact, debug) so all checks complete and report status",
     "If the audit targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, report SKIP for all checks.",
-    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.).",
-    "The maximum password age threshold is fixed at 365 days. All comparisons must use 365 as the upper bound and 0 as the lower bound (exclusive)."
+    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.)."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
   "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed.",
   "example_output": "",
-  "filename": "cis_audit_1_1_2.yml",
+  "filename": "cis_audit_2_2_1.yml",
   "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-15T04:18:07",
-    "revision": 3,
-    "approved_at": "2026-08-15T04:22:23",
+    "drafted_at": "2026-08-15T05:38:06",
+    "revision": 1,
+    "approved_at": "2026-08-15T05:38:34",
     "saved_by": null
   }
 }
