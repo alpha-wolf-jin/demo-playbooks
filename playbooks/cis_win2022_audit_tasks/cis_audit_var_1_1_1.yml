@@ -1,0 +1,29 @@
+password_history_min: "24"
+req_01: 'Check if the server is a Domain Controller or Member Server using: `(Get-WmiObject Win32_ComputerSystem).DomainRole`. Expected result: 4 or 5 for DC, 0-3 for Member Server.'
+req_02: 'Check DC password history policy using: `Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty PasswordHistoryCount`. Expected result: 24 or more.'
+req_03: 'Check DC GPO enforcement using: `Get-GPO -Name ''Default Domain Policy'' | Select-Object -ExpandProperty GpoStatus`. Expected result: AllSettingsEnabled.'
+req_04: |-
+  Check Member Server local password history using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Get-Content $tmp | Select-String ''PasswordHistorySize''`. Expected result: PasswordHistorySize = 24 or more.
+req_05: 'Check if the OS is Windows using: `$env:OS`. Expected result: Windows_NT.'
+req_06: 'Check if Active Directory module is available for DC path using: `Get-Module -Name ActiveDirectory -ListAvailable`. Expected result: Module present.'
+req_07: 'Check if secedit is available for Member Server path using: `Get-Command secedit`. Expected result: Command exists.'
+req_08: 'Check DC password history via GPO registry using: `Get-GPO -Name ''Default Domain Policy'' | Get-GPOReport -ReportType Xml | Select-String ''PasswordHistorySize''`. Expected result: Value set to 24 or more.'
+req_09: |-
+  Check Member Server effective policy via secedit for PasswordHistorySize using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Content $tmp | Select-String ''PasswordHistorySize'').ToString()`. Expected result: Contains ''PasswordHistorySize = 24'' or higher.
+req_10: 'Check DC domain functional level supports PSOs using: `Get-ADDomain | Select-Object -ExpandProperty DomainMode`. Expected result: Windows2008 or higher.'
+req_11: |-
+  Check Member Server local security policy export success using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Test-Path $tmp`. Expected result: True.
+req_12: 'Check DC password history via ADSI using: `([ADSI]''LDAP://RootDSE'').defaultNamingContext`. Expected result: Valid distinguished name.'
+req_13: |-
+  Check Member Server policy file contains PasswordHistorySize using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; Select-String -Path $tmp -Pattern ''PasswordHistorySize''`. Expected result: Match found.
+req_14: 'Check DC GPO link status using: `Get-GPO -Name ''Default Domain Policy'' | Select-Object -ExpandProperty Links`. Expected result: Linked to domain.'
+req_15: |-
+  Check Member Server secedit command exit code using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; $LASTEXITCODE`. Expected result: 0.
+req_16: 'Check DC password history via Get-ADUser for a sample user using: `Get-ADUser -Filter * -Properties PasswordHistoryCount | Select-Object -First 1 -ExpandProperty PasswordHistoryCount`. Expected result: 24 or more.'
+req_17: |-
+  Check Member Server policy value is numeric using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; [int]((Get-Content $tmp | Select-String ''PasswordHistorySize'').ToString().Split(''='')[1].Trim())`. Expected result: Integer >= 24.
+req_18: 'Check DC GPO security filter includes Domain Users using: `Get-GPO -Name ''Default Domain Policy'' | Select-Object -ExpandProperty SecurityFilter`. Expected result: Contains ''Domain Users''.'
+req_19: |-
+  Check Member Server policy file is not empty using: `$tmp = "$env:TEMP\secpol.cfg"; secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet; (Get-Item $tmp).Length`. Expected result: Greater than 0.
+req_20: 'Check overall compliance: For DC, if PasswordHistoryCount >= 24 and GPO enforced, PASS; for Member Server, if PasswordHistorySize >= 24, PASS; otherwise FAIL. Do not return SKIP for valid Windows roles.'
+req_21: 'Store the final audit result in a variable named cis_result using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement''s status variable.'
