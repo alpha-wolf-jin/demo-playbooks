@@ -14,44 +14,28 @@
     req_08: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
 
   tasks:
-    - name: "Req step-01 - Detect Windows server role using Win32_ComputerSystem DomainRole property"
-      ansible.windows.win_shell: |
-        try {
-          $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
-          Write-Output $role
-          exit 0
-        } catch {
-          Write-Output "DETECTION_ERROR: $($_.Exception.Message)"
-          exit 2
-        }
+    - name: "Req step-01 - Detect Windows server role"
+      ansible.windows.win_shell: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
       register: _step01_output
       failed_when: false
       changed_when: false
 
     - name: "Req step-01 - Set server role flags"
       ansible.builtin.set_fact:
-        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
-        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
-        status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
-        data_01: "{{ _step01_output.stdout | default('') | trim }}"
-        task_01_name: "Detect Windows server role"
-        task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
-        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-        details_01: "{{ 'Role detected successfully' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'Role detection failed or unrecognised DomainRole' }}"
+        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
+        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
+        role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+        role_status: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0) and ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
 
-    - name: "Req step-02 - Read AD default domain password policy minimum password age"
+    - name: "Req step-02 - Read Minimum password age from AD default domain password policy"
       ansible.windows.win_shell: |
-        if (-not (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue)) {
-          Write-Output 'AD_MODULE_NOT_AVAILABLE'
-          exit 0
-        }
         try {
-          $p = Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop
-          $v = $p.MinimumPasswordAge
+          Import-Module ActiveDirectory -ErrorAction Stop
+          $v = (Get-ADDefaultDomainPasswordPolicy).MinPasswordAge
           if ($v -is [TimeSpan]) { Write-Output $v.Days } else { Write-Output $v }
           exit 0
         } catch {
-          Write-Output "READ_ERROR: $($_.Exception.Message)"
+          Write-Output "ERROR: $($_.Exception.Message)"
           exit 2
         }
       register: _step02_output
@@ -59,111 +43,91 @@
       changed_when: false
       when: is_dc | bool
 
-    - name: "Req step-02 - Store DC read result"
-      ansible.builtin.set_fact:
-        status_02: "{{ 'SKIP' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else 'ERROR' if (_step02_output.rc | default(-1) != 0 or (_step02_output.stdout | default('') | trim) == '') else 'PASS' }}"
-        data_02: "{{ _step02_output.stdout | default('') | trim }}"
-        task_02_name: "Read AD default domain password policy MinimumPasswordAge"
-        task_02_cmd: "Get-ADDefaultDomainPasswordPolicy MinimumPasswordAge"
-        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
-        details_02: "{{ 'SKIP: ActiveDirectory module not available' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else 'Read succeeded' if (_step02_output.rc | default(-1) == 0 and (_step02_output.stdout | default('') | trim) != '') else 'Read failed' }}"
-      when: is_dc | bool
-
-    - name: "Req step-03 - Read local security policy minimum password age"
-      ansible.windows.win_shell: |
-        $tmp = Join-Path $env:TEMP 'cis_1_1_3_secpol.cfg'
-        secedit /export /cfg $tmp /areas SECURITYPOLICY /quiet
-        $line = Get-Content $tmp | Select-String 'MinimumPasswordAge' | Select-Object -First 1
-        if ($line) {
-          $m = [regex]::Match($line.Line, 'MinimumPasswordAge\s*=\s*([0-9]+)')
-          if ($m.Success) { Write-Output $m.Groups[1].Value } else { Write-Output $line.Line }
-        } else {
-          Write-Output 'NOT_FOUND'
-        }
-        Remove-Item $tmp -ErrorAction SilentlyContinue
+    - name: "Req step-03 - Check local security policy Minimum password age with win_security_policy"
+      community.windows.win_security_policy:
+        section: System Access
+        key: MinimumPasswordAge
+        value: "{{ minimum_password_age }}"
+      check_mode: true
       register: _step03_output
       failed_when: false
       changed_when: false
       when: is_member | bool
 
-    - name: "Req step-03 - Store member read result"
-      ansible.builtin.set_fact:
-        status_03: "{{ 'ERROR' if (_step03_output.rc | default(-1) != 0) or ((_step03_output.stdout | default('') | trim) in ['', 'NOT_FOUND']) else 'PASS' }}"
-        data_03: "{{ _step03_output.stdout | default('') | trim }}"
-        task_03_name: "Read local MinimumPasswordAge via secedit"
-        task_03_cmd: "secedit /export /cfg $env:TEMP\\cis_1_1_3_secpol.cfg /areas SECURITYPOLICY"
-        task_03_rc: "{{ _step03_output.rc | default(-1) }}"
-        details_03: "{{ 'Read succeeded' if (_step03_output.rc | default(-1) == 0 and (_step03_output.stdout | default('') | trim) not in ['', 'NOT_FOUND']) else 'Read failed or value not found' }}"
+    - name: "Req step-03 - Read actual Minimum password age from local security policy"
+      ansible.windows.win_shell: |
+        $cfg = Join-Path $env:TEMP 'cis_11_3_secpol.cfg'
+        $out = secedit /export /cfg "$cfg" /areas SECURITYPOLICY 2>&1 | Out-String
+        if (Test-Path -LiteralPath $cfg) {
+          $m = Select-String -Path $cfg -Pattern '^\s*MinimumPasswordAge\s*=\s*[0-9]+' | Select-Object -First 1
+          if ($m) {
+            $val = [regex]::Match($m.Line, '[0-9]+').Value
+            Write-Output $val
+            Remove-Item -LiteralPath $cfg -ErrorAction SilentlyContinue
+            exit 0
+          } else {
+            Write-Output "NOT_FOUND"
+            Remove-Item -LiteralPath $cfg -ErrorAction SilentlyContinue
+            exit 1
+          }
+        } else {
+          Write-Output "EXPORT_ERROR: $out"
+          exit 2
+        }
+      register: _member_read
+      failed_when: false
+      changed_when: false
       when: is_member | bool
 
-    - name: "Req step-04 - Evaluate Domain Controller minimum password age compliance"
+    - name: "Req step-04 - Evaluate DC Minimum password age compliance"
       ansible.builtin.set_fact:
-        status_04: "{{ 'SKIP' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else 'ERROR' if (_step02_output.rc | default(-1) != 0 or (_step02_output.stdout | default('') | trim) == '') else 'PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (minimum_password_age | int) else 'FAIL' }}"
-        _cis_status: "{{ 'SKIP' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else 'ERROR' if (_step02_output.rc | default(-1) != 0 or (_step02_output.stdout | default('') | trim) == '') else 'PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (minimum_password_age | int) else 'FAIL' }}"
-        data_04: "{{ _step02_output.stdout | default('') | trim }}"
-        task_04_name: "Evaluate Domain Controller minimum password age"
-        task_04_cmd: "Compare MinimumPasswordAge days to minimum_password_age"
-        task_04_rc: 0
-        details_04: "DC MinimumPasswordAge read value: {{ _step02_output.stdout | default('') | trim }}"
+        dc_status: >-
+          {{ 'SKIP' if not (is_dc | bool) else
+             'ERROR' if (_step02_output.rc | default(-1) != 0) else
+             'PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (minimum_password_age | int) else
+             'FAIL' }}
+        dc_data: "{{ _step02_output.stdout | default('') | trim }}"
+        dc_details: >-
+          {{ 'Not applicable to this host' if not (is_dc | bool) else
+             'AD policy check failed or returned no data' if (_step02_output.rc | default(-1) != 0) else
+             'Minimum password age is ' ~ (_step02_output.stdout | default('') | trim) ~ ' day(s); required ' ~ minimum_password_age ~ ' or more' }}
+        _cis_status: >-
+          {{ 'ERROR' if (_step02_output.rc | default(-1) != 0) else
+             'PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (minimum_password_age | int) else
+             'FAIL' }}
       when: is_dc | bool
 
-    - name: "Req step-05 - Evaluate Member Server minimum password age compliance"
+    - name: "Req step-05 - Evaluate Member Server Minimum password age compliance"
       ansible.builtin.set_fact:
-        status_05: "{{ 'ERROR' if (_step03_output.rc | default(-1) != 0) or ((_step03_output.stdout | default('') | trim) in ['', 'NOT_FOUND']) else 'PASS' if ((_step03_output.stdout | default('') | trim) | int) >= (minimum_password_age | int) else 'FAIL' }}"
-        _cis_status: "{{ 'ERROR' if (_step03_output.rc | default(-1) != 0) or ((_step03_output.stdout | default('') | trim) in ['', 'NOT_FOUND']) else 'PASS' if ((_step03_output.stdout | default('') | trim) | int) >= (minimum_password_age | int) else 'FAIL' }}"
-        data_05: "{{ _step03_output.stdout | default('') | trim }}"
-        task_05_name: "Evaluate Member Server minimum password age"
-        task_05_cmd: "Compare MinimumPasswordAge value to minimum_password_age"
-        task_05_rc: 0
-        details_05: "Member MinimumPasswordAge read value: {{ _step03_output.stdout | default('') | trim }}"
+        member_status: >-
+          {{ 'SKIP' if not (is_member | bool) else
+             'ERROR' if (_member_read.rc | default(-1) != 0) else
+             'PASS' if ((_member_read.stdout | default('') | trim) | int) >= (minimum_password_age | int) else
+             'FAIL' }}
+        member_data: "{{ _member_read.stdout | default('') | trim }}"
+        member_details: >-
+          {{ 'Not applicable to this host' if not (is_member | bool) else
+             'Local security policy read failed' if (_member_read.rc | default(-1) != 0) else
+             'Minimum password age is ' ~ (_member_read.stdout | default('') | trim) ~ ' day(s); required ' ~ minimum_password_age ~ ' or more' }}
+        _cis_status: >-
+          {{ 'ERROR' if (_member_read.rc | default(-1) != 0) else
+             'PASS' if ((_member_read.stdout | default('') | trim) | int) >= (minimum_password_age | int) else
+             'FAIL' }}
       when: is_member | bool
 
-    - name: "Req step-06 - Set role detection error flag"
+    - name: "Req step-06 - Store cis_result for Domain Controller branch"
       ansible.builtin.set_fact:
-        _role_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+        cis_result: "{{ dc_status | default('ERROR') | trim }}"
+      when: is_dc | bool
 
-    - name: "Req step-06 - Store member branch result"
+    - name: "Req step-06 - Store cis_result for Member Server branch"
       ansible.builtin.set_fact:
-        _member_branch_status: "{{ status_05 | default('SKIP') | trim }}"
+        cis_result: "{{ member_status | default('ERROR') | trim }}"
       when: is_member | bool
 
-    - name: "Req step-06 - Compute overall compliance status and set cis_result"
+    - name: "Req step-08 - Store the final audit result in a variable named 'cis_result' using set_fact"
       ansible.builtin.set_fact:
-        cis_result: >-
-          {%- if _role_error | bool -%}ERROR
-          {%- elif (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'ERROR') -%}ERROR
-          {%- elif (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'ERROR') -%}ERROR
-          {%- elif (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'FAIL') -%}FAIL
-          {%- elif (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'FAIL') -%}FAIL
-          {%- elif (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'PASS') -%}PASS
-          {%- elif (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'PASS') -%}PASS
-          {%- else -%}SKIP
-          {%- endif %}
-
-    - name: "Req step-08 - Store final audit result and report statuses"
-      ansible.builtin.set_fact:
-        cis_result: "{{ cis_result | default('ERROR') | trim }}"
-
-    - name: "Req step-08 - Store final audit result and report statuses"
-      ansible.builtin.set_fact:
-        status_06: "{{ cis_result | default('ERROR') | trim }}"
-        status_07: "{{ 'PASS' if cis_result is defined else 'ERROR' }}"
-        status_08: "{{ cis_result | default('ERROR') | trim }}"
-        data_06: "{{ cis_result | default('ERROR') | trim }}"
-        data_07: "Audit report generated"
-        data_08: "{{ cis_result | default('ERROR') | trim }}"
-        task_06_name: "Store cis_result"
-        task_06_cmd: "set_fact"
-        task_06_rc: 0
-        details_06: "Overall compliance status stored in cis_result"
-        task_07_name: "Generate audit report"
-        task_07_cmd: "debug"
-        task_07_rc: 0
-        details_07: "Audit report generated by final debug task"
-        task_08_name: "Store final audit result"
-        task_08_cmd: "set_fact"
-        task_08_rc: 0
-        details_08: "Final overall compliance status: {{ cis_result | default('ERROR') | trim }}"
+        cis_result: "{{ (dc_status if (is_dc | bool) else member_status if (is_member | bool) else 'ERROR') | trim }}"
 
     - name: "Req step-07 - Generate audit report"
       ansible.builtin.debug:
@@ -172,70 +136,71 @@
           - "Reference: CIS Benchmark checkpoint 1.1.3"
           - ""
           - "REQUIREMENT 01 - {{ req_01 }}:"
-          - "  Task: {{ task_01_name | default('Not recorded') }}"
-          - "  Command: {{ task_01_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_01_rc | default(-1) }}"
-          - "  Data: {{ data_01 | default('') | trim }}"
-          - "  Status: {{ status_01 | default('ERROR') | trim }}"
-          - "  Details: {{ details_01 | default('') | trim }}"
+          - "  Task: Detect Windows server role"
+          - "  Command: (Get-WmiObject Win32_ComputerSystem).DomainRole"
+          - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+          - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+          - "  Status: {{ role_status | default('ERROR') | trim }}"
+          - "  Details: {{ 'Role detection succeeded and DomainRole recognized' if (role_status | default('ERROR') | trim == 'PASS') else 'Role detection failed or DomainRole unrecognized' }}"
           - ""
           - "REQUIREMENT 02 - {{ req_02 }}:"
-          - "  Task: {{ task_02_name | default('Not recorded') }}"
-          - "  Command: {{ task_02_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_02_rc | default(-1) }}"
-          - "  Data: {{ data_02 | default('') | trim }}"
-          - "  Status: {{ status_02 | default('SKIP') | trim }}"
-          - "  Details: {{ details_02 | default('') | trim }}"
+          - "  Task: Read AD default domain password policy"
+          - "  Command: Get-ADDefaultDomainPasswordPolicy MinPasswordAge"
+          - "  Exit code: {{ _step02_output.rc | default(-1) }}"
+          - "  Data: {{ _step02_output.stdout | default('') | trim }}"
+          - "  Status: {{ 'SKIP' if not (is_dc | bool) else 'ERROR' if (_step02_output.rc | default(-1) != 0) else 'PASS' }}"
+          - "  Details: {{ 'Not applicable to this host' if not (is_dc | bool) else 'AD policy read succeeded' if (_step02_output.rc | default(-1) == 0) else 'AD policy read failed' }}"
           - ""
           - "REQUIREMENT 03 - {{ req_03 }}:"
-          - "  Task: {{ task_03_name | default('Not recorded') }}"
-          - "  Command: {{ task_03_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_03_rc | default(-1) }}"
-          - "  Data: {{ data_03 | default('') | trim }}"
-          - "  Status: {{ status_03 | default('SKIP') | trim }}"
-          - "  Details: {{ details_03 | default('') | trim }}"
+          - "  Task: Read local security policy Minimum password age"
+          - "  Command: community.windows.win_security_policy section=System Access key=MinimumPasswordAge value={{ minimum_password_age }} (check mode); secedit /export /cfg (Join-Path $env:TEMP 'cis_11_3_secpol.cfg')"
+          - "  Exit code: {{ _member_read.rc | default(-1) }}"
+          - "  Data: {{ _member_read.stdout | default('') | trim }}"
+          - "  Status: {{ 'SKIP' if not (is_member | bool) else 'ERROR' if (_member_read.rc | default(-1) != 0) else 'PASS' }}"
+          - "  Details: {{ 'Not applicable to this host' if not (is_member | bool) else 'Local policy read succeeded' if (_member_read.rc | default(-1) == 0) else 'Local policy read failed' }}"
           - ""
           - "REQUIREMENT 04 - {{ req_04 }}:"
-          - "  Task: {{ task_04_name | default('Not recorded') }}"
-          - "  Command: {{ task_04_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_04_rc | default(-1) }}"
-          - "  Data: {{ data_04 | default('') | trim }}"
-          - "  Status: {{ status_04 | default('SKIP') | trim }}"
-          - "  Details: {{ details_04 | default('') | trim }}"
+          - "  Task: Evaluate DC Minimum password age compliance"
+          - "  Command: N/A"
+          - "  Exit code: {{ _step02_output.rc | default(-1) }}"
+          - "  Data: {{ dc_data | default('') | trim }}"
+          - "  Status: {{ dc_status | default('SKIP') | trim }}"
+          - "  Details: {{ dc_details | default('Not applicable to this host') | trim }}"
           - ""
           - "REQUIREMENT 05 - {{ req_05 }}:"
-          - "  Task: {{ task_05_name | default('Not recorded') }}"
-          - "  Command: {{ task_05_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_05_rc | default(-1) }}"
-          - "  Data: {{ data_05 | default('') | trim }}"
-          - "  Status: {{ status_05 | default('SKIP') | trim }}"
-          - "  Details: {{ details_05 | default('') | trim }}"
+          - "  Task: Evaluate Member Server Minimum password age compliance"
+          - "  Command: N/A"
+          - "  Exit code: {{ _member_read.rc | default(-1) }}"
+          - "  Data: {{ member_data | default('') | trim }}"
+          - "  Status: {{ member_status | default('SKIP') | trim }}"
+          - "  Details: {{ member_details | default('Not applicable to this host') | trim }}"
           - ""
           - "REQUIREMENT 06 - {{ req_06 }}:"
-          - "  Task: {{ task_06_name | default('Not recorded') }}"
-          - "  Command: {{ task_06_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_06_rc | default(-1) }}"
-          - "  Data: {{ data_06 | default('') | trim }}"
-          - "  Status: {{ status_06 | default('ERROR') | trim }}"
-          - "  Details: {{ details_06 | default('') | trim }}"
+          - "  Task: Store final audit result in cis_result"
+          - "  Command: N/A"
+          - "  Exit code: 0"
+          - "  Data: {{ cis_result | default('ERROR') | trim }}"
+          - "  Status: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: Overall compliance result is {{ cis_result | default('ERROR') | trim }}"
           - ""
           - "REQUIREMENT 07 - {{ req_07 }}:"
-          - "  Task: {{ task_07_name | default('Not recorded') }}"
-          - "  Command: {{ task_07_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_07_rc | default(-1) }}"
-          - "  Data: {{ data_07 | default('') | trim }}"
-          - "  Status: {{ status_07 | default('ERROR') | trim }}"
-          - "  Details: {{ details_07 | default('') | trim }}"
+          - "  Task: Generate audit report"
+          - "  Command: ansible.builtin.debug"
+          - "  Exit code: 0"
+          - "  Data: Report generated"
+          - "  Status: PASS"
+          - "  Details: Audit report displayed to output"
           - ""
           - "REQUIREMENT 08 - {{ req_08 }}:"
-          - "  Task: {{ task_08_name | default('Not recorded') }}"
-          - "  Command: {{ task_08_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_08_rc | default(-1) }}"
-          - "  Data: {{ data_08 | default('') | trim }}"
-          - "  Status: {{ status_08 | default('ERROR') | trim }}"
-          - "  Details: {{ details_08 | default('') | trim }}"
+          - "  Task: Store final audit result in a variable named 'cis_result' using set_fact"
+          - "  Command: ansible.builtin.set_fact"
+          - "  Exit code: 0"
+          - "  Data: {{ cis_result | default('ERROR') | trim }}"
+          - "  Status: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: Overall compliance result is {{ cis_result | default('ERROR') | trim }}"
           - ""
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: Overall audit result is {{ cis_result | default('ERROR') | trim }}"
           - "========================================================"
