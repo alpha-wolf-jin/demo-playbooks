@@ -1,0 +1,411 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_1_1_3.yml
+
+- name: "Snapshot - Remove stale backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: absent
+  tags: [snapshot]
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: directory
+  tags: [snapshot]
+- name: "Snapshot - Record current MinimumPasswordAge value"
+  ansible.windows.win_shell: |
+    $snapFile = "{{ backup_dir }}/minimum_password_age_snapshot.txt"
+    {% raw %}
+    $role = (Get-CimInstance Win32_ComputerSystem).DomainRole
+    $value = $null
+    if ($role -in @(4,5)) {
+      if (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue) {
+        try {
+          $value = [math]::Floor((Get-ADDefaultDomainPasswordPolicy).MinPasswordAge.TotalDays)
+        } catch {
+          $value = "UNKNOWN"
+        }
+      } else {
+        $value = "UNKNOWN"
+      }
+    } else {
+      try {
+        $out = net accounts
+        $line = $out | Select-String 'Minimum password age'
+        if ($line) {
+          $value = ([regex]::Match($line.ToString(), '(\d+)')).Groups[1].Value
+        } else {
+          $value = "UNKNOWN"
+        }
+      } catch {
+        $value = "UNKNOWN"
+      }
+    }
+    Set-Content -LiteralPath $snapFile -Value $value -Force
+    Write-Output "SNAPSHOT_MIN_PASSWORD_AGE=$value"
+    {% endraw %}
+  register: _snap_min_pw
+  failed_when: false
+  changed_when: false
+  tags: [snapshot]
+
+- block:
+  - name: "Initialize report variables"
+    ansible.builtin.set_fact:
+      is_dc: false
+      is_member: false
+      role_detection_error: true
+      dc_ad_module_ok: false
+      task_01_name: "Not executed"
+      task_01_cmd: "N/A"
+      task_01_rc: -1
+      data_01: ""
+      status_01: "SKIP"
+      details_01: "Not evaluated"
+      task_02_name: "Not executed"
+      task_02_cmd: "N/A"
+      task_02_rc: -1
+      data_02: ""
+      status_02: "SKIP"
+      details_02: "Not evaluated"
+      task_03_name: "Not executed"
+      task_03_cmd: "N/A"
+      task_03_rc: -1
+      data_03: ""
+      status_03: "SKIP"
+      details_03: "Not evaluated"
+      task_04_name: "Not executed"
+      task_04_cmd: "N/A"
+      task_04_rc: -1
+      data_04: ""
+      status_04: "SKIP"
+      details_04: "Not evaluated"
+      task_05_name: "Not executed"
+      task_05_cmd: "N/A"
+      task_05_rc: -1
+      data_05: ""
+      status_05: "SKIP"
+      details_05: "Not evaluated"
+      task_06_name: "Not executed"
+      task_06_cmd: "N/A"
+      task_06_rc: -1
+      data_06: ""
+      status_06: "SKIP"
+      details_06: "Not evaluated"
+      task_07_name: "Generate remediation report"
+      task_07_cmd: "debug"
+      task_07_rc: 0
+      data_07: ""
+      status_07: "PASS"
+      details_07: "Report generated"
+    tags: [execute]
+
+  - name: "Req step-01 - Detect Windows server role"
+    ansible.windows.win_shell: |
+      try {
+        $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
+        Write-Output $role
+        exit 0
+      } catch {
+        Write-Output "DETECTION_ERROR: $($_.Exception.Message)"
+        exit 2
+      }
+    register: _step01_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set server role flags"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+      role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+    tags: [execute]
+
+  - name: "Req step-01 - Store detection details"
+    ansible.builtin.set_fact:
+      task_01_name: "Detect Windows server role"
+      task_01_cmd: "Get-WmiObject Win32_ComputerSystem DomainRole"
+      task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+      data_01: "{{ _step01_output.stdout | default('') | trim }}"
+      status_01: "{{ 'PASS' if not (role_detection_error | bool) else 'ERROR' }}"
+      details_01: "{{ 'Detected role ' + (_step01_output.stdout | default('') | trim) if not (role_detection_error | bool) else 'Role detection failed' }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set Minimum password age to 1 day on Domain Controller"
+    ansible.windows.win_shell: |
+      $ErrorActionPreference = 'Continue'
+      try {
+        if (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue) {
+          $domainDN = (Get-ADDomain).DistinguishedName
+          Set-ADDefaultDomainPasswordPolicy -Identity $domainDN -MinPasswordAge (New-TimeSpan -Days {{ minimum_password_age }})
+          Write-Output "DC_APPLY_OK"
+          exit 0
+        } else {
+          Write-Output "DC_AD_MODULE_MISSING"
+          exit 0
+        }
+      } catch {
+        Write-Output "DC_APPLY_FAIL: $($_.Exception.Message)"
+        exit 1
+      }
+    register: _step02_output
+    when: is_dc | bool
+    failed_when: false
+    changed_when: true
+    tags: [execute]
+
+  - name: "Req step-02 - Store DC apply details and module availability flag"
+    ansible.builtin.set_fact:
+      dc_ad_module_ok: "{{ is_dc | bool and ('DC_AD_MODULE_MISSING' not in (_step02_output.stdout | default(''))) }}"
+      task_02_name: "Set AD default domain password policy MinPasswordAge"
+      task_02_cmd: "Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MinPasswordAge (New-TimeSpan -Days 1)"
+      task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+      data_02: "{{ _step02_output.stdout | default('') | trim }}"
+      status_02: "{{ ('SKIP' if not (is_dc | bool) else 'SKIP' if ('DC_AD_MODULE_MISSING' in (_step02_output.stdout | default(''))) else 'ERROR' if ((_step02_output.rc | default(-1) | int) != 0) or ((_step02_output.stdout | default('') | trim) == '') else 'PASS' if ((_step02_output.rc | default(-1) | int) == 0) and ('DC_APPLY_OK' in (_step02_output.stdout | default(''))) else 'FAIL') | trim }}"
+      details_02: "{{ 'Skipped: not a domain controller' if not (is_dc | bool) else 'Skipped: Active Directory module not available' if ('DC_AD_MODULE_MISSING' in (_step02_output.stdout | default(''))) else 'Applied successfully' if ((_step02_output.rc | default(-1) | int) == 0) and ('DC_APPLY_OK' in (_step02_output.stdout | default(''))) else 'Apply failed or returned unexpected output' }}"
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-03 - Set Minimum password age to 1 day on Member Server"
+    community.windows.win_security_policy:
+      section: "System Access"
+      key: "MinimumPasswordAge"
+      value: "{{ minimum_password_age }}"
+    register: _step03_output
+    when: is_member | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-03 - Store member apply details"
+    ansible.builtin.set_fact:
+      task_03_name: "Set MinimumPasswordAge via community.windows.win_security_policy"
+      task_03_cmd: "community.windows.win_security_policy section=System Access key=MinimumPasswordAge value={{ minimum_password_age }}"
+      task_03_rc: "{{ 1 if (_step03_output.msg is defined and ('error' in (_step03_output.msg | lower) or 'fail' in (_step03_output.msg | lower))) else (_step03_output.rc | default(0)) }}"
+      data_03: "{{ _step03_output.msg | default('MinimumPasswordAge set to ' ~ minimum_password_age) }}"
+      status_03: "{{ ('SKIP' if not (is_member | bool) else 'FAIL' if ((_step03_output.rc | default(0) | int) != 0) or (('error' in (_step03_output.msg | default('') | lower)) or ('fail' in (_step03_output.msg | default('') | lower))) else 'PASS') | trim }}"
+      details_03: "{{ 'Skipped: not a member server' if not (is_member | bool) else 'Applied successfully' if ((_step03_output.rc | default(0) | int) == 0) and not (('error' in (_step03_output.msg | default('') | lower)) or ('fail' in (_step03_output.msg | default('') | lower))) else 'Apply failed' }}"
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-04 - Verify Minimum password age is set to 1 day on Domain Controller via win_security_policy"
+    community.windows.win_security_policy:
+      section: "System Access"
+      key: "MinimumPasswordAge"
+      value: "{{ minimum_password_age }}"
+    register: _step04_policy
+    when: is_dc | bool and dc_ad_module_ok | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Read DC Minimum password age via AD cmdlet"
+    ansible.windows.win_shell: |
+      try {
+        if (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue) {
+          $days = [math]::Floor((Get-ADDefaultDomainPasswordPolicy).MinPasswordAge.TotalDays)
+          Write-Output "MIN_PASSWORD_AGE_DAYS=$days"
+          if ($days -ge 1) { exit 0 } else { exit 1 }
+        } else {
+          Write-Output "VERIFY_DC_SKIP: ActiveDirectory module not available"
+          exit 2
+        }
+      } catch {
+        Write-Output "VERIFY_DC_ERROR: $($_.Exception.Message)"
+        exit 2
+      }
+    register: _step04_output
+    when: is_dc | bool and dc_ad_module_ok | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Store DC verify details"
+    ansible.builtin.set_fact:
+      task_04_name: "Verify MinimumPasswordAge on DC via win_security_policy and AD cmdlet"
+      task_04_cmd: "community.windows.win_security_policy section=System Access key=MinimumPasswordAge value={{ minimum_password_age }}; Get-ADDefaultDomainPasswordPolicy"
+      task_04_rc: "{{ _step04_output.rc | default(-1) }}"
+      data_04: "{{ _step04_output.stdout | default('') | trim }}"
+      status_04: "{{ ('SKIP' if not (is_dc | bool) or not (dc_ad_module_ok | bool) else 'ERROR' if ((_step04_output.rc | default(-1) | int) not in [0,1]) or ((_step04_output.stdout | default('') | trim) == '') else 'PASS' if (_step04_output.rc | default(-1) | int) == 0 else 'FAIL') | trim }}"
+      details_04: "{{ 'Skipped: not a domain controller' if not (is_dc | bool) else 'Skipped: Active Directory module not available' if not (dc_ad_module_ok | bool) else 'Verified successfully' if ((_step04_output.rc | default(-1) | int) == 0) else 'Verification failed or could not determine value' }}"
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-05 - Verify Minimum password age is set to 1 day on Member Server via win_security_policy"
+    community.windows.win_security_policy:
+      section: "System Access"
+      key: "MinimumPasswordAge"
+      value: "{{ minimum_password_age }}"
+    register: _step05_policy
+    when: is_member | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Read Member Minimum password age via net accounts"
+    ansible.windows.win_shell: |
+      try {
+        $out = net accounts
+        $line = $out | Select-String 'Minimum password age'
+        if ($line) {
+          $days = ([regex]::Match($line.ToString(), '(\d+)')).Groups[1].Value
+          Write-Output "MEMBER_MIN_PASSWORD_AGE_DAYS=$days"
+          if ([int]$days -ge 1) { exit 0 } else { exit 1 }
+        } else {
+          Write-Output "VERIFY_MEMBER_ERROR: Minimum password age not found"
+          exit 2
+        }
+      } catch {
+        Write-Output "VERIFY_MEMBER_ERROR: $($_.Exception.Message)"
+        exit 2
+      }
+    register: _step05_output
+    when: is_member | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Store member verify details"
+    ansible.builtin.set_fact:
+      task_05_name: "Verify MinimumPasswordAge on Member Server via win_security_policy and net accounts"
+      task_05_cmd: "community.windows.win_security_policy section=System Access key=MinimumPasswordAge value={{ minimum_password_age }}; net accounts"
+      task_05_rc: "{{ _step05_output.rc | default(-1) }}"
+      data_05: "{{ _step05_output.stdout | default('') | trim }}"
+      status_05: "{{ ('SKIP' if not (is_member | bool) else 'ERROR' if ((_step05_output.rc | default(-1) | int) not in [0,1]) or ((_step05_output.stdout | default('') | trim) == '') else 'PASS' if (_step05_output.rc | default(-1) | int) == 0 else 'FAIL') | trim }}"
+      details_05: "{{ 'Skipped: not a member server' if not (is_member | bool) else 'Verified successfully' if ((_step05_output.rc | default(-1) | int) == 0) else 'Verification failed or could not determine value' }}"
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-06 - Set cis_result from active branch"
+    ansible.builtin.set_fact:
+      cis_result: "{{ 'ERROR' if (role_detection_error | bool) else 'ERROR' if ((is_dc | bool) and ('ERROR' in [status_02, status_04])) or ((is_member | bool) and ('ERROR' in [status_03, status_05])) else 'PASS' if ((is_dc | bool) and status_02 == 'PASS' and status_04 == 'PASS') or ((is_member | bool) and status_03 == 'PASS' and status_05 == 'PASS') else 'FAIL' if ((is_dc | bool) and ('FAIL' in [status_02, status_04])) or ((is_member | bool) and ('FAIL' in [status_03, status_05])) else 'SKIP' }}"
+    tags: [execute]
+
+  - name: "Req step-06 - Store cis_result details"
+    ansible.builtin.set_fact:
+      task_06_name: "Set cis_result from active branch"
+      task_06_cmd: "set_fact cis_result"
+      task_06_rc: 0
+      data_06: "{{ cis_result }}"
+      status_06: "{{ cis_result }}"
+      details_06: "Overall remediation status derived from active branch"
+    tags: [execute]
+
+  - name: "Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 1.1.3"
+      - "Reference: CIS Benchmark checkpoint 1.1.3"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: {{ task_01_name | default('Not recorded') }}"
+      - "  Command: {{ task_01_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_01_rc | default(-1) }}"
+      - "  Data: {{ data_01 | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: {{ task_02_name | default('Not recorded') }}"
+      - "  Command: {{ task_02_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_02_rc | default(-1) }}"
+      - "  Data: {{ data_02 | default('') | trim }}"
+      - "  Status: {{ status_02 | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: {{ task_03_name | default('Not recorded') }}"
+      - "  Command: {{ task_03_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_03_rc | default(-1) }}"
+      - "  Data: {{ data_03 | default('') | trim }}"
+      - "  Status: {{ status_03 | default('ERROR') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: {{ task_04_name | default('Not recorded') }}"
+      - "  Command: {{ task_04_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_04_rc | default(-1) }}"
+      - "  Data: {{ data_04 | default('') | trim }}"
+      - "  Status: {{ status_04 | default('ERROR') | trim }}"
+      - "  Details: {{ details_04 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: {{ task_05_name | default('Not recorded') }}"
+      - "  Command: {{ task_05_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_05_rc | default(-1) }}"
+      - "  Data: {{ data_05 | default('') | trim }}"
+      - "  Status: {{ status_05 | default('ERROR') | trim }}"
+      - "  Details: {{ details_05 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: {{ task_06_name | default('Not recorded') }}"
+      - "  Command: {{ task_06_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_06_rc | default(-1) }}"
+      - "  Data: {{ data_06 | default('') | trim }}"
+      - "  Status: {{ status_06 | default('ERROR') | trim }}"
+      - "  Details: {{ details_06 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 07 - {{ req_07 }}:"
+      - "  Task: {{ task_07_name | default('Not recorded') }}"
+      - "  Command: {{ task_07_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_07_rc | default(-1) }}"
+      - "  Data: {{ data_07 | default('') | trim }}"
+      - "  Status: {{ status_07 | default('ERROR') | trim }}"
+      - "  Details: {{ details_07 | default('') | trim }}"
+      - ""
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Restore original MinimumPasswordAge value from snapshot file"
+    ansible.windows.win_shell: |
+      $snapFile = "{{ backup_dir }}/minimum_password_age_snapshot.txt"
+      {% raw %}
+      if (-not (Test-Path -LiteralPath $snapFile)) {
+        Write-Output "RESTORE_SKIP: no snapshot file"
+        exit 0
+      }
+      $orig = (Get-Content -LiteralPath $snapFile -Raw).Trim()
+      if ($orig -eq "UNKNOWN" -or $orig -notmatch '^\d+$') {
+        Write-Output "RESTORE_SKIP: snapshot value not usable [$orig]"
+        exit 0
+      }
+      $origDays = [int]$orig
+      $role = (Get-CimInstance Win32_ComputerSystem).DomainRole
+      if ($role -in @(4,5)) {
+        if (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue) {
+          try {
+            Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MinPasswordAge (New-TimeSpan -Days $origDays)
+            Write-Output "RESTORE_DC_OK"
+            exit 0
+          } catch {
+            Write-Output "RESTORE_DC_FAIL: $($_.Exception.Message)"
+            exit 1
+          }
+        } else {
+          Write-Output "RESTORE_SKIP: ActiveDirectory module not available"
+          exit 0
+        }
+      } else {
+        try {
+          $null = & net.exe accounts /minpwage:$origDays
+          Write-Output "RESTORE_MEMBER_OK"
+          exit 0
+        } catch {
+          Write-Output "RESTORE_MEMBER_FAIL: $($_.Exception.Message)"
+          exit 1
+        }
+      }
+      {% endraw %}
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir }}"
+      state: absent
+    failed_when: false
+    changed_when: false
+    tags: [restore]
