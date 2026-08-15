@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "9.1.1",
-  "title": "Ensure 'Windows Firewall: Domain: Firewall state' is set to 'On (recommended)'",
+  "checkpoint_id": "9.2.7",
+  "title": "Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to 'Yes'",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
@@ -32,7 +32,7 @@
     },
     "result_aggregation": "PASS if the active branch verify step passes; SKIP if a branch is not applicable to this host (the other role); FAIL if the active branch check fails; ERROR if role detection fails or DomainRole value is unrecognised. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Audit CIS checkpoint 9.1.1: Ensure 'Windows Firewall: Domain: Firewall state' is set to 'On (recommended)'",
+  "objective": "Audit CIS checkpoint 9.2.7: Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to 'Yes'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -89,9 +89,9 @@
     {
       "id": "step-02",
       "type": "collect",
-      "name": "If Domain Controller: Read 'Firewall state'. Use read-only PowerShell to query the current value; changed_when: false…",
-      "function": "2. If Domain Controller: Read 'Firewall state'. Use read-only PowerShell to query the current value; changed_when: false; failed_when: rc not in [0, 1].",
-      "module": "ansible.windows.win_shell",
+      "name": "If Domain Controller: Read the CIS benchmark GP registry key using PowerShell Get-ItemProperty -Path…",
+      "function": "2. If Domain Controller: Read the CIS benchmark GP registry key using PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' -Name LogSuccessfulConnections -ErrorAction SilentlyContinue. If the key is absent output 'NOT_CONFIGURED' and exit 1. If present output the numeric value. changed_when: false; failed_when: false.",
+      "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-01",
         "fields": [
@@ -108,9 +108,9 @@
     {
       "id": "step-03",
       "type": "collect",
-      "name": "If Member Server: Read 'Firewall state'. Use read-only PowerShell to query the current value; changed_when: false…",
-      "function": "3. If Member Server: Read 'Firewall state'. Use read-only PowerShell to query the current value; changed_when: false; failed_when: rc not in [0, 1].",
-      "module": "ansible.windows.win_shell",
+      "name": "If Member Server: Read the CIS benchmark GP registry key using PowerShell Get-ItemProperty -Path…",
+      "function": "3. If Member Server: Read the CIS benchmark GP registry key using PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' -Name LogSuccessfulConnections -ErrorAction SilentlyContinue. If the key is absent output 'NOT_CONFIGURED' and exit 1. If present output the numeric value. changed_when: false; failed_when: false.",
+      "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-02",
         "fields": [
@@ -127,8 +127,8 @@
     {
       "id": "step-04",
       "type": "transform",
-      "name": "If Domain Controller: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not…",
-      "function": "4. If Domain Controller: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR if the check failed.",
+      "name": "If Domain Controller: Evaluate whether 'Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set…",
+      "function": "4. If Domain Controller: Evaluate whether 'Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to 'Yes'' is set correctly: PASS if the registry value equals 1. FAIL if the value is 0 or absent (NOT_CONFIGURED). ERROR if the registry read step failed unexpectedly.",
       "input": {
         "source": "step-03",
         "fields": [
@@ -147,8 +147,8 @@
     {
       "id": "step-05",
       "type": "transform",
-      "name": "If Member Server: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR…",
-      "function": "5. If Member Server: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR if the check failed.",
+      "name": "If Member Server: Evaluate whether 'Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to…",
+      "function": "5. If Member Server: Evaluate whether 'Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to 'Yes'' is set correctly: PASS if the registry value equals 1. FAIL if the value is 0 or absent (NOT_CONFIGURED). ERROR if the registry read step failed unexpectedly.",
       "input": {
         "source": "step-04",
         "fields": [
@@ -186,7 +186,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 9.1.1\nReference: CIS Benchmark checkpoint 9.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 9.2.7\nReference: CIS Benchmark checkpoint 9.2.7\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -213,7 +213,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 9.1.1 audit failed",
+      "error_message": "ERROR: CIS 9.2.7 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -268,16 +268,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed. This group policy setting is backed by the following registry location with a\nREG_DWORD value of 1.\nHKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\DomainProfile:EnableFirewall",
+  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed. This group policy setting is backed by the following registry location with a\nREG_DWORD value of 1.\nHKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging:LogSu ccessfulConnections",
   "example_output": "",
-  "filename": "cis_audit_9_1_1.yml",
+  "filename": "cis_audit_9_2_7.yml",
   "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-15T16:03:52",
-    "revision": 1,
-    "approved_at": "2026-08-15T16:04:46",
+    "drafted_at": "2026-08-15T23:53:19",
+    "revision": 3,
+    "approved_at": "2026-08-15T23:53:24",
     "saved_by": null
   }
 }
