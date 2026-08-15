@@ -4,4 +4,3 @@ req_03: "If Member Server: Read 'Firewall state'. Use read-only PowerShell to qu
 req_04: "If Domain Controller: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR if the check failed."
 req_05: "If Member Server: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR if the check failed."
 req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-req_07: "Generate audit report"
