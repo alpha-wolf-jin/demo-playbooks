@@ -9,76 +9,92 @@
     req_04: "If Domain Controller: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR if the check failed."
     req_05: "If Member Server: Evaluate whether 'Firewall state' is equals 'On (recommended)'. PASS if compliant, FAIL if not, ERROR if the check failed."
     req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    req_07: "Generate audit report"
 
   tasks:
-    - name: "Req step-01 - Detect Windows server role using Win32_ComputerSystem DomainRole"
-      ansible.windows.win_shell: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+    - name: "Req step-01 - Detect Windows server role from Win32_ComputerSystem DomainRole"
+      ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
       register: _step01_output
       changed_when: false
       failed_when: false
 
-    - name: "Req step-01 - Set is_dc and is_member from DomainRole"
+    - name: "Req step-01 - Set server role flags and report requirement 01 details"
       ansible.builtin.set_fact:
-        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
-        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
-        status_01: "{{ ('PASS' if (_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5'] else 'ERROR') | trim }}"
-        details_01: "{{ ('DomainRole ' ~ (_step01_output.stdout | default('') | trim) ~ ' recognized' if (_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5'] else 'Unrecognized DomainRole or detection failure') | trim }}"
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        task_01_name: "Detect Windows server role from Win32_ComputerSystem DomainRole"
+        task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+        is_dc: "{{ (_step01_output.rc | default(-1)) == 0 and (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
+        is_member: "{{ (_step01_output.rc | default(-1)) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
+        status_01: "{{ 'PASS' if (_step01_output.rc | default(-1)) == 0 and ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
+        details_01: "{{ 'Server role detected as DomainRole=' ~ (_step01_output.stdout | default('') | trim) if (_step01_output.rc | default(-1)) == 0 and ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR: unable to determine server role from DomainRole output' }}"
 
-    - name: "Req step-02 - Read firewall state on Domain Controller"
+    - name: "Req step-02 - Read Domain Controller firewall state"
       ansible.windows.win_shell: |
-        $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile'
-        $value = (Get-ItemProperty -Path $path -Name EnableFirewall -ErrorAction SilentlyContinue).EnableFirewall
-        if ($null -eq $value) {
-          Write-Output 'NotConfigured'
-        } elseif ($value -eq 1) {
-          Write-Output 'On (recommended)'
-        } else {
-          Write-Output 'Off'
-        }
+        {% raw %}
+        $v = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile' -Name EnableFirewall -ErrorAction SilentlyContinue
+        if ($null -eq $v) { Write-Output 'NOT_CONFIGURED'; exit 1 }
+        else { Write-Output $v.EnableFirewall; exit 0 }
+        {% endraw %}
       register: _step02_output
       changed_when: false
       failed_when: false
       when: is_dc | bool
 
-    - name: "Req step-03 - Read firewall state on Member Server"
+    - name: "Req step-03 - Read Member Server firewall state"
       ansible.windows.win_shell: |
-        $path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile'
-        $value = (Get-ItemProperty -Path $path -Name EnableFirewall -ErrorAction SilentlyContinue).EnableFirewall
-        if ($null -eq $value) {
-          Write-Output 'NotConfigured'
-        } elseif ($value -eq 1) {
-          Write-Output 'On (recommended)'
-        } else {
-          Write-Output 'Off'
-        }
+        {% raw %}
+        $v = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile' -Name EnableFirewall -ErrorAction SilentlyContinue
+        if ($null -eq $v) { Write-Output 'NOT_CONFIGURED'; exit 1 }
+        else { Write-Output $v.EnableFirewall; exit 0 }
+        {% endraw %}
       register: _step03_output
       changed_when: false
       failed_when: false
       when: is_member | bool
 
-    - name: "Req step-04 - Evaluate firewall state on Domain Controller"
+    - name: "Req step-04 - Evaluate Domain Controller firewall state"
       ansible.builtin.set_fact:
+        data_02: "{{ _step02_output.stdout | default('') | trim }}"
+        task_02_name: "Read Domain Controller firewall state"
+        task_02_cmd: "Get-ItemProperty -Path HKLM:/SOFTWARE/Policies/Microsoft/WindowsFirewall/DomainProfile -Name EnableFirewall"
+        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+        status_02: "{{ 'PASS' if (_step02_output.rc | default(-1)) in [0, 1] and ((_step02_output.stdout | default('') | trim) != '') else 'ERROR' }}"
+        details_02: "{{ 'Read completed' if (_step02_output.rc | default(-1)) in [0, 1] and ((_step02_output.stdout | default('') | trim) != '') else 'ERROR: unable to read Domain Controller firewall state' }}"
         data_04: "{{ _step02_output.stdout | default('') | trim }}"
-        status_04: "{{ ('PASS' if (_step02_output.stdout | default('') | trim) == 'On (recommended)' else ('ERROR' if (_step02_output.rc | default(-1)) not in [0, 1] else 'FAIL')) | trim }}"
-        details_04: "{{ ('Compliant' if (_step02_output.stdout | default('') | trim) == 'On (recommended)' else 'Non-compliant or check failed') | trim }}"
-        _cis_status: "{{ ('PASS' if (_step02_output.stdout | default('') | trim) == 'On (recommended)' else ('ERROR' if (_step02_output.rc | default(-1)) not in [0, 1] else 'FAIL')) | trim }}"
+        task_04_name: "Evaluate Domain Controller firewall state"
+        task_04_cmd: "set_fact"
+        task_04_rc: "0"
+        status_04: "{{ 'ERROR' if (_step02_output.rc | default(-1)) not in [0, 1] or ((_step02_output.stdout | default('') | trim) == '') else ('PASS' if ((_step02_output.stdout | default('') | trim) == '1') else ('FAIL' if ((_step02_output.stdout | default('') | trim) in ['0','NOT_CONFIGURED']) else 'ERROR')) }}"
+        _cis_status: "{{ 'ERROR' if (_step02_output.rc | default(-1)) not in [0, 1] or ((_step02_output.stdout | default('') | trim) == '') else ('PASS' if ((_step02_output.stdout | default('') | trim) == '1') else ('FAIL' if ((_step02_output.stdout | default('') | trim) in ['0','NOT_CONFIGURED']) else 'ERROR')) }}"
+        details_04: "{{ 'ERROR: unable to read Domain Controller firewall state' if (_step02_output.rc | default(-1)) not in [0, 1] or ((_step02_output.stdout | default('') | trim) == '') else ('PASS: Domain firewall state is On (recommended)' if ((_step02_output.stdout | default('') | trim) == '1') else ('FAIL: Domain firewall state is not On (recommended)' if ((_step02_output.stdout | default('') | trim) in ['0','NOT_CONFIGURED']) else 'ERROR: unexpected firewall state')) }}"
       when: is_dc | bool
 
-    - name: "Req step-05 - Evaluate firewall state on Member Server"
+    - name: "Req step-05 - Evaluate Member Server firewall state"
       ansible.builtin.set_fact:
+        data_03: "{{ _step03_output.stdout | default('') | trim }}"
+        task_03_name: "Read Member Server firewall state"
+        task_03_cmd: "Get-ItemProperty -Path HKLM:/SOFTWARE/Policies/Microsoft/WindowsFirewall/DomainProfile -Name EnableFirewall"
+        task_03_rc: "{{ _step03_output.rc | default(-1) }}"
+        status_03: "{{ 'PASS' if (_step03_output.rc | default(-1)) in [0, 1] and ((_step03_output.stdout | default('') | trim) != '') else 'ERROR' }}"
+        details_03: "{{ 'Read completed' if (_step03_output.rc | default(-1)) in [0, 1] and ((_step03_output.stdout | default('') | trim) != '') else 'ERROR: unable to read Member Server firewall state' }}"
         data_05: "{{ _step03_output.stdout | default('') | trim }}"
-        status_05: "{{ ('PASS' if (_step03_output.stdout | default('') | trim) == 'On (recommended)' else ('ERROR' if (_step03_output.rc | default(-1)) not in [0, 1] else 'FAIL')) | trim }}"
-        details_05: "{{ ('Compliant' if (_step03_output.stdout | default('') | trim) == 'On (recommended)' else 'Non-compliant or check failed') | trim }}"
-        _cis_status: "{{ ('PASS' if (_step03_output.stdout | default('') | trim) == 'On (recommended)' else ('ERROR' if (_step03_output.rc | default(-1)) not in [0, 1] else 'FAIL')) | trim }}"
+        task_05_name: "Evaluate Member Server firewall state"
+        task_05_cmd: "set_fact"
+        task_05_rc: "0"
+        status_05: "{{ 'ERROR' if (_step03_output.rc | default(-1)) not in [0, 1] or ((_step03_output.stdout | default('') | trim) == '') else ('PASS' if ((_step03_output.stdout | default('') | trim) == '1') else ('FAIL' if ((_step03_output.stdout | default('') | trim) in ['0','NOT_CONFIGURED']) else 'ERROR')) }}"
+        _cis_status: "{{ 'ERROR' if (_step03_output.rc | default(-1)) not in [0, 1] or ((_step03_output.stdout | default('') | trim) == '') else ('PASS' if ((_step03_output.stdout | default('') | trim) == '1') else ('FAIL' if ((_step03_output.stdout | default('') | trim) in ['0','NOT_CONFIGURED']) else 'ERROR')) }}"
+        details_05: "{{ 'ERROR: unable to read Member Server firewall state' if (_step03_output.rc | default(-1)) not in [0, 1] or ((_step03_output.stdout | default('') | trim) == '') else ('PASS: Domain firewall state is On (recommended)' if ((_step03_output.stdout | default('') | trim) == '1') else ('FAIL: Domain firewall state is not On (recommended)' if ((_step03_output.stdout | default('') | trim) in ['0','NOT_CONFIGURED']) else 'ERROR: unexpected firewall state')) }}"
       when: is_member | bool
 
     - name: "Req step-06 - Store final audit result in cis_result"
       ansible.builtin.set_fact:
         cis_result: "{{ _cis_status | default('ERROR') | trim }}"
-        status_06: "PASS"
-        data_06: "Final audit result stored"
-        details_06: "Overall compliance stored in cis_result"
+        status_06: "{{ _cis_status | default('ERROR') | trim }}"
+        data_06: "{{ _cis_status | default('ERROR') | trim }}"
+        task_06_name: "Store final audit result in cis_result"
+        task_06_cmd: "set_fact"
+        task_06_rc: "0"
+        details_06: "{{ 'Overall compliance result derived from active branch verify status: ' ~ (_cis_status | default('ERROR') | trim) }}"
 
     - name: "Generate audit report"
       ansible.builtin.debug:
@@ -87,62 +103,55 @@
           - "Reference: CIS Benchmark checkpoint 9.1.1"
           - ""
           - "REQUIREMENT 01 - {{ req_01 }}:"
-          - "  Task: Detect Windows server role via Win32_ComputerSystem.DomainRole"
-          - "  Command: (Get-WmiObject Win32_ComputerSystem).DomainRole"
-          - "  Exit code: {{ _step01_output.rc | default(-1) }}"
-          - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
           - "  Status: {{ status_01 | default('ERROR') | trim }}"
-          - "  Details: {{ details_01 | default('Not evaluated') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
           - ""
           - "REQUIREMENT 02 - {{ req_02 }}:"
-          - "  Task: Read firewall state on Domain Controller"
-          - "  Command: Get-ItemProperty -Path HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\DomainProfile -Name EnableFirewall"
-          - "  Exit code: {{ _step02_output.rc | default('N/A') }}"
-          - "  Data: {{ _step02_output.stdout | default('') | trim }}"
-          - "  Status: {{ 'SKIP' if not (is_dc | bool) else 'ERROR' if (_step02_output.rc | default(-1)) not in [0, 1] else 'PASS' }}"
-          - "  Details: {{ 'Read completed' if is_dc | bool and (_step02_output.rc | default(-1)) in [0, 1] else 'Not applicable or read failed' }}"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('SKIP') | trim }}"
+          - "  Details: {{ details_02 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 03 - {{ req_03 }}:"
-          - "  Task: Read firewall state on Member Server"
-          - "  Command: Get-ItemProperty -Path HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\DomainProfile -Name EnableFirewall"
-          - "  Exit code: {{ _step03_output.rc | default('N/A') }}"
-          - "  Data: {{ _step03_output.stdout | default('') | trim }}"
-          - "  Status: {{ 'SKIP' if not (is_member | bool) else 'ERROR' if (_step03_output.rc | default(-1)) not in [0, 1] else 'PASS' }}"
-          - "  Details: {{ 'Read completed' if is_member | bool and (_step03_output.rc | default(-1)) in [0, 1] else 'Not applicable or read failed' }}"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('SKIP') | trim }}"
+          - "  Details: {{ details_03 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 04 - {{ req_04 }}:"
-          - "  Task: Evaluate firewall state on Domain Controller"
-          - "  Command: Compare PowerShell output to On (recommended)"
-          - "  Exit code: N/A"
-          - "  Data: {{ _step02_output.stdout | default('') | trim }}"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
           - "  Status: {{ status_04 | default('SKIP') | trim }}"
           - "  Details: {{ details_04 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 05 - {{ req_05 }}:"
-          - "  Task: Evaluate firewall state on Member Server"
-          - "  Command: Compare PowerShell output to On (recommended)"
-          - "  Exit code: N/A"
-          - "  Data: {{ _step03_output.stdout | default('') | trim }}"
+          - "  Task: {{ task_05_name | default('Not recorded') }}"
+          - "  Command: {{ task_05_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_05_rc | default(-1) }}"
+          - "  Data: {{ data_05 | default('') | trim }}"
           - "  Status: {{ status_05 | default('SKIP') | trim }}"
           - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 06 - {{ req_06 }}:"
-          - "  Task: Store final audit result in cis_result"
-          - "  Command: set_fact cis_result"
-          - "  Exit code: N/A"
-          - "  Data: {{ cis_result | default('') | trim }}"
+          - "  Task: {{ task_06_name | default('Not recorded') }}"
+          - "  Command: {{ task_06_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_06_rc | default(-1) }}"
+          - "  Data: {{ data_06 | default('') | trim }}"
           - "  Status: {{ status_06 | default('ERROR') | trim }}"
           - "  Details: {{ details_06 | default('Not evaluated') | trim }}"
-          - ""
-          - "REQUIREMENT 07 - {{ req_07 }}:"
-          - "  Task: Generate audit report"
-          - "  Command: debug msg audit report"
-          - "  Exit code: N/A"
-          - "  Data: Report generated"
-          - "  Status: PASS"
-          - "  Details: Audit report generated"
           - ""
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: {{ details_06 | default('Not evaluated') | trim }}"
           - "========================================================"
