@@ -1,4 +1,3 @@
 req_01: "Read 'Accounts: Guest account status' using community.windows.win_security_policy with section=Registry Values. changed_when: false."
 req_02: "Evaluate whether 'Accounts: Guest account status' is equals 'Disabled'. PASS if compliant, FAIL if not, SKIP if not applicable, ERROR if failed."
 req_03: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-req_04: "Create a task named 'Generate audit report' using debug msg with exactly this format."
