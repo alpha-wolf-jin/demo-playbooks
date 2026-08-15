@@ -1,0 +1,382 @@
+---
+- name: "Remediate CIS checkpoint 2.2.39: Ensure 'Modify an object label' is set to 'No One'"
+  hosts: all
+  gather_facts: false
+  vars:
+    playbook_name: "cis_2_2_39_remediation"
+    backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+    req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
+    req_02: "If Domain Controller: Set 'Modify an object label' to 'No One'. Recommended module: ansible.windows.win_user_right. Use name (the Se* privilege constant) and users (empty list [] for No One, or named accounts). action: set. Do NOT use secedit — secedit /areas SECURITYPOLICY does not manage User Rights Assignment."
+    req_03: "If Member Server: Set 'Modify an object label' to 'No One'. Recommended module: ansible.windows.win_user_right (identical to DC branch). Do NOT use secedit for user rights."
+    req_04: "If Domain Controller: Verify 'Modify an object label' is correctly set to 'No One'. Use read-only PowerShell to query the value; changed_when: false."
+    req_05: "If Member Server: Verify 'Modify an object label' is correctly set to 'No One'. Use read-only PowerShell to query the value; changed_when: false."
+    req_06: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  pre_tasks:
+    - name: "Snapshot - Remove stale backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir | trim }}"
+        state: absent
+      tags: [snapshot]
+
+    - name: "Snapshot - Create backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir | trim }}"
+        state: directory
+      tags: [snapshot]
+
+    - name: "Snapshot - Export current User Rights Assignment baseline and capture SeRelabelPrivilege"
+      ansible.windows.win_shell: |
+        $exportPath = [System.IO.Path]::GetFullPath("{{ backup_dir | trim }}/user_rights_original.cfg")
+        $out = secedit /export /cfg "$exportPath" /areas USER_RIGHTS 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+          Write-Output "SNAPSHOT_ERROR: $out"
+          exit 2
+        }
+        if (-not (Test-Path -LiteralPath $exportPath)) {
+          Write-Output "SNAPSHOT_ERROR: missing export file"
+          exit 2
+        }
+        $lines = [System.IO.File]::ReadAllLines($exportPath, [System.Text.Encoding]::Unicode)
+        $line = $lines | Where-Object { $_ -match '^SeRelabelPrivilege\s*=' } | Select-Object -First 1
+        $users = @()
+        if ($line) {
+          $text = $line.Trim()
+          $rhs = $text -replace '^SeRelabelPrivilege\s*=\s*', ''
+          if ($rhs -ne '') {
+            $users = $rhs -split '\s*,\s*' | Where-Object { $_ -ne '' }
+          }
+        }
+        $snapPath = [System.IO.Path]::GetFullPath("{{ backup_dir | trim }}/se_relabel_original.txt")
+        if ($users.Count -gt 0) {
+          [System.IO.File]::WriteAllText($snapPath, ($users -join ','), [System.Text.Encoding]::UTF8)
+        } else {
+          [System.IO.File]::WriteAllText($snapPath, 'NO_USERS', [System.Text.Encoding]::UTF8)
+        }
+        Write-Output "SNAPSHOT_OK"
+      register: _snapshot_user_right
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Ensure backup directory exists for execute-section independence"
+          ansible.windows.win_file:
+            path: "{{ backup_dir | trim }}"
+            state: directory
+          failed_when: false
+          tags: [execute]
+
+        - name: "Initialize report variables"
+          ansible.builtin.set_fact:
+            task_01_name: "Not executed"
+            task_01_cmd: "N/A"
+            task_01_rc: -1
+            data_01: "Not collected yet"
+            status_01: "ERROR"
+            details_01: "Not evaluated"
+            task_02_name: "Not executed"
+            task_02_cmd: "N/A"
+            task_02_rc: -1
+            data_02: "Not collected yet"
+            status_02: "ERROR"
+            details_02: "Not evaluated"
+            task_03_name: "Not executed"
+            task_03_cmd: "N/A"
+            task_03_rc: -1
+            data_03: "Not collected yet"
+            status_03: "ERROR"
+            details_03: "Not evaluated"
+            task_04_name: "Not executed"
+            task_04_cmd: "N/A"
+            task_04_rc: -1
+            data_04: "Not collected yet"
+            status_04: "ERROR"
+            details_04: "Not evaluated"
+            task_05_name: "Not executed"
+            task_05_cmd: "N/A"
+            task_05_rc: -1
+            data_05: "Not collected yet"
+            status_05: "ERROR"
+            details_05: "Not evaluated"
+            task_06_name: "Not executed"
+            task_06_cmd: "N/A"
+            task_06_rc: -1
+            data_06: "Not collected yet"
+            status_06: "ERROR"
+            details_06: "Not evaluated"
+          tags: [execute]
+
+        - name: "Req step-01 - Detect Windows server role"
+          ansible.windows.win_shell: |
+            try {
+              $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
+              Write-Output $role
+              exit 0
+            } catch {
+              Write-Output "DETECTION_ERROR: $($_.Exception.Message)"
+              exit 2
+            }
+          register: _step01_output
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-01 - Set server role flags"
+          ansible.builtin.set_fact:
+            is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+            is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+            role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+          tags: [execute]
+
+        - name: "Req step-01 - Store role detection results"
+          ansible.builtin.set_fact:
+            task_01_name: "Detect Windows server role using Win32_ComputerSystem"
+            task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+            task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+            data_01: "{{ _step01_output.stdout | default('') | trim }}"
+            status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
+            details_01: "{{ 'Role detected successfully' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'Role detection failed or unexpected output' }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Set Modify an object label user right to No One on Domain Controller"
+          ansible.windows.win_user_right:
+            name: "SeRelabelPrivilege"
+            users: []
+            action: set
+          register: _step02_output
+          when: is_dc | bool
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-02 - Store DC set result"
+          ansible.builtin.set_fact:
+            task_02_name: "Set Modify an object label to No One on Domain Controller"
+            task_02_cmd: "ansible.windows.win_user_right name=SeRelabelPrivilege users=[] action=set"
+            task_02_rc: "{{ 0 if (is_dc | bool) and not (_step02_output.failed | default(false)) and not ('fail' in (_step02_output.msg | default('') | lower)) else 1 }}"
+            data_02: "{{ 'DC user right set task executed' if (is_dc | bool) else 'DC user right set task skipped (not Domain Controller)' }}"
+            status_02: "{{ 'SKIP' if not (is_dc | bool) else 'FAIL' if (_step02_output.failed | default(false)) or ('fail' in (_step02_output.msg | default('') | lower)) else 'PASS' }}"
+            details_02: "{{ 'User right set successfully' if (is_dc | bool) and not (_step02_output.failed | default(false)) and not ('fail' in (_step02_output.msg | default('') | lower)) else 'Failed to set user right' if (is_dc | bool) else 'Not applicable for non-DC host' }}"
+          tags: [execute]
+
+        - name: "Req step-03 - Set Modify an object label user right to No One on Member Server"
+          ansible.windows.win_user_right:
+            name: "SeRelabelPrivilege"
+            users: []
+            action: set
+          register: _step03_output
+          when: is_member | bool
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-03 - Store Member set result"
+          ansible.builtin.set_fact:
+            task_03_name: "Set Modify an object label to No One on Member Server"
+            task_03_cmd: "ansible.windows.win_user_right name=SeRelabelPrivilege users=[] action=set"
+            task_03_rc: "{{ 0 if (is_member | bool) and not (_step03_output.failed | default(false)) and not ('fail' in (_step03_output.msg | default('') | lower)) else 1 }}"
+            data_03: "{{ 'Member user right set task executed' if (is_member | bool) else 'Member user right set task skipped (not Member Server)' }}"
+            status_03: "{{ 'SKIP' if not (is_member | bool) else 'FAIL' if (_step03_output.failed | default(false)) or ('fail' in (_step03_output.msg | default('') | lower)) else 'PASS' }}"
+            details_03: "{{ 'User right set successfully' if (is_member | bool) and not (_step03_output.failed | default(false)) and not ('fail' in (_step03_output.msg | default('') | lower)) else 'Failed to set user right' if (is_member | bool) else 'Not applicable for non-Member host' }}"
+          tags: [execute]
+
+        - name: "Req step-04 - Verify Modify an object label user right is set to No One on Domain Controller"
+          ansible.windows.win_shell: |
+            $cfg = [System.IO.Path]::GetFullPath("{{ backup_dir | trim }}/verify_dc.cfg")
+            $out = secedit /export /cfg $cfg /areas USER_RIGHTS 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Output "VERIFY_ERROR: $out"
+              exit 2
+            }
+            $lines = [System.IO.File]::ReadAllLines($cfg, [System.Text.Encoding]::Unicode)
+            $line = $lines | Where-Object { $_ -match '^SeRelabelPrivilege\s*=' } | Select-Object -First 1
+            if ($line) {
+              $text = $line.Trim()
+              if ($text -match '^SeRelabelPrivilege\s*=\s*$') {
+                Write-Output "VERIFY_PASS: $text"
+                exit 0
+              } else {
+                Write-Output "VERIFY_FAIL: $text"
+                exit 1
+              }
+            } else {
+              Write-Output "VERIFY_PASS: no SeRelabelPrivilege line found, assuming no accounts assigned"
+              exit 0
+            }
+            Remove-Item -Path $cfg -Force -ErrorAction SilentlyContinue
+          register: _step04_output
+          when: is_dc | bool
+          changed_when: false
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-04 - Store DC verify result"
+          ansible.builtin.set_fact:
+            task_04_name: "Verify Modify an object label is set to No One on Domain Controller"
+            task_04_cmd: "secedit /export /cfg <backup_dir>/verify_dc.cfg /areas USER_RIGHTS; parse SeRelabelPrivilege line"
+            task_04_rc: "{{ _step04_output.rc | default(-1) }}"
+            data_04: "{{ _step04_output.stdout | default('') | trim }}"
+            status_04: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if (_step04_output.rc | default(-1)) not in [0,1] else 'PASS' if 'VERIFY_PASS' in (_step04_output.stdout | default('') | trim) else 'FAIL' }}"
+            details_04: "{{ 'Not applicable for non-DC host' if not (is_dc | bool) else 'Verification succeeded' if 'VERIFY_PASS' in (_step04_output.stdout | default('') | trim) else 'Verification failed' if 'VERIFY_FAIL' in (_step04_output.stdout | default('') | trim) else 'Verification error' }}"
+          tags: [execute]
+
+        - name: "Req step-05 - Verify Modify an object label user right is set to No One on Member Server"
+          ansible.windows.win_shell: |
+            $cfg = [System.IO.Path]::GetFullPath("{{ backup_dir | trim }}/verify_member.cfg")
+            $out = secedit /export /cfg $cfg /areas USER_RIGHTS 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Output "VERIFY_ERROR: $out"
+              exit 2
+            }
+            $lines = [System.IO.File]::ReadAllLines($cfg, [System.Text.Encoding]::Unicode)
+            $line = $lines | Where-Object { $_ -match '^SeRelabelPrivilege\s*=' } | Select-Object -First 1
+            if ($line) {
+              $text = $line.Trim()
+              if ($text -match '^SeRelabelPrivilege\s*=\s*$') {
+                Write-Output "VERIFY_PASS: $text"
+                exit 0
+              } else {
+                Write-Output "VERIFY_FAIL: $text"
+                exit 1
+              }
+            } else {
+              Write-Output "VERIFY_PASS: no SeRelabelPrivilege line found, assuming no accounts assigned"
+              exit 0
+            }
+            Remove-Item -Path $cfg -Force -ErrorAction SilentlyContinue
+          register: _step05_output
+          when: is_member | bool
+          changed_when: false
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-05 - Store Member verify result"
+          ansible.builtin.set_fact:
+            task_05_name: "Verify Modify an object label is set to No One on Member Server"
+            task_05_cmd: "secedit /export /cfg <backup_dir>/verify_member.cfg /areas USER_RIGHTS; parse SeRelabelPrivilege line"
+            task_05_rc: "{{ _step05_output.rc | default(-1) }}"
+            data_05: "{{ _step05_output.stdout | default('') | trim }}"
+            status_05: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if (_step05_output.rc | default(-1)) not in [0,1] else 'PASS' if 'VERIFY_PASS' in (_step05_output.stdout | default('') | trim) else 'FAIL' }}"
+            details_05: "{{ 'Not applicable for non-Member host' if not (is_member | bool) else 'Verification succeeded' if 'VERIFY_PASS' in (_step05_output.stdout | default('') | trim) else 'Verification failed' if 'VERIFY_FAIL' in (_step05_output.stdout | default('') | trim) else 'Verification error' }}"
+          tags: [execute]
+
+        - name: "Req step-06 - Compute overall remediation result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ 'ERROR' if role_detection_error | bool else 'ERROR' if not (is_dc | bool) and not (is_member | bool) else 'ERROR' if (is_dc | bool) and ('ERROR' in [status_02, status_04]) else 'FAIL' if (is_dc | bool) and ('FAIL' in [status_02, status_04]) else status_04 if (is_dc | bool) else 'ERROR' if (is_member | bool) and ('ERROR' in [status_03, status_05]) else 'FAIL' if (is_member | bool) and ('FAIL' in [status_03, status_05]) else status_05 }}"
+          tags: [execute]
+
+        - name: "Req step-06 - Store remediation result details"
+          ansible.builtin.set_fact:
+            task_06_name: "Store final remediation result in cis_result"
+            task_06_cmd: "cis_result computed from active branch verify/apply status"
+            task_06_rc: "{{ 0 if cis_result in ['PASS','FAIL','SKIP','ERROR'] else 1 }}"
+            data_06: "{{ cis_result }}"
+            status_06: "{{ cis_result }}"
+            details_06: "{{ 'Overall remediation status: ' + cis_result }}"
+          tags: [execute]
+
+        - name: "Req step-07 - Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 2.2.39"
+              - "Reference: CIS Benchmark checkpoint 2.2.39"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 04 - {{ req_04 }}:"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 05 - {{ req_05 }}:"
+              - "  Task: {{ task_05_name | default('Not recorded') }}"
+              - "  Command: {{ task_05_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_05_rc | default(-1) }}"
+              - "  Data: {{ data_05 | default('') | trim }}"
+              - "  Status: {{ status_05 | default('ERROR') | trim }}"
+              - "  Details: {{ details_05 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 06 - {{ req_06 }}:"
+              - "  Task: {{ task_06_name | default('Not recorded') }}"
+              - "  Command: {{ task_06_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_06_rc | default(-1) }}"
+              - "  Data: {{ data_06 | default('') | trim }}"
+              - "  Status: {{ status_06 | default('ERROR') | trim }}"
+              - "  Details: {{ details_06 | default('') | trim }}"
+              - ""
+              - "========================================================"
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "========================================================"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Check if backup directory exists"
+          ansible.windows.win_stat:
+            path: "{{ backup_dir | trim }}"
+          register: _restore_backup_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read original SeRelabelPrivilege snapshot"
+          ansible.windows.win_shell: |
+            $snapPath = [System.IO.Path]::GetFullPath("{{ backup_dir | trim }}/se_relabel_original.txt")
+            if (Test-Path -LiteralPath $snapPath) {
+              $val = Get-Content -LiteralPath $snapPath -Raw
+              Write-Output ($val.Trim())
+            } else {
+              Write-Output "NO_USERS"
+            }
+          register: _restore_snapshot
+          changed_when: false
+          failed_when: false
+          when: _restore_backup_check.stat.exists | default(false)
+          tags: [restore]
+
+        - name: "Restore - Parse original SeRelabelPrivilege snapshot"
+          ansible.builtin.set_fact:
+            _restore_users_list: "{{ [] if (_restore_snapshot.stdout | default('NO_USERS') | trim == 'NO_USERS') else (_restore_snapshot.stdout | default('') | trim | split(',')) }}"
+          when: _restore_backup_check.stat.exists | default(false)
+          tags: [restore]
+
+        - name: "Restore - Restore original SeRelabelPrivilege assignment"
+          ansible.windows.win_user_right:
+            name: "SeRelabelPrivilege"
+            users: "{{ _restore_users_list | default([]) }}"
+            action: set
+          when: _restore_backup_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.windows.win_file:
+            path: "{{ backup_dir | trim }}"
+            state: absent
+          when: _restore_backup_check.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
