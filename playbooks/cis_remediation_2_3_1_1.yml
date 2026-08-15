@@ -1,0 +1,215 @@
+---
+- name: "Remediate CIS checkpoint 2.3.1.1: Ensure 'Accounts: Guest account status' is set to 'Disabled' (MS only)"
+  hosts: all
+  gather_facts: false
+  vars:
+    playbook_name: "cis_2_3_1_1_remediation"
+    backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+    req_01: "Set 'Accounts: Guest account status' to 'Disabled'. Recommended module: community.windows.win_security_policy with section=Registry Values and the key name."
+    req_02: "Verify 'Accounts: Guest account status' is correctly set to 'Disabled'. Use community.windows.win_security_policy to read the value; changed_when: false."
+    req_03: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    req_04: "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format: REMEDIATION REPORT — CIS 2.3.1.1; Reference: CIS Benchmark checkpoint 2.3.1.1; then for each requirement: REQUIREMENT NN - corresponding req_NN: with fields Task, Command, Exit code, Data, Status, Details; end with OVERALL REMEDIATION: Result: cis_result."
+
+  pre_tasks:
+    - name: "Snapshot - Remove stale backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir }}"
+        state: absent
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Create backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir }}"
+        state: directory
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Save original Guest account status"
+      ansible.windows.win_shell: |
+        $cfg = [System.IO.Path]::GetFullPath("{{ backup_dir }}/secpol_snapshot.cfg")
+        secedit /export /cfg "$cfg" /areas SECURITYPOLICY | Out-Null
+        if (Test-Path -LiteralPath $cfg) {
+          $line = Select-String -Path $cfg -Pattern '^\s*EnableGuestAccount\s*=\s*(\d+)'
+          if ($line) {
+            $val = [regex]::Match($line.Line, '\d+').Value
+            Set-Content -LiteralPath "{{ backup_dir }}/EnableGuestAccount.txt" -Value $val -Encoding utf8
+            Write-Output "SNAPSHOT_OK:$val"
+            exit 0
+          } else {
+            Write-Output "KEY_NOT_FOUND"
+            exit 1
+          }
+        } else {
+          Write-Output "EXPORT_FAILED"
+          exit 2
+        }
+      register: _snap_guest
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Req step-01 - Set Accounts Guest account status to Disabled"
+          community.windows.win_security_policy:
+            section: System Access
+            key: EnableGuestAccount
+            value: "0"
+          register: _step01_output
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-02 - Verify Accounts Guest account status is Disabled"
+          ansible.windows.win_shell: |
+            $cfg = Join-Path $env:TEMP 'cis_2311_verify.cfg'
+            Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
+            $out = secedit /export /cfg "$cfg" /areas SECURITYPOLICY 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $cfg)) {
+              Write-Output "VERIFY_ERROR: $out"
+              if (Test-Path -LiteralPath $cfg) { Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue }
+              exit 2
+            }
+            $raw = [System.IO.File]::ReadAllText($cfg, [System.Text.Encoding]::Unicode)
+            Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
+            $m = [regex]::Match($raw, '(?im)^[ \t]*EnableGuestAccount[ \t]*=[ \t]*(\d+)[ \t]*\r?$')
+            if ($m.Success) {
+              $val = $m.Groups[1].Value
+              Write-Output "EnableGuestAccount=$val"
+              if ($val -eq "0") {
+                Write-Output "VERIFY_PASS"
+                exit 0
+              } else {
+                Write-Output "VERIFY_FAIL"
+                exit 1
+              }
+            } else {
+              Write-Output "VERIFY_FAIL: EnableGuestAccount not found"
+              exit 1
+            }
+          register: _step02_output
+          changed_when: false
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-01 - Store requirement 01 details"
+          ansible.builtin.set_fact:
+            task_01_name: "Set Accounts Guest account status to Disabled"
+            task_01_cmd: "community.windows.win_security_policy: section=System Access key=EnableGuestAccount value=0"
+            task_01_rc: "{{ _step01_output.rc | default('N/A') }}"
+            data_01: "{{ _step02_output.stdout | default('') | trim }}"
+            status_01: "{{ 'PASS' if (_step02_output.rc | default(-1) == 0 and 'VERIFY_PASS' in (_step02_output.stdout | default(''))) else 'FAIL' if (_step02_output.rc | default(-1) == 1) else 'ERROR' }}"
+            details_01: "{{ 'Guest account status set to Disabled' if (_step02_output.rc | default(-1) == 0 and 'VERIFY_PASS' in (_step02_output.stdout | default(''))) else 'Guest account status is not Disabled or could not be verified' }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Store requirement 02 details"
+          ansible.builtin.set_fact:
+            task_02_name: "Verify Accounts Guest account status is Disabled"
+            task_02_cmd: "win_shell: secedit /export parse EnableGuestAccount"
+            task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+            data_02: "{{ _step02_output.stdout | default('') | trim }}"
+            status_02: "{{ 'PASS' if (_step02_output.rc | default(-1) == 0 and 'VERIFY_PASS' in (_step02_output.stdout | default(''))) else 'FAIL' if (_step02_output.rc | default(-1) == 1) else 'ERROR' }}"
+            details_02: "{{ 'Guest account status is Disabled' if (_step02_output.rc | default(-1) == 0 and 'VERIFY_PASS' in (_step02_output.stdout | default(''))) else 'Guest account status is not Disabled' if (_step02_output.rc | default(-1) == 1) else 'Could not verify Guest account status' }}"
+          tags: [execute]
+
+        - name: "Req step-03 - Store final remediation result in cis_result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ status_02 | default('ERROR') | trim }}"
+            task_03_name: "Store final remediation result in cis_result"
+            task_03_cmd: "set_fact: cis_result={{ status_02 | default('ERROR') | trim }}"
+            task_03_rc: "{{ 0 if (status_02 | default('ERROR') | trim == 'PASS') else -1 }}"
+            data_03: "{{ status_02 | default('ERROR') | trim }}"
+            status_03: "{{ status_02 | default('ERROR') | trim }}"
+            details_03: "{{ 'Overall remediation result set to ' ~ (status_02 | default('ERROR') | trim) }}"
+            task_04_name: "Generate remediation report"
+            task_04_cmd: "debug: msg remediation report"
+            task_04_rc: "{{ 0 }}"
+            data_04: "{{ 'Report generated' }}"
+            status_04: "{{ 'PASS' }}"
+            details_04: "{{ '' }}"
+          tags: [execute]
+
+        - name: "Req step-04 - Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 2.3.1.1"
+              - "Reference: CIS Benchmark checkpoint 2.3.1.1"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 04 - {{ req_04 }}:"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
+              - ""
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Check if original Guest account status backup exists"
+          ansible.windows.win_stat:
+            path: "{{ backup_dir }}/EnableGuestAccount.txt"
+          register: _restore_marker
+          failed_when: false
+          changed_when: false
+          tags: [restore]
+
+        - name: "Restore - Read original Guest account status from backup"
+          ansible.windows.win_shell: |
+            $f = "{{ backup_dir }}/EnableGuestAccount.txt"
+            if (Test-Path -LiteralPath $f) {
+              (Get-Content -LiteralPath $f -Raw).Trim()
+              exit 0
+            } else {
+              Write-Output "NO_BACKUP"
+              exit 0
+            }
+          register: _restore_original
+          failed_when: false
+          changed_when: false
+          when: _restore_marker.stat.exists | default(false)
+          tags: [restore]
+
+        - name: "Restore - Apply original Guest account status"
+          community.windows.win_security_policy:
+            section: System Access
+            key: EnableGuestAccount
+            value: "{{ _restore_original.stdout | default('') | trim }}"
+          when: _restore_marker.stat.exists | default(false)
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.windows.win_file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          changed_when: false
+          tags: [restore]
