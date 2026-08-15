@@ -1,0 +1,256 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_9_1_1.yml
+
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir | trim }}"
+    state: directory
+  tags: [snapshot]
+- name: "Snapshot - Save current Domain firewall state"
+  ansible.windows.win_shell: |
+    $fw = Get-NetFirewallProfile -Name Domain
+    $state = if ($fw.Enabled) { 'enabled' } else { 'disabled' }
+    Set-Content -Path "{{ backup_dir | trim }}/domain_firewall_state.txt" -Value $state -Force
+    Write-Output $state
+  register: _snap_fw_state
+  failed_when: false
+  changed_when: false
+  tags: [snapshot]
+
+- block:
+  - name: "Req step-01 - Detect Windows server role"
+    ansible.windows.win_shell: |
+      $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
+      Write-Output $role
+    register: _step01_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set server role flags"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+      role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
+    tags: [execute]
+
+  - name: "Req step-01 - Store detection result"
+    ansible.builtin.set_fact:
+      task_01_name: "Detect Windows server role using Win32_ComputerSystem"
+      task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+      task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+      data_01: "{{ _step01_output.stdout | default('') | trim }}"
+      status_01: "{{ 'ERROR' if role_detection_error | bool else 'PASS' }}"
+      details_01: "{{ ('Role detected: ' ~ (_step01_output.stdout | default('') | trim)) if not (role_detection_error | bool) else 'Role detection failed or unsupported role' }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Enable Domain firewall on Domain Controller"
+    ansible.windows.win_firewall:
+      state: enabled
+      profiles: [Domain]
+    register: _step02_output
+    when: is_dc | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-03 - Enable Domain firewall on Member Server"
+    ansible.windows.win_firewall:
+      state: enabled
+      profiles: [Domain]
+    register: _step03_output
+    when: is_member | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Verify Domain firewall state on Domain Controller"
+    ansible.windows.win_shell: |
+      $fw = Get-NetFirewallProfile -Name Domain
+      Write-Output $($fw.Enabled)
+    register: _step04_output
+    when: is_dc | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Verify Domain firewall state on Member Server"
+    ansible.windows.win_shell: |
+      $fw = Get-NetFirewallProfile -Name Domain
+      Write-Output $($fw.Enabled)
+    register: _step05_output
+    when: is_member | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Store DC verify status"
+    ansible.builtin.set_fact:
+      status_04: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if ((_step04_output.stdout | default('') | trim) == '') else 'PASS' if ((_step04_output.stdout | default('') | trim | lower) in ['true', '1', 'enabled']) else 'FAIL' }}"
+      data_04: "{{ _step04_output.stdout | default('') | trim }}"
+      task_04_name: "Verify Domain firewall state on Domain Controller"
+      task_04_cmd: "$fw = Get-NetFirewallProfile -Name Domain; Write-Output $($fw.Enabled)"
+      task_04_rc: "{{ _step04_output.rc | default(-1) }}"
+      details_04: "{{ 'Verify completed' if ((_step04_output.stdout | default('') | trim) != '') else 'No output' }}"
+    tags: [execute]
+
+  - name: "Req step-05 - Store Member verify status"
+    ansible.builtin.set_fact:
+      status_05: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if ((_step05_output.stdout | default('') | trim) == '') else 'PASS' if ((_step05_output.stdout | default('') | trim | lower) in ['true', '1', 'enabled']) else 'FAIL' }}"
+      data_05: "{{ _step05_output.stdout | default('') | trim }}"
+      task_05_name: "Verify Domain firewall state on Member Server"
+      task_05_cmd: "$fw = Get-NetFirewallProfile -Name Domain; Write-Output $($fw.Enabled)"
+      task_05_rc: "{{ _step05_output.rc | default(-1) }}"
+      details_05: "{{ 'Verify completed' if ((_step05_output.stdout | default('') | trim) != '') else 'No output' }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Store DC apply status"
+    ansible.builtin.set_fact:
+      status_02: "{{ status_04 }}"
+      task_02_name: "Enable Domain firewall on Domain Controller"
+      task_02_cmd: "ansible.windows.win_firewall: state=enabled profiles=[Domain]"
+      task_02_rc: "{{ 0 if is_dc | bool else -1 }}"
+      data_02: "{{ 'Applied' if is_dc | bool else 'Not applicable' }}"
+      details_02: "{{ 'Apply status derived from verify' if is_dc | bool else 'DC branch not applicable' }}"
+    tags: [execute]
+
+  - name: "Req step-03 - Store Member apply status"
+    ansible.builtin.set_fact:
+      status_03: "{{ status_05 }}"
+      task_03_name: "Enable Domain firewall on Member Server"
+      task_03_cmd: "ansible.windows.win_firewall: state=enabled profiles=[Domain]"
+      task_03_rc: "{{ 0 if is_member | bool else -1 }}"
+      data_03: "{{ 'Applied' if is_member | bool else 'Not applicable' }}"
+      details_03: "{{ 'Apply status derived from verify' if is_member | bool else 'Member branch not applicable' }}"
+    tags: [execute]
+
+  - name: "Req step-06 - Aggregate final remediation result"
+    ansible.builtin.set_fact:
+      cis_result: >-
+        {{ 'ERROR' if role_detection_error | bool else
+           'ERROR' if not (is_dc | bool) and not (is_member | bool) else
+           'FAIL' if (is_dc | bool) and ((status_04 | default('ERROR') | trim) in ['FAIL', 'ERROR']) else
+           'PASS' if (is_dc | bool) and ((status_04 | default('') | trim) == 'PASS') else
+           'FAIL' if (is_member | bool) and ((status_05 | default('ERROR') | trim) in ['FAIL', 'ERROR']) else
+           'PASS' if (is_member | bool) and ((status_05 | default('') | trim) == 'PASS') else
+           'ERROR' }}
+    tags: [execute]
+
+  - name: "Req step-06 - Store aggregation status"
+    ansible.builtin.set_fact:
+      status_06: "{{ 'PASS' if cis_result | default('') != '' else 'ERROR' }}"
+      data_06: "{{ cis_result }}"
+      task_06_name: "Store final remediation result in cis_result"
+      task_06_cmd: "set_fact: cis_result"
+      task_06_rc: 0
+      details_06: "Aggregation completed"
+    tags: [execute]
+
+  - name: "Req step-07 - Store report generation status"
+    ansible.builtin.set_fact:
+      status_07: "PASS"
+      data_07: ""
+      task_07_name: "Generate remediation report"
+      task_07_cmd: "debug msg"
+      task_07_rc: 0
+      details_07: "Report generated"
+    tags: [execute]
+
+  - name: "Req step-07 - Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 9.1.1"
+      - "Reference: CIS Benchmark checkpoint 9.1.1"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: {{ task_01_name | default('Not recorded') }}"
+      - "  Command: {{ task_01_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_01_rc | default(-1) }}"
+      - "  Data: {{ data_01 | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: {{ task_02_name | default('Not recorded') }}"
+      - "  Command: {{ task_02_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_02_rc | default(-1) }}"
+      - "  Data: {{ data_02 | default('') | trim }}"
+      - "  Status: {{ status_02 | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: {{ task_03_name | default('Not recorded') }}"
+      - "  Command: {{ task_03_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_03_rc | default(-1) }}"
+      - "  Data: {{ data_03 | default('') | trim }}"
+      - "  Status: {{ status_03 | default('ERROR') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: {{ task_04_name | default('Not recorded') }}"
+      - "  Command: {{ task_04_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_04_rc | default(-1) }}"
+      - "  Data: {{ data_04 | default('') | trim }}"
+      - "  Status: {{ status_04 | default('ERROR') | trim }}"
+      - "  Details: {{ details_04 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: {{ task_05_name | default('Not recorded') }}"
+      - "  Command: {{ task_05_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_05_rc | default(-1) }}"
+      - "  Data: {{ data_05 | default('') | trim }}"
+      - "  Status: {{ status_05 | default('ERROR') | trim }}"
+      - "  Details: {{ details_05 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: {{ task_06_name | default('Not recorded') }}"
+      - "  Command: {{ task_06_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_06_rc | default(-1) }}"
+      - "  Data: {{ data_06 | default('') | trim }}"
+      - "  Status: {{ status_06 | default('ERROR') | trim }}"
+      - "  Details: {{ details_06 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 07 - {{ req_07 }}:"
+      - "  Task: {{ task_07_name | default('Not recorded') }}"
+      - "  Command: {{ task_07_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_07_rc | default(-1) }}"
+      - "  Data: {{ data_07 | default('') | trim }}"
+      - "  Status: {{ status_07 | default('ERROR') | trim }}"
+      - "  Details: {{ details_07 | default('') | trim }}"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Restore original Domain firewall state"
+    ansible.windows.win_shell: |
+      $f = "{{ backup_dir | trim }}/domain_firewall_state.txt"
+      if (Test-Path -LiteralPath $f) {
+        $state = (Get-Content -LiteralPath $f -Raw).Trim()
+        if ($state -eq 'enabled' -or $state -eq 'disabled') {
+          $profile = Get-NetFirewallProfile -Name Domain
+          $desired = ($state -eq 'enabled')
+          if ($profile.Enabled -ne $desired) {
+            Set-NetFirewallProfile -Name Domain -Enabled $desired
+            Write-Output "RESTORED:$state"
+          } else {
+            Write-Output "NO_CHANGE"
+          }
+        } else {
+          Write-Output "UNKNOWN_STATE:$state"
+        }
+      } else {
+        Write-Output "NO_BACKUP"
+      }
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir | trim }}"
+      state: absent
+    failed_when: false
+    tags: [restore]
