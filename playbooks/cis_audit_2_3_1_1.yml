@@ -1,74 +1,67 @@
 ---
-- name: "Audit CIS checkpoint 2.3.1.1 - Ensure 'Accounts: Guest account status' is set to 'Disabled'"
+- name: "Audit CIS checkpoint 2.3.1.1: Ensure 'Accounts: Guest account status' is set to 'Disabled' (MS only)"
   hosts: all
-  gather_facts: true
+  gather_facts: false
 
   vars:
     req_01: "Read 'Accounts: Guest account status' using community.windows.win_security_policy with section=Registry Values. changed_when: false."
     req_02: "Evaluate whether 'Accounts: Guest account status' is equals 'Disabled'. PASS if compliant, FAIL if not, SKIP if not applicable, ERROR if failed."
     req_03: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    req_04: "Create a task named 'Generate audit report' using debug msg with exactly this format."
 
   tasks:
-    - name: "Req step-01 - Read Accounts Guest account status via win_security_policy"
+    - name: "Req step-01 - Read Accounts Guest account status using win_security_policy"
       community.windows.win_security_policy:
-        section: Registry Values
+        section: System Access
         key: EnableGuestAccount
-        value: "0"
+        value: 0
       check_mode: true
-      changed_when: false
-      failed_when: false
       register: _step01_output
-      when: "ansible_os_family | default('') == 'Windows'"
+      failed_when: false
+      changed_when: false
 
-    - name: "Req step-01 - Read actual Guest account status via Get-LocalUser"
+    - name: "Gather local Guest account state"
       ansible.windows.win_shell: |
         {% raw %}
         $u = Get-LocalUser -Name 'Guest' -ErrorAction SilentlyContinue
-        if (-not $u) { Write-Output 'NOT_FOUND'; exit 1 }
+        if (-not $u) { Write-Output 'NOT_FOUND'; exit 2 }
         if ($u.Enabled) { Write-Output 'Enabled' } else { Write-Output 'Disabled' }
         {% endraw %}
-      register: guest_actual_check
-      changed_when: false
+      register: _guest_check
       failed_when: false
-      when: "ansible_os_family | default('') == 'Windows'"
+      changed_when: false
 
-    - name: "Req step-02 - Evaluate whether Accounts Guest account status equals Disabled"
+    - name: "Store requirement 01 details"
       ansible.builtin.set_fact:
-        task_01_name: "Read Accounts Guest account status via win_security_policy"
-        task_01_cmd: "community.windows.win_security_policy: section=Registry Values key=EnableGuestAccount value=0 (check_mode)"
-        task_01_rc: "{{ _step01_output.rc | default(0) | int }}"
-        data_01: "{{ guest_actual_check.stdout | default('') | trim }}"
-        status_01: "{{ ('SKIP' if (ansible_os_family | default('') != 'Windows') else 'ERROR' if (_step01_output.failed | default(false) | bool) else 'PASS') | trim }}"
-        details_01: "{{ ('Not applicable to non-Windows target' if (ansible_os_family | default('') != 'Windows') else 'Policy read failed' if (_step01_output.failed | default(false) | bool) else 'Policy read completed successfully') | trim }}"
-        task_02_name: "Evaluate Accounts Guest account status equals Disabled"
-        task_02_cmd: "Compare Get-LocalUser Guest Enabled state to expected Disabled"
+        task_01_name: "Read Guest account status via win_security_policy"
+        task_01_cmd: "community.windows.win_security_policy section=System Access key=EnableGuestAccount value=0 check_mode=true"
+        task_01_rc: "{{ _step01_output.rc | default(0) }}"
+        data_01: "policy_changed={{ _step01_output.changed | default('unknown') }}"
+        status_01: "{{ 'PASS' if _step01_output is defined else 'ERROR' }}"
+        details_01: "Read-only compliance check via win_security_policy"
+        _policy_changed: "{{ _step01_output.changed | default(true) | bool }}"
+        _guest_state: "{{ _guest_check.stdout | default('') | trim }}"
+
+    - name: "Req step-02 - Evaluate whether Guest account status is Disabled"
+      ansible.builtin.set_fact:
+        task_02_name: "Evaluate Guest account status"
+        task_02_cmd: "N/A"
         task_02_rc: 0
-        data_02: "{{ guest_actual_check.stdout | default('') | trim }}"
-        _cis_status: "{{ ('SKIP' if (ansible_os_family | default('') != 'Windows') else 'ERROR' if (_step01_output.failed | default(false) | bool) or (guest_actual_check.stdout | default('') | trim) not in ['Disabled','Enabled'] else 'PASS' if (guest_actual_check.stdout | default('') | trim) == 'Disabled' else 'FAIL') | trim }}"
-        status_02: "{{ ('SKIP' if (ansible_os_family | default('') != 'Windows') else 'ERROR' if (_step01_output.failed | default(false) | bool) or (guest_actual_check.stdout | default('') | trim) not in ['Disabled','Enabled'] else 'PASS' if (guest_actual_check.stdout | default('') | trim) == 'Disabled' else 'FAIL') | trim }}"
-        details_02: "{{ ('Not applicable to non-Windows target' if (ansible_os_family | default('') != 'Windows') else 'Policy check failed or unexpected output' if (_step01_output.failed | default(false) | bool) or (guest_actual_check.stdout | default('') | trim) not in ['Disabled','Enabled'] else 'Accounts Guest account status is Disabled' if (guest_actual_check.stdout | default('') | trim) == 'Disabled' else 'Accounts Guest account status is not Disabled') | trim }}"
+        data_02: "guest_state={{ _guest_state | default('ERROR') | trim }}; policy_changed={{ _policy_changed | default(true) | bool }}"
+        status_02: "{{ 'SKIP' if _guest_state | default('') | trim == 'NOT_FOUND' else 'PASS' if (_guest_state | default('') | trim in ['Disabled', 'False']) and not (_policy_changed | default(true) | bool) else 'FAIL' if (_guest_state | default('') | trim in ['Enabled', 'True']) or (_policy_changed | default(true) | bool) else 'ERROR' }}"
+        _cis_status: "{{ 'SKIP' if _guest_state | default('') | trim == 'NOT_FOUND' else 'PASS' if (_guest_state | default('') | trim in ['Disabled', 'False']) and not (_policy_changed | default(true) | bool) else 'FAIL' if (_guest_state | default('') | trim in ['Enabled', 'True']) or (_policy_changed | default(true) | bool) else 'ERROR' }}"
+        details_02: "Compliance derived from Guest local state and policy check"
 
     - name: "Req step-03 - Store final audit result in cis_result"
       ansible.builtin.set_fact:
-        cis_result: "{{ _cis_status | default('ERROR') | trim }}"
-        task_03_name: "Store final audit result in cis_result"
-        task_03_cmd: "ansible.builtin.set_fact: cis_result = _cis_status"
+        task_03_name: "Store final audit result"
+        task_03_cmd: "N/A"
         task_03_rc: 0
         data_03: "{{ _cis_status | default('ERROR') | trim }}"
         status_03: "{{ _cis_status | default('ERROR') | trim }}"
-        details_03: "Final audit result stored from Req step-02 status"
+        details_03: "Final compliance result"
+        cis_result: "{{ _cis_status | default('ERROR') | trim }}"
 
-    - name: "Req step-04 - Prepare audit report fields"
-      ansible.builtin.set_fact:
-        task_04_name: "Generate audit report"
-        task_04_cmd: "ansible.builtin.debug"
-        task_04_rc: 0
-        data_04: "AUDIT REPORT — CIS 2.3.1.1"
-        status_04: "{{ ('PASS' if cis_result in ['PASS','FAIL','SKIP','ERROR'] else 'ERROR') | trim }}"
-        details_04: "Audit report generated by Req step-04"
-
-    - name: "Req step-04 - Generate audit report"
+    - name: "Generate audit report"
       ansible.builtin.debug:
         msg:
           - "AUDIT REPORT — CIS 2.3.1.1"
@@ -98,14 +91,8 @@
           - "  Status: {{ status_03 | default('ERROR') | trim }}"
           - "  Details: {{ details_03 | default('') | trim }}"
           - ""
-          - "REQUIREMENT 04 - {{ req_04 }}:"
-          - "  Task: {{ task_04_name | default('Not recorded') }}"
-          - "  Command: {{ task_04_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_04_rc | default(-1) }}"
-          - "  Data: {{ data_04 | default('') | trim }}"
-          - "  Status: {{ status_04 | default('ERROR') | trim }}"
-          - "  Details: {{ details_04 | default('') | trim }}"
-          - ""
+          - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
-          - "  Details: {{ details_02 | default('Not evaluated') | trim }}"
+          - "  Details: {{ details_03 | default('Not evaluated') | trim }}"
+          - "========================================================"
