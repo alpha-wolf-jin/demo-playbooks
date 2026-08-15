@@ -1,0 +1,201 @@
+---
+- name: "Audit CIS checkpoint 2.2.39: Ensure 'Modify an object label' is set to 'No One'"
+  hosts: all
+  gather_facts: false
+  vars:
+    req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
+    req_02: "If Domain Controller: Read current value of 'Modify an object label'. Use read-only PowerShell to query the current value; changed_when: false; failed_when: rc not in [0, 1]."
+    req_03: "If Member Server: Read current value of 'Modify an object label'. Use read-only PowerShell to query the current value; changed_when: false; failed_when: rc not in [0, 1]."
+    req_04: "If Domain Controller: Evaluate whether 'Modify an object label' is equals 'No One'. PASS if compliant, FAIL if not, ERROR if the check failed."
+    req_05: "If Member Server: Evaluate whether 'Modify an object label' is equals 'No One'. PASS if compliant, FAIL if not, ERROR if the check failed."
+    req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  tasks:
+    - name: "Initialize audit data variables"
+      ansible.builtin.set_fact:
+        is_dc: false
+        is_member: false
+        role_detection_error: true
+        status_02: "SKIP"
+        status_03: "SKIP"
+        status_04: "SKIP"
+        status_05: "SKIP"
+
+    - name: "Req step-01 - Detect Windows server role using Win32_ComputerSystem DomainRole property"
+      ansible.windows.win_shell: |
+        try {
+          $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
+          Write-Output $role
+          exit 0
+        } catch {
+          Write-Output "DETECTION_ERROR: $($_.Exception.Message)"
+          exit 2
+        }
+      register: _step01_output
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-01 - Set server role flags and detection result"
+      ansible.builtin.set_fact:
+        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+        role_detection_error: "{{ (_step01_output.rc | default(-1) | int) != 0 or (_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5'] }}"
+        status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) | int) == 0 and (_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5'] else 'ERROR' }}"
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        details_01: "{{ ('Detected DomainRole ' ~ (_step01_output.stdout | default('') | trim)) if (_step01_output.rc | default(-1) | int) == 0 and (_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5'] else 'Role detection failed' }}"
+        task_01_name: "Detect Windows server role"
+        task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+        task_01_rc: "{{ _step01_output.rc | default(-1) | int }}"
+
+    - name: "Req step-02 - Read current Modify an object label value for Domain Controller"
+      ansible.windows.win_shell: |
+        $tmp = Join-Path $env:TEMP 'secpol_2_2_39_dc.cfg'
+        $err = secedit /export /cfg "$tmp" /areas USER_RIGHTS /quiet 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Output "ERROR: secedit export failed: $err"
+          exit 2
+        }
+        $line = Get-Content $tmp | Select-String 'SeRelabelPrivilege' | Select-Object -First 1
+        if ($line) {
+          $val = ($line.Line -split '=',2)[1].Trim()
+          if ([string]::IsNullOrEmpty($val)) {
+            Write-Output 'No One'
+          } else {
+            Write-Output $val
+          }
+        } else {
+          Write-Output 'No One'
+        }
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+      register: _step02_output
+      changed_when: false
+      failed_when: false
+      when: is_dc | bool
+
+    - name: "Req step-03 - Read current Modify an object label value for Member Server"
+      ansible.windows.win_shell: |
+        $tmp = Join-Path $env:TEMP 'secpol_2_2_39_member.cfg'
+        $err = secedit /export /cfg "$tmp" /areas USER_RIGHTS /quiet 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Output "ERROR: secedit export failed: $err"
+          exit 2
+        }
+        $line = Get-Content $tmp | Select-String 'SeRelabelPrivilege' | Select-Object -First 1
+        if ($line) {
+          $val = ($line.Line -split '=',2)[1].Trim()
+          if ([string]::IsNullOrEmpty($val)) {
+            Write-Output 'No One'
+          } else {
+            Write-Output $val
+          }
+        } else {
+          Write-Output 'No One'
+        }
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+      register: _step03_output
+      changed_when: false
+      failed_when: false
+      when: is_member | bool
+
+    - name: "Req step-04 - Evaluate Domain Controller Modify an object label compliance and store details"
+      ansible.builtin.set_fact:
+        status_02: "{{ 'PASS' if (_step02_output.rc | default(-1) | int) in [0,1] and (_step02_output.stdout | default('') | trim) != '' else 'ERROR' }}"
+        data_02: "{{ _step02_output.stdout | default('') | trim }}"
+        details_02: "{{ ('Read value: ' ~ (_step02_output.stdout | default('') | trim)) if (_step02_output.rc | default(-1) | int) in [0,1] and (_step02_output.stdout | default('') | trim) != '' else 'Failed to read policy value' }}"
+        task_02_name: "Read Modify an object label for Domain Controller"
+        task_02_cmd: "secedit /export /cfg $env:TEMP/secpol_2_2_39_dc.cfg /areas USER_RIGHTS; parse SeRelabelPrivilege"
+        task_02_rc: "{{ _step02_output.rc | default(-1) | int }}"
+        status_04: "{{ 'ERROR' if (_step02_output.rc | default(-1) | int) not in [0,1] or (_step02_output.stdout | default('') | trim) == '' else 'PASS' if (_step02_output.stdout | default('') | trim) == 'No One' else 'FAIL' }}"
+        data_04: "{{ _step02_output.stdout | default('') | trim }}"
+        details_04: "{{ ('Policy value read as ' ~ (_step02_output.stdout | default('') | trim)) if (_step02_output.rc | default(-1) | int) in [0,1] and (_step02_output.stdout | default('') | trim) != '' else 'Failed to read policy value' }}"
+        task_04_name: "Evaluate DC compliance"
+        task_04_cmd: "set_fact status_04 from _step02_output"
+        task_04_rc: 0
+        _cis_status: "{{ 'ERROR' if (_step02_output.rc | default(-1) | int) not in [0,1] or (_step02_output.stdout | default('') | trim) == '' else 'PASS' if (_step02_output.stdout | default('') | trim) == 'No One' else 'FAIL' }}"
+      when: is_dc | bool
+
+    - name: "Req step-05 - Evaluate Member Server Modify an object label compliance and store details"
+      ansible.builtin.set_fact:
+        status_03: "{{ 'PASS' if (_step03_output.rc | default(-1) | int) in [0,1] and (_step03_output.stdout | default('') | trim) != '' else 'ERROR' }}"
+        data_03: "{{ _step03_output.stdout | default('') | trim }}"
+        details_03: "{{ ('Read value: ' ~ (_step03_output.stdout | default('') | trim)) if (_step03_output.rc | default(-1) | int) in [0,1] and (_step03_output.stdout | default('') | trim) != '' else 'Failed to read policy value' }}"
+        task_03_name: "Read Modify an object label for Member Server"
+        task_03_cmd: "secedit /export /cfg $env:TEMP/secpol_2_2_39_member.cfg /areas USER_RIGHTS; parse SeRelabelPrivilege"
+        task_03_rc: "{{ _step03_output.rc | default(-1) | int }}"
+        status_05: "{{ 'ERROR' if (_step03_output.rc | default(-1) | int) not in [0,1] or (_step03_output.stdout | default('') | trim) == '' else 'PASS' if (_step03_output.stdout | default('') | trim) == 'No One' else 'FAIL' }}"
+        data_05: "{{ _step03_output.stdout | default('') | trim }}"
+        details_05: "{{ ('Policy value read as ' ~ (_step03_output.stdout | default('') | trim)) if (_step03_output.rc | default(-1) | int) in [0,1] and (_step03_output.stdout | default('') | trim) != '' else 'Failed to read policy value' }}"
+        task_05_name: "Evaluate Member Server compliance"
+        task_05_cmd: "set_fact status_05 from _step03_output"
+        task_05_rc: 0
+        _cis_status: "{{ 'ERROR' if (_step03_output.rc | default(-1) | int) not in [0,1] or (_step03_output.stdout | default('') | trim) == '' else 'PASS' if (_step03_output.stdout | default('') | trim) == 'No One' else 'FAIL' }}"
+      when: is_member | bool
+
+    - name: "Req step-06 - Set cis_result fact based on active branch verification status"
+      ansible.builtin.set_fact:
+        cis_result: "{{ 'ERROR' if (role_detection_error | bool) else (_cis_status | default('SKIP') | trim) }}"
+        status_06: "{{ 'ERROR' if (role_detection_error | bool) else (_cis_status | default('SKIP') | trim) }}"
+        data_06: "{{ 'ERROR' if (role_detection_error | bool) else (_cis_status | default('SKIP') | trim) }}"
+        details_06: "Overall compliance result for CIS 2.2.39"
+        task_06_name: "Store final audit result in cis_result"
+        task_06_cmd: "set_fact cis_result"
+        task_06_rc: 0
+
+    - name: "Generate audit report"
+      ansible.builtin.debug:
+        msg:
+          - "AUDIT REPORT — CIS 2.2.39"
+          - "Reference: CIS Benchmark checkpoint 2.2.39"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(0) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('SKIP') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 05 - {{ req_05 }}:"
+          - "  Task: {{ task_05_name | default('Not recorded') }}"
+          - "  Command: {{ task_05_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_05_rc | default(0) }}"
+          - "  Data: {{ data_05 | default('') | trim }}"
+          - "  Status: {{ status_05 | default('SKIP') | trim }}"
+          - "  Details: {{ details_05 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 06 - {{ req_06 }}:"
+          - "  Task: {{ task_06_name | default('Not recorded') }}"
+          - "  Command: {{ task_06_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_06_rc | default(0) }}"
+          - "  Data: {{ data_06 | default('') | trim }}"
+          - "  Status: {{ status_06 | default('ERROR') | trim }}"
+          - "  Details: {{ details_06 | default('') | trim }}"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "========================================================"
