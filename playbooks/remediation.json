@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "1.1.3",
-  "title": "Ensure 'Minimum password age' is set to '1 or more day(s)'",
+  "checkpoint_id": "2.2.39",
+  "title": "Ensure 'Modify an object label' is set to 'No One'",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
@@ -32,7 +32,7 @@
     },
     "result_aggregation": "PASS if the active branch verify step confirms the change took effect; SKIP if a branch step is not applicable to this host (the other role); FAIL if any active branch apply-or-verify step fails; ERROR if role detection fails or neither branch ran. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Remediate CIS checkpoint 1.1.3: Ensure 'Minimum password age' is set to '1 or more day(s)'",
+  "objective": "Remediate CIS checkpoint 2.2.39: Ensure 'Modify an object label' is set to 'No One'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -55,14 +55,6 @@
         "default": null,
         "unit": null,
         "description": "WinRM user (Windows Administrator login)"
-      },
-      {
-        "name": "minimum_password_age",
-        "type": "integer",
-        "required": false,
-        "default": 1,
-        "unit": "days",
-        "description": "Minimum password age in days (CIS requires 1 or more)"
       }
     ]
   },
@@ -97,9 +89,9 @@
     {
       "id": "step-02",
       "type": "action",
-      "name": "If Domain Controller: Set 'Minimum password age' to '1 or more day(s)' via Active Directory cmdlets…",
-      "function": "2. If Domain Controller: Set 'Minimum password age' to '1 or more day(s)' via Active Directory cmdlets (Set-ADDefaultDomainPasswordPolicy) or Group Policy. Do NOT use community.windows.win_security_policy on DC — use AD/GPO cmdlets.",
-      "module": "ansible.windows.win_shell",
+      "name": "If Domain Controller: Set 'Modify an object label' to 'No One'. Recommended module: ansible.windows.win_user_right. Use…",
+      "function": "2. If Domain Controller: Set 'Modify an object label' to 'No One'. Recommended module: ansible.windows.win_user_right. Use name (the Se* privilege constant) and users (empty list [] for No One, or named accounts). action: set. Do NOT use secedit — secedit /areas SECURITYPOLICY does not manage User Rights Assignment.",
+      "module": "ansible.windows.win_user_right",
       "input": {
         "source": "step-01",
         "fields": [
@@ -116,9 +108,9 @@
     {
       "id": "step-03",
       "type": "action",
-      "name": "If Member Server: Set 'Minimum password age' to '1 or more day(s)'. Recommended module…",
-      "function": "3. If Member Server: Set 'Minimum password age' to '1 or more day(s)'. Recommended module: community.windows.win_security_policy with section=System Access and the key name. Do NOT use raw secedit CLI — community.windows.win_security_policy handles secedit internally and avoids encoding / path issues.",
-      "module": "community.windows.win_security_policy",
+      "name": "If Member Server: Set 'Modify an object label' to 'No One'. Recommended module: ansible.windows.win_user_right…",
+      "function": "3. If Member Server: Set 'Modify an object label' to 'No One'. Recommended module: ansible.windows.win_user_right (identical to DC branch). Do NOT use secedit for user rights.",
+      "module": "ansible.windows.win_user_right",
       "input": {
         "source": "step-02",
         "fields": [
@@ -134,10 +126,10 @@
     },
     {
       "id": "step-04",
-      "type": "action",
-      "name": "If Domain Controller: Verify 'Minimum password age' is correctly set to '1 or more day(s)'. Use…",
-      "function": "4. If Domain Controller: Verify 'Minimum password age' is correctly set to '1 or more day(s)'. Use community.windows.win_security_policy to read the value; changed_when: false.",
-      "module": "community.windows.win_security_policy",
+      "type": "collect",
+      "name": "If Domain Controller: Verify 'Modify an object label' is correctly set to 'No One'. Use read-only PowerShell to query…",
+      "function": "4. If Domain Controller: Verify 'Modify an object label' is correctly set to 'No One'. Use read-only PowerShell to query the value; changed_when: false.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-03",
         "fields": [
@@ -153,10 +145,10 @@
     },
     {
       "id": "step-05",
-      "type": "action",
-      "name": "If Member Server: Verify 'Minimum password age' is correctly set to '1 or more day(s)'. Use…",
-      "function": "5. If Member Server: Verify 'Minimum password age' is correctly set to '1 or more day(s)'. Use community.windows.win_security_policy to read the value; changed_when: false.",
-      "module": "community.windows.win_security_policy",
+      "type": "collect",
+      "name": "If Member Server: Verify 'Modify an object label' is correctly set to 'No One'. Use read-only PowerShell to query the…",
+      "function": "5. If Member Server: Verify 'Modify an object label' is correctly set to 'No One'. Use read-only PowerShell to query the value; changed_when: false.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-04",
         "fields": [
@@ -192,7 +184,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.3\nReference: CIS Benchmark checkpoint 1.1.3\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 2.2.39\nReference: CIS Benchmark checkpoint 2.2.39\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -218,8 +210,8 @@
       "id": "step-09",
       "type": "abort",
       "name": "Handle task failure",
-      "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.3 audit failed",
+      "function": "Reached via rescue block on any unexpected task failure. Abort the playbook immediately and alert the caller with the error message.",
+      "error_message": "ERROR: CIS 2.2.39 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -231,7 +223,13 @@
       "steps": [
         "step-01",
         "step-02",
-        "step-03",
+        "step-03"
+      ]
+    },
+    {
+      "name": "Data Collection",
+      "description": "Execute read-only commands on the target host.",
+      "steps": [
         "step-04",
         "step-05"
       ]
@@ -260,23 +258,24 @@
     }
   ],
   "compliance_constraints": [
-    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole. DC branch: use Set-ADDefaultDomainPasswordPolicy or GPO cmdlets. Member Server branch: use community.windows.win_security_policy with the appropriate section and key — do NOT use raw secedit CLI, community.windows.win_security_policy handles it internally. Both branches MUST end with a VERIFY step.",
+    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole. For BOTH roles: use ansible.windows.win_user_right to set the user right (action: set, users: [] for No One or a list of account names). Do NOT use secedit — secedit /areas SECURITYPOLICY does NOT manage User Rights Assignment. Both branches MUST end with a VERIFY step.",
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
-    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages."
+    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages.",
+    "On any remediation failure, abort the playbook immediately and alert the caller with an ERROR status. Do not continue with partial remediation."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 1 or more day(s):\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Password Policy\\Minimum password age",
+  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to No\nOne:\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Local\nPolicies\\User Rights Assignment\\Modify an object label",
   "example_output": "",
-  "filename": "cis_remediation_1_1_3.yml",
+  "filename": "cis_remediation_2_2_39.yml",
   "output_dir": "./cis_win2022_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-15T09:39:34",
-    "revision": 3,
-    "approved_at": "2026-08-15T09:39:49",
+    "drafted_at": "2026-08-15T09:44:45",
+    "revision": 2,
+    "approved_at": "2026-08-15T09:47:09",
     "saved_by": null
   }
 }
