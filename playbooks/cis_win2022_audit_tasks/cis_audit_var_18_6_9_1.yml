@@ -6,7 +6,7 @@ req_03: |-
 req_04: "If Domain Controller: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly configured. Check ALL 4 registry values from the loop results: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. PASS only if ALL loop items have .exists == true AND .value == 0 (REG_DWORD). FAIL if ANY value is absent (NOT_CONFIGURED) OR has .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the loop results are structured dicts."
 req_05: "If Member Server: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly configured. Check ALL 4 registry values from the loop results: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. PASS only if ALL loop items have .exists == true AND .value == 0 (REG_DWORD). FAIL if ANY value is absent (NOT_CONFIGURED) OR has .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the loop results are structured dicts."
 req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-lltd_path: |-
+lltd_reg_path: |-
   HKLM:\SOFTWARE\Policies\Microsoft\Windows\LLTD
 lltd_value_names:
   - AllowLLTDIOOnDomain
