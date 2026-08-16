@@ -1,0 +1,160 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_17_1_1.yml
+
+- name: "Req step-01 - Detect Windows server role"
+  ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+  register: _step01_output
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-01 - Set role flags and requirement 01 details"
+  ansible.builtin.set_fact:
+    is_dc: "{{ ((_step01_output.stdout | default('') | trim) in ['4', '5']) | bool }}"
+    is_member: "{{ ((_step01_output.stdout | default('') | trim) in ['1', '2', '3']) | bool }}"
+    task_01_name: "Detect Windows server role"
+    task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+    data_01: "{{ _step01_output.stdout | default('') | trim }}"
+    status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
+    details_01: "{{ 'Detected DomainRole ' ~ (_step01_output.stdout | default('') | trim) if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'Detection failed or DomainRole unrecognized' }}"
+
+- name: "Req step-02 - Read Validation audit policy on Domain Controller"
+  ansible.windows.win_shell: 'auditpol /get /subcategory:"{0cce923f-69ae-11d9-bed3-505054503030}"'
+  register: _step02_output
+  changed_when: false
+  failed_when: false
+  when: is_dc | bool
+
+- name: "Req step-03 - Read Validation audit policy on Member Server"
+  ansible.windows.win_shell: 'auditpol /get /subcategory:"{0cce923f-69ae-11d9-bed3-505054503030}"'
+  register: _step03_output
+  changed_when: false
+  failed_when: false
+  when: is_member | bool
+
+- name: "Req step-04 - Evaluate Domain Controller Validation audit policy and store details"
+  ansible.builtin.set_fact:
+    task_02_name: "Read Validation audit policy on Domain Controller"
+    task_02_cmd: 'auditpol /get /subcategory:"{0cce923f-69ae-11d9-bed3-505054503030}"'
+    task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+    data_02: "{{ _step02_output.stdout | default('') | trim }}"
+    status_02: "{{ 'PASS' if (_step02_output.rc | default(-1)) == 0 else 'ERROR' }}"
+    details_02: "{{ 'Read completed' if (_step02_output.rc | default(-1)) == 0 else 'auditpol command failed' }}"
+    task_04_name: "Evaluate Domain Controller Validation audit policy"
+    task_04_cmd: "Evaluate if auditpol output contains 'Success and Failure'"
+    task_04_rc: "{{ _step02_output.rc | default(-1) }}"
+    data_04: "{{ _step02_output.stdout | default('') | trim }}"
+    status_04: >-
+      {{ 'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') or ('Error 0x00000057' in (_step02_output.stderr | default('')))
+         else 'PASS' if 'Success and Failure' in (_step02_output.stdout | default(''))
+         else 'FAIL' }}
+    _cis_status: >-
+      {{ 'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') or ('Error 0x00000057' in (_step02_output.stderr | default('')))
+         else 'PASS' if 'Success and Failure' in (_step02_output.stdout | default(''))
+         else 'FAIL' }}
+    details_04: >-
+      {{ 'auditpol command failed or returned empty output' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') or ('Error 0x00000057' in (_step02_output.stderr | default('')))
+         else 'Validation audit policy is Success and Failure' if 'Success and Failure' in (_step02_output.stdout | default(''))
+         else 'Validation audit policy is not Success and Failure' }}
+  when: is_dc | bool
+
+- name: "Req step-05 - Evaluate Member Server Validation audit policy and store details"
+  ansible.builtin.set_fact:
+    task_03_name: "Read Validation audit policy on Member Server"
+    task_03_cmd: 'auditpol /get /subcategory:"{0cce923f-69ae-11d9-bed3-505054503030}"'
+    task_03_rc: "{{ _step03_output.rc | default(-1) }}"
+    data_03: "{{ _step03_output.stdout | default('') | trim }}"
+    status_03: "{{ 'PASS' if (_step03_output.rc | default(-1)) == 0 else 'ERROR' }}"
+    details_03: "{{ 'Read completed' if (_step03_output.rc | default(-1)) == 0 else 'auditpol command failed' }}"
+    task_05_name: "Evaluate Member Server Validation audit policy"
+    task_05_cmd: "Evaluate if auditpol output contains 'Success and Failure'"
+    task_05_rc: "{{ _step03_output.rc | default(-1) }}"
+    data_05: "{{ _step03_output.stdout | default('') | trim }}"
+    status_05: >-
+      {{ 'ERROR' if ((_step03_output.rc | default(-1)) != 0) or ((_step03_output.stdout | default('') | trim) == '') or ('Error 0x00000057' in (_step03_output.stderr | default('')))
+         else 'PASS' if 'Success and Failure' in (_step03_output.stdout | default(''))
+         else 'FAIL' }}
+    _cis_status: >-
+      {{ 'ERROR' if ((_step03_output.rc | default(-1)) != 0) or ((_step03_output.stdout | default('') | trim) == '') or ('Error 0x00000057' in (_step03_output.stderr | default('')))
+         else 'PASS' if 'Success and Failure' in (_step03_output.stdout | default(''))
+         else 'FAIL' }}
+    details_05: >-
+      {{ 'auditpol command failed or returned empty output' if ((_step03_output.rc | default(-1)) != 0) or ((_step03_output.stdout | default('') | trim) == '') or ('Error 0x00000057' in (_step03_output.stderr | default('')))
+         else 'Validation audit policy is Success and Failure' if 'Success and Failure' in (_step03_output.stdout | default(''))
+         else 'Validation audit policy is not Success and Failure' }}
+  when: is_member | bool
+
+- name: "Req step-06 - Set final audit result cis_result"
+  ansible.builtin.set_fact:
+    cis_result: >-
+      {{ 'ERROR' if (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) else
+         (_cis_status | default('ERROR')) }}
+
+- name: "Req step-06 - Store final audit result details"
+  ansible.builtin.set_fact:
+    task_06_name: "Store final audit result in cis_result"
+    task_06_cmd: "set_fact: cis_result from active branch verification status"
+    task_06_rc: 0
+    data_06: "{{ cis_result | default('ERROR') | trim }}"
+    status_06: "{{ cis_result | default('ERROR') | trim }}"
+    details_06: "Overall compliance result computed from active branch"
+
+- name: "Req step-07 - Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 17.1.1"
+    - "Reference: CIS Benchmark checkpoint 17.1.1"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: {{ task_01_name | default('Not recorded') }}"
+    - "  Command: {{ task_01_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_01_rc | default(-1) }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: {{ task_02_name | default('Not recorded') }}"
+    - "  Command: {{ task_02_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_02_rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('SKIP') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: {{ task_03_name | default('Not recorded') }}"
+    - "  Command: {{ task_03_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_03_rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('SKIP') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: {{ task_04_name | default('Not recorded') }}"
+    - "  Command: {{ task_04_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_04_rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('SKIP') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: {{ task_05_name | default('Not recorded') }}"
+    - "  Command: {{ task_05_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_05_rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
+    - "  Status: {{ status_05 | default('SKIP') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 06 - {{ req_06 }}:"
+    - "  Task: {{ task_06_name | default('Not recorded') }}"
+    - "  Command: {{ task_06_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_06_rc | default(-1) }}"
+    - "  Data: {{ data_06 | default('') | trim }}"
+    - "  Status: {{ status_06 | default('ERROR') | trim }}"
+    - "  Details: {{ details_06 | default('') | trim }}"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "========================================================"
