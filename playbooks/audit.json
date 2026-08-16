@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "18.5.3",
-  "title": "Ensure 'MSS: (DisableIPSourceRouting) IP source routing protection level' is set to 'Enabled: Highest protection, source routing is completely disabled'",
+  "checkpoint_id": "18.6.9.1",
+  "title": "Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "winrm",
   "connection_risk": false,
-  "profile_applicability": "•  Level 1 - Domain Controller\n•  Level 1 - Member Server",
+  "profile_applicability": "•  Level 2 - Domain Controller\n•  Level 2 - Member Server",
   "branching": {
     "type": "windows_server_role",
     "detection_step": "step-01",
@@ -32,7 +32,7 @@
     },
     "result_aggregation": "PASS if the active branch verify step passes; SKIP if a branch is not applicable to this host (the other role); FAIL if the active branch check fails; ERROR if role detection fails or DomainRole value is unrecognised. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Audit CIS checkpoint 18.5.3: Ensure 'MSS: (DisableIPSourceRouting) IP source routing protection level' is set to 'Enabled: Highest protection, source routing is completely disabled'",
+  "objective": "Audit CIS checkpoint 18.6.9.1: Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -88,9 +88,9 @@
     },
     {
       "id": "step-02",
-      "type": "action",
-      "name": "If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key…",
-      "function": "2. If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' name='DisableIPSourceRouting'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.",
+      "type": "collect",
+      "name": "If Domain Controller: Use ansible.windows.win_reg_stat in a loop to read ALL 4 CIS-required GP registry values under…",
+      "function": "2. If Domain Controller: Use ansible.windows.win_reg_stat in a loop to read ALL 4 CIS-required GP registry values under path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LLTD'. Loop over value names: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. Each result has structured data — .exists (bool) and .value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty. changed_when: false; failed_when: false.",
       "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-01",
@@ -107,9 +107,9 @@
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key…",
-      "function": "3. If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' name='DisableIPSourceRouting'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.",
+      "type": "collect",
+      "name": "If Member Server: Use ansible.windows.win_reg_stat in a loop to read ALL 4 CIS-required GP registry values under…",
+      "function": "3. If Member Server: Use ansible.windows.win_reg_stat in a loop to read ALL 4 CIS-required GP registry values under path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LLTD'. Loop over value names: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. Each result has structured data — .exists (bool) and .value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty. changed_when: false; failed_when: false.",
       "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-01",
@@ -127,8 +127,8 @@
     {
       "id": "step-04",
       "type": "transform",
-      "name": "If Domain Controller: Evaluate whether 'Ensure 'MSS: (DisableIPSourceRouting) IP source routing protection level' is…",
-      "function": "4. If Domain Controller: Evaluate whether 'Ensure 'MSS: (DisableIPSourceRouting) IP source routing protection level' is set to 'Enabled: Highest protection, source routing is completely disabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 2 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 2. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict.",
+      "name": "If Domain Controller: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly…",
+      "function": "4. If Domain Controller: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly configured. Check ALL 4 registry values from the loop results: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. PASS only if ALL loop items have .exists == true AND .value == 0 (REG_DWORD). FAIL if ANY value is absent (NOT_CONFIGURED) OR has .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the loop results are structured dicts.",
       "input": {
         "source": "step-02",
         "fields": [
@@ -136,7 +136,7 @@
         ]
       },
       "computations": {
-        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==2 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=2; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
+        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==0 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=0; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
       },
       "stores": [
         "_cis_status"
@@ -147,8 +147,8 @@
     {
       "id": "step-05",
       "type": "transform",
-      "name": "If Member Server: Evaluate whether 'Ensure 'MSS: (DisableIPSourceRouting) IP source routing protection level' is set to…",
-      "function": "5. If Member Server: Evaluate whether 'Ensure 'MSS: (DisableIPSourceRouting) IP source routing protection level' is set to 'Enabled: Highest protection, source routing is completely disabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 2 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 2. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict.",
+      "name": "If Member Server: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly…",
+      "function": "5. If Member Server: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly configured. Check ALL 4 registry values from the loop results: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. PASS only if ALL loop items have .exists == true AND .value == 0 (REG_DWORD). FAIL if ANY value is absent (NOT_CONFIGURED) OR has .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the loop results are structured dicts.",
       "input": {
         "source": "step-03",
         "fields": [
@@ -156,7 +156,7 @@
         ]
       },
       "computations": {
-        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==2 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=2; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
+        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==0 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=0; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
       },
       "stores": [
         "_cis_status"
@@ -186,7 +186,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 18.5.3\nReference: CIS Benchmark checkpoint 18.5.3\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 18.6.9.1\nReference: CIS Benchmark checkpoint 18.6.9.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -213,7 +213,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 18.5.3 audit failed",
+      "error_message": "ERROR: CIS 18.6.9.1 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -223,7 +223,13 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-01",
+        "step-01"
+      ]
+    },
+    {
+      "name": "Data Collection",
+      "description": "Execute read-only commands on the target host.",
+      "steps": [
         "step-02",
         "step-03"
       ]
@@ -262,16 +268,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed. This group policy setting is backed by the following registry location with a\nREG_DWORD value of 2.\nHKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters:DisableIPSourceRoutin g",
+  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed. This group policy setting is backed by the following registry locations with a\nREG_DWORD value of 0.\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LLTD:AllowLLTDIOOnDoma in\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LLTD:AllowLLTDIOOnPubl icNet\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LLTD:EnableLLTDIO\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LLTD:ProhibitLLTDIOOnP rivateNet",
   "example_output": "",
-  "filename": "cis_audit_18_5_3.yml",
+  "filename": "cis_audit_18_6_9_1.yml",
   "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-16T16:48:58",
-    "revision": 2,
-    "approved_at": "2026-08-16T16:49:02",
+    "drafted_at": "2026-08-16T18:10:06",
+    "revision": 3,
+    "approved_at": "2026-08-16T18:10:11",
     "saved_by": null
   }
 }
