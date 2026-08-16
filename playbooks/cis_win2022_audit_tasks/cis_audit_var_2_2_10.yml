@@ -1,0 +1,5 @@
+req_01: "Check if Remote Desktop Services (TermService) is installed and running. Use read-only PowerShell to query the service status; changed_when: false; failed_when: rc not in [0, 1]."
+req_02: "Evaluate whether Remote Desktop Services is installed and running. If not installed or not running, set _cis_status to SKIP and jump to step-06. Otherwise continue to step-03."
+req_03: "Read current value of 'Allow log on through Remote Desktop Services'. Use read-only PowerShell to query the current value; changed_when: false; failed_when: rc not in [0, 1]."
+req_04: "Evaluate whether 'Allow log on through Remote Desktop Services' is equals 'Administrators, Remote Desktop Users'. PASS if compliant, FAIL if not, SKIP if not applicable, ERROR if failed."
+req_05: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
