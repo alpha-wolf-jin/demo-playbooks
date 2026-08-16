@@ -1,0 +1,302 @@
+---
+- name: "Remediate CIS checkpoint 17.1.1: Ensure 'Audit Credential Validation' is set to 'Success and Failure'"
+  hosts: all
+  gather_facts: false
+  vars:
+    playbook_name: "cis_17_1_1_remediation"
+    backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+    req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
+    req_02: "If Domain Controller: Configure 'Validation' to 'Success and Failure'. Recommended module: community.windows.win_audit_policy_system with the appropriate subcategory and value."
+    req_03: "If Member Server: Configure 'Validation' to 'Success and Failure'. Recommended module: community.windows.win_audit_policy_system with the appropriate subcategory and value."
+    req_04: "If Domain Controller: Verify 'Validation' is correctly set to 'Success and Failure'. Use community.windows.win_audit_policy_system to read the value; changed_when: false."
+    req_05: "If Member Server: Verify 'Validation' is correctly set to 'Success and Failure'. Use community.windows.win_audit_policy_system to read the value; changed_when: false."
+    req_06: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir | trim }}"
+        state: directory
+      tags: [snapshot]
+
+    - name: "Snapshot - Capture current Credential Validation audit policy"
+      ansible.windows.win_shell: |
+        $out = auditpol /get /subcategory:"Credential Validation" 2>&1 | Out-String
+        Set-Content -Path "{{ backup_dir }}/credential_validation_before.txt" -Value $out -Force
+        Write-Output $out
+      register: _snapshot_output
+      changed_when: false
+      failed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Initialize data variables"
+          ansible.builtin.set_fact:
+            data_01: ""
+            status_01: "ERROR"
+            details_01: "Not evaluated"
+            task_01_name: "Not executed"
+            task_01_cmd: "N/A"
+            task_01_rc: -1
+            data_02: ""
+            status_02: "ERROR"
+            details_02: "Not evaluated"
+            task_02_name: "Not executed"
+            task_02_cmd: "N/A"
+            task_02_rc: -1
+            data_03: ""
+            status_03: "ERROR"
+            details_03: "Not evaluated"
+            task_03_name: "Not executed"
+            task_03_cmd: "N/A"
+            task_03_rc: -1
+            data_04: ""
+            status_04: "ERROR"
+            details_04: "Not evaluated"
+            task_04_name: "Not executed"
+            task_04_cmd: "N/A"
+            task_04_rc: -1
+            data_05: ""
+            status_05: "ERROR"
+            details_05: "Not evaluated"
+            task_05_name: "Not executed"
+            task_05_cmd: "N/A"
+            task_05_rc: -1
+            data_06: ""
+            status_06: "ERROR"
+            details_06: "Not evaluated"
+            task_06_name: "Not executed"
+            task_06_cmd: "N/A"
+            task_06_rc: -1
+          tags: [execute]
+
+        - name: "Req step-01 - Detect Windows server role"
+          ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+          register: _step01_output
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-01 - Set role flags"
+          ansible.builtin.set_fact:
+            is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+            is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+            role_detection_error: "{{ ((_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5'])) }}"
+          tags: [execute]
+
+        - name: "Req step-01 - Store detection details"
+          ansible.builtin.set_fact:
+            task_01_name: "Detect Windows server role"
+            task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+            task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+            data_01: "{{ _step01_output.stdout | default('') | trim }}"
+            status_01: "{{ ('ERROR' if role_detection_error | bool else 'PASS') | trim }}"
+            details_01: "{{ ('Role detected' if not (role_detection_error | bool) else 'Role detection failed') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Configure Audit Credential Validation on Domain Controller"
+          community.windows.win_audit_policy_system:
+            subcategory: Credential Validation
+            audit_type:
+              - success
+              - failure
+          register: _step02_output
+          when: is_dc | bool
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-02 - Store DC apply details"
+          ansible.builtin.set_fact:
+            task_02_name: "Configure Audit Credential Validation on Domain Controller"
+            task_02_cmd: "community.windows.win_audit_policy_system: subcategory=Credential Validation audit_type=success,failure"
+            task_02_rc: "{{ 0 if _step02_output.current_audit_policy is defined else 1 }}"
+            data_02: "{{ (_step02_output.current_audit_policy | default({}) | string) | trim }}"
+            status_02: "{{ ('SKIP' if not (is_dc | bool) else 'PASS' if (_step02_output.current_audit_policy is defined and ('success' in (_step02_output.current_audit_policy | string | lower)) and ('failure' in (_step02_output.current_audit_policy | string | lower))) else 'FAIL') | trim }}"
+            details_02: "{{ ('Not applicable to this host' if not (is_dc | bool) else 'Apply failed' if (_step02_output.current_audit_policy is not defined or not (('success' in (_step02_output.current_audit_policy | string | lower)) and ('failure' in (_step02_output.current_audit_policy | string | lower)))) else 'Apply succeeded') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-03 - Configure Audit Credential Validation on Member Server"
+          community.windows.win_audit_policy_system:
+            subcategory: Credential Validation
+            audit_type:
+              - success
+              - failure
+          register: _step03_output
+          when: is_member | bool
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-03 - Store Member apply details"
+          ansible.builtin.set_fact:
+            task_03_name: "Configure Audit Credential Validation on Member Server"
+            task_03_cmd: "community.windows.win_audit_policy_system: subcategory=Credential Validation audit_type=success,failure"
+            task_03_rc: "{{ 0 if _step03_output.current_audit_policy is defined else 1 }}"
+            data_03: "{{ (_step03_output.current_audit_policy | default({}) | string) | trim }}"
+            status_03: "{{ ('SKIP' if not (is_member | bool) else 'PASS' if (_step03_output.current_audit_policy is defined and ('success' in (_step03_output.current_audit_policy | string | lower)) and ('failure' in (_step03_output.current_audit_policy | string | lower))) else 'FAIL') | trim }}"
+            details_03: "{{ ('Not applicable to this host' if not (is_member | bool) else 'Apply failed' if (_step03_output.current_audit_policy is not defined or not (('success' in (_step03_output.current_audit_policy | string | lower)) and ('failure' in (_step03_output.current_audit_policy | string | lower)))) else 'Apply succeeded') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-04 - Verify Audit Credential Validation on Domain Controller"
+          community.windows.win_audit_policy_system:
+            subcategory: Credential Validation
+            audit_type:
+              - success
+              - failure
+          check_mode: true
+          register: _step04_output
+          when: is_dc | bool
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-04 - Store DC verify details"
+          ansible.builtin.set_fact:
+            task_04_name: "Verify Audit Credential Validation on Domain Controller"
+            task_04_cmd: "community.windows.win_audit_policy_system: subcategory=Credential Validation audit_type=success,failure (check_mode)"
+            task_04_rc: "{{ 0 if _step04_output.current_audit_policy is defined else 1 }}"
+            data_04: "{{ (_step04_output.current_audit_policy | default({}) | string) | trim }}"
+            status_04: "{{ ('SKIP' if not (is_dc | bool) else 'ERROR' if (_step04_output.current_audit_policy is not defined) else 'PASS' if (('success' in (_step04_output.current_audit_policy | string | lower)) and ('failure' in (_step04_output.current_audit_policy | string | lower))) else 'FAIL') | trim }}"
+            details_04: "{{ ('Not applicable to this host' if not (is_dc | bool) else 'Verification error' if (_step04_output.current_audit_policy is not defined) else 'Verification succeeded' if (('success' in (_step04_output.current_audit_policy | string | lower)) and ('failure' in (_step04_output.current_audit_policy | string | lower))) else 'Verification failed') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-05 - Verify Audit Credential Validation on Member Server"
+          community.windows.win_audit_policy_system:
+            subcategory: Credential Validation
+            audit_type:
+              - success
+              - failure
+          check_mode: true
+          register: _step05_output
+          when: is_member | bool
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-05 - Store Member verify details"
+          ansible.builtin.set_fact:
+            task_05_name: "Verify Audit Credential Validation on Member Server"
+            task_05_cmd: "community.windows.win_audit_policy_system: subcategory=Credential Validation audit_type=success,failure (check_mode)"
+            task_05_rc: "{{ 0 if _step05_output.current_audit_policy is defined else 1 }}"
+            data_05: "{{ (_step05_output.current_audit_policy | default({}) | string) | trim }}"
+            status_05: "{{ ('SKIP' if not (is_member | bool) else 'ERROR' if (_step05_output.current_audit_policy is not defined) else 'PASS' if (('success' in (_step05_output.current_audit_policy | string | lower)) and ('failure' in (_step05_output.current_audit_policy | string | lower))) else 'FAIL') | trim }}"
+            details_05: "{{ ('Not applicable to this host' if not (is_member | bool) else 'Verification error' if (_step05_output.current_audit_policy is not defined) else 'Verification succeeded' if (('success' in (_step05_output.current_audit_policy | string | lower)) and ('failure' in (_step05_output.current_audit_policy | string | lower))) else 'Verification failed') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-06 - Compute overall remediation status"
+          ansible.builtin.set_fact:
+            status_06: "{{ ('ERROR' if role_detection_error | bool else 'PASS' if ((is_dc | bool) and (status_02 | trim == 'PASS') and (status_04 | trim == 'PASS')) or ((is_member | bool) and (status_03 | trim == 'PASS') and (status_05 | trim == 'PASS')) else 'FAIL' if ((is_dc | bool) and ((status_02 | trim != 'PASS') or (status_04 | trim != 'PASS'))) or ((is_member | bool) and ((status_03 | trim != 'PASS') or (status_05 | trim != 'PASS'))) else 'ERROR') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-06 - Store final remediation result cis_result"
+          ansible.builtin.set_fact:
+            task_06_name: "Set cis_result fact"
+            task_06_cmd: "set_fact"
+            task_06_rc: 0
+            data_06: "{{ status_06 | trim }}"
+            details_06: "{{ ('Active branch verify confirmed Success and Failure' if status_06 | trim == 'PASS' else 'Active branch failed' if status_06 | trim == 'FAIL' else 'Active branch skipped' if status_06 | trim == 'SKIP' else 'Role detection error') | trim }}"
+            cis_result: "{{ status_06 | trim }}"
+          tags: [execute]
+
+        - name: "Req step-07 - Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 17.1.1"
+              - "Reference: CIS Benchmark checkpoint 17.1.1"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 04 - {{ req_04 }}:"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 05 - {{ req_05 }}:"
+              - "  Task: {{ task_05_name | default('Not recorded') }}"
+              - "  Command: {{ task_05_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_05_rc | default(-1) }}"
+              - "  Data: {{ data_05 | default('') | trim }}"
+              - "  Status: {{ status_05 | default('ERROR') | trim }}"
+              - "  Details: {{ details_05 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 06 - {{ req_06 }}:"
+              - "  Task: {{ task_06_name | default('Not recorded') }}"
+              - "  Command: {{ task_06_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_06_rc | default(-1) }}"
+              - "  Data: {{ data_06 | default('') | trim }}"
+              - "  Status: {{ status_06 | default('ERROR') | trim }}"
+              - "  Details: {{ details_06 | default('') | trim }}"
+              - ""
+              - "========================================================"
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "========================================================"
+          tags: [execute]
+
+      always:
+        # RESTORE DISABLED: The restore tasks below must not revert the
+        # CIS-compliant audit policy after remediation. They are retained as
+        # lifecycle infrastructure but are disabled with when: false.
+        - name: "Restore - Check if backup exists"
+          ansible.windows.win_stat:
+            path: "{{ backup_dir }}/credential_validation_before.txt"
+          register: _restore_check
+          when: false
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Reapply original Credential Validation audit policy"
+          ansible.windows.win_shell: |
+            $f = "{{ backup_dir }}/credential_validation_before.txt"
+            if (Test-Path -LiteralPath $f) {
+              $c = Get-Content -LiteralPath $f -Raw
+              if ($c -match 'Success and Failure') {
+                auditpol /set /subcategory:"Credential Validation" /success:enable /failure:enable | Out-Null
+              } elseif ($c -match 'No Auditing') {
+                auditpol /set /subcategory:"Credential Validation" /success:disable /failure:disable | Out-Null
+              } elseif ($c -match 'Success') {
+                auditpol /set /subcategory:"Credential Validation" /success:enable /failure:disable | Out-Null
+              } elseif ($c -match 'Failure') {
+                auditpol /set /subcategory:"Credential Validation" /success:disable /failure:enable | Out-Null
+              }
+              Write-Output $c
+            } else {
+              Write-Output "No backup found"
+            }
+          when: false
+          failed_when: false
+          changed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.windows.win_file:
+            path: "{{ backup_dir | trim }}"
+            state: absent
+          when: false
+          failed_when: false
+          tags: [restore]
