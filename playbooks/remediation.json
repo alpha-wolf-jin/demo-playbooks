@@ -89,8 +89,8 @@
     {
       "id": "step-02",
       "type": "action",
-      "name": "If Domain Controller: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept…",
-      "function": "2. If Domain Controller: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept client connections' to 'Disabled'. The path is under HKLM:\\SOFTWARE\\Policies\\... — consult the CIS benchmark reference or ADMX template for the exact path and value name. type=dword. Do NOT use win_shell or PowerShell Set-ItemProperty — win_regedit is idempotent and correct for GP registry settings.",
+      "name": "If Domain Controller: Set the CIS-required GP registry key using ansible.windows.win_regedit…",
+      "function": "2. If Domain Controller: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers', name='RegisterSpoolerRemoteRpcEndPoint', data=2, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.",
       "module": "ansible.windows.win_regedit",
       "input": {
         "source": "step-01",
@@ -108,8 +108,8 @@
     {
       "id": "step-03",
       "type": "action",
-      "name": "If Member Server: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept…",
-      "function": "3. If Member Server: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept client connections' to 'Disabled'. The path is under HKLM:\\SOFTWARE\\Policies\\... — consult the CIS benchmark reference or ADMX template for the exact path and value name. type=dword. Do NOT use win_shell or PowerShell Set-ItemProperty — win_regedit is idempotent and correct for GP registry settings.",
+      "name": "If Member Server: Set the CIS-required GP registry key using ansible.windows.win_regedit…",
+      "function": "3. If Member Server: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers', name='RegisterSpoolerRemoteRpcEndPoint', data=2, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.",
       "module": "ansible.windows.win_regedit",
       "input": {
         "source": "step-01",
@@ -127,8 +127,8 @@
     {
       "id": "step-04",
       "type": "collect",
-      "name": "If Domain Controller: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module…",
-      "function": "4. If Domain Controller: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module returns structured data — check result.exists==true AND result.value equals the required DWORD. Do NOT check .stdout or .rc. changed_when: false.",
+      "name": "If Domain Controller: Verify the GP registry key: use ansible.windows.win_reg_stat…",
+      "function": "4. If Domain Controller: Verify the GP registry key: use ansible.windows.win_reg_stat path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers' name='RegisterSpoolerRemoteRpcEndPoint'. The module returns structured data — .exists (bool) and .value (integer for REG_DWORD). PASS if .exists == true AND .value == 2. FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 2. Do NOT check .stdout or .rc — win_reg_stat returns structured data. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.",
       "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-02",
@@ -146,8 +146,8 @@
     {
       "id": "step-05",
       "type": "collect",
-      "name": "If Member Server: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module…",
-      "function": "5. If Member Server: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module returns structured data — check result.exists==true AND result.value equals the required DWORD. Do NOT check .stdout or .rc. changed_when: false.",
+      "name": "If Member Server: Verify the GP registry key: use ansible.windows.win_reg_stat…",
+      "function": "5. If Member Server: Verify the GP registry key: use ansible.windows.win_reg_stat path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers' name='RegisterSpoolerRemoteRpcEndPoint'. The module returns structured data — .exists (bool) and .value (integer for REG_DWORD). PASS if .exists == true AND .value == 2. FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 2. Do NOT check .stdout or .rc — win_reg_stat returns structured data. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.",
       "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-03",
@@ -272,9 +272,9 @@
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-16T19:27:56",
-    "revision": 1,
-    "approved_at": "2026-08-16T19:27:59",
+    "drafted_at": "2026-08-16T21:35:33",
+    "revision": 2,
+    "approved_at": "2026-08-16T21:35:37",
     "saved_by": null
   }
 }
