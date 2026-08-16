@@ -1,0 +1,322 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_18_9_20_1_1.yml
+
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir | trim }}"
+    state: directory
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Check if registry value exists"
+  ansible.windows.win_reg_stat:
+    path: |-
+      HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+    name: 'DisableWebPnPDownload'
+  register: _snap_reg
+  failed_when: false
+  changed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Backup registry value if exists"
+  ansible.windows.win_copy:
+    content: "{{ _snap_reg.value | default('') }}"
+    dest: "{{ backup_dir | trim }}/DisableWebPnPDownload.present"
+  when: _snap_reg.exists | default(false)
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Mark registry value absent if missing"
+  ansible.windows.win_copy:
+    content: "absent"
+    dest: "{{ backup_dir | trim }}/DisableWebPnPDownload.absent"
+  when: not (_snap_reg.exists | default(false))
+  failed_when: false
+  tags: [snapshot]
+
+- block:
+  - name: "Initialize report variables"
+    ansible.builtin.set_fact:
+      status_01: "ERROR"
+      details_01: "Not evaluated"
+      data_01: "Not collected"
+      task_01_name: "Not executed"
+      task_01_cmd: "N/A"
+      task_01_rc: -1
+      status_02: "SKIP"
+      details_02: "Not applicable to Domain Controller branch"
+      data_02: "Not collected"
+      task_02_name: "Not executed"
+      task_02_cmd: "N/A"
+      task_02_rc: -1
+      status_03: "SKIP"
+      details_03: "Not applicable to Member Server branch"
+      data_03: "Not collected"
+      task_03_name: "Not executed"
+      task_03_cmd: "N/A"
+      task_03_rc: -1
+      status_04: "SKIP"
+      details_04: "Not applicable to Domain Controller branch"
+      data_04: "Not collected"
+      task_04_name: "Not executed"
+      task_04_cmd: "N/A"
+      task_04_rc: -1
+      status_05: "SKIP"
+      details_05: "Not applicable to Member Server branch"
+      data_05: "Not collected"
+      task_05_name: "Not executed"
+      task_05_cmd: "N/A"
+      task_05_rc: -1
+      status_06: "ERROR"
+      details_06: "Not evaluated"
+      data_06: "Not collected"
+      task_06_name: "Not executed"
+      task_06_cmd: "N/A"
+      task_06_rc: -1
+    tags: [execute]
+
+  - name: "Req step-01 - Detect Windows server role using Win32_ComputerSystem DomainRole"
+    ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    register: _step01_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set role flags and detection report data"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
+      role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+      task_01_name: "Detect Windows server role using Win32_ComputerSystem DomainRole"
+      task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+      task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+      data_01: "{{ _step01_output.stdout | default('') | trim }}"
+      status_01: "{{ ('PASS' if (_step01_output.rc | default(-1) == 0) and ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR') | trim }}"
+      details_01: "{{ ('Detected server role successfully' if (_step01_output.rc | default(-1) == 0) and ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'Failed to detect server role') | trim }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set DisableWebPnPDownload registry DWORD to 1 for Domain Controller"
+    ansible.windows.win_regedit:
+      path: |-
+        HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+      name: 'DisableWebPnPDownload'
+      data: 1
+      type: dword
+    register: _step02_output
+    failed_when: false
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-02 - Store Domain Controller apply report data"
+    ansible.builtin.set_fact:
+      task_02_name: "Set DisableWebPnPDownload registry DWORD to 1 for Domain Controller"
+      task_02_cmd: |-
+        ansible.windows.win_regedit path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload' data=1 type=dword
+      task_02_rc: "{{ 0 if _step02_output is defined and not (_step02_output.failed | default(false)) else -1 }}"
+      data_02: "{{ 'Applied' if _step02_output is defined and not (_step02_output.failed | default(false)) else 'Not applied' }}"
+      status_02: "{{ ('PASS' if _step02_output is defined and not (_step02_output.failed | default(false)) else 'ERROR') | trim }}"
+      details_02: "{{ ('Registry DWORD set' if _step02_output is defined and not (_step02_output.failed | default(false)) else 'Registry apply failed') | trim }}"
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-03 - Set DisableWebPnPDownload registry DWORD to 1 for Member Server"
+    ansible.windows.win_regedit:
+      path: |-
+        HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+      name: 'DisableWebPnPDownload'
+      data: 1
+      type: dword
+    register: _step03_output
+    failed_when: false
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-03 - Store Member Server apply report data"
+    ansible.builtin.set_fact:
+      task_03_name: "Set DisableWebPnPDownload registry DWORD to 1 for Member Server"
+      task_03_cmd: |-
+        ansible.windows.win_regedit path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload' data=1 type=dword
+      task_03_rc: "{{ 0 if _step03_output is defined and not (_step03_output.failed | default(false)) else -1 }}"
+      data_03: "{{ 'Applied' if _step03_output is defined and not (_step03_output.failed | default(false)) else 'Not applied' }}"
+      status_03: "{{ ('PASS' if _step03_output is defined and not (_step03_output.failed | default(false)) else 'ERROR') | trim }}"
+      details_03: "{{ ('Registry DWORD set' if _step03_output is defined and not (_step03_output.failed | default(false)) else 'Registry apply failed') | trim }}"
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-04 - Verify DisableWebPnPDownload registry DWORD equals 1 for Domain Controller"
+    ansible.windows.win_reg_stat:
+      path: |-
+        HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+      name: 'DisableWebPnPDownload'
+    register: _step04_output
+    changed_when: false
+    failed_when: false
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-04 - Evaluate Domain Controller verification and store report data"
+    ansible.builtin.set_fact:
+      task_04_name: "Verify DisableWebPnPDownload registry DWORD equals 1 for Domain Controller"
+      task_04_cmd: |-
+        ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload'
+      task_04_rc: "{{ 0 if _step04_output is defined and ('exists' in _step04_output) else -1 }}"
+      data_04: "{{ (_step04_output.value | default('NOT_CONFIGURED') if _step04_output is defined else 'NOT_CONFIGURED') | trim }}"
+      status_04: "{{ ('SKIP' if not (is_dc | bool) else 'ERROR' if ('exists' not in (_step04_output | default({}))) else 'PASS' if ((_step04_output.exists | default(false) | bool) and ((_step04_output.value | default(-1) | int) == 1)) else 'FAIL') | trim }}"
+      details_04: "{{ ('Not applicable to Domain Controller branch' if not (is_dc | bool) else 'Registry read returned no structured data' if ('exists' not in (_step04_output | default({}))) else 'Compliant: value exists and equals 1' if ((_step04_output.exists | default(false) | bool) and ((_step04_output.value | default(-1) | int) == 1)) else 'Non-compliant: value missing or not equal to 1') | trim }}"
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-05 - Verify DisableWebPnPDownload registry DWORD equals 1 for Member Server"
+    ansible.windows.win_reg_stat:
+      path: |-
+        HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+      name: 'DisableWebPnPDownload'
+    register: _step05_output
+    changed_when: false
+    failed_when: false
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-05 - Evaluate Member Server verification and store report data"
+    ansible.builtin.set_fact:
+      task_05_name: "Verify DisableWebPnPDownload registry DWORD equals 1 for Member Server"
+      task_05_cmd: |-
+        ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload'
+      task_05_rc: "{{ 0 if _step05_output is defined and ('exists' in _step05_output) else -1 }}"
+      data_05: "{{ (_step05_output.value | default('NOT_CONFIGURED') if _step05_output is defined else 'NOT_CONFIGURED') | trim }}"
+      status_05: "{{ ('SKIP' if not (is_member | bool) else 'ERROR' if ('exists' not in (_step05_output | default({}))) else 'PASS' if ((_step05_output.exists | default(false) | bool) and ((_step05_output.value | default(-1) | int) == 1)) else 'FAIL') | trim }}"
+      details_05: "{{ ('Not applicable to Member Server branch' if not (is_member | bool) else 'Registry read returned no structured data' if ('exists' not in (_step05_output | default({}))) else 'Compliant: value exists and equals 1' if ((_step05_output.exists | default(false) | bool) and ((_step05_output.value | default(-1) | int) == 1)) else 'Non-compliant: value missing or not equal to 1') | trim }}"
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-06 - Build active branch status list"
+    ansible.builtin.set_fact:
+      _active_statuses: "{{ ([status_02 | default('ERROR') | trim, status_04 | default('ERROR') | trim] if (is_dc | default(false) | bool) else []) + ([status_03 | default('ERROR') | trim, status_05 | default('ERROR') | trim] if (is_member | default(false) | bool) else []) }}"
+    tags: [execute]
+
+  - name: "Req step-06 - Set cis_result fact based on active branch verification status"
+    ansible.builtin.set_fact:
+      cis_result: "{{ ('ERROR' if (role_detection_error | default(true) | bool) or not ((is_dc | default(false) | bool) or (is_member | default(false) | bool)) else 'ERROR' if 'ERROR' in _active_statuses else 'FAIL' if 'FAIL' in _active_statuses else 'PASS' if 'PASS' in _active_statuses else 'SKIP') | trim }}"
+    tags: [execute]
+
+  - name: "Req step-06 - Record final result report data"
+    ansible.builtin.set_fact:
+      task_06_name: "Store final remediation result in cis_result"
+      task_06_cmd: "ansible.builtin.set_fact cis_result based on active branch statuses"
+      task_06_rc: "{{ 0 if (cis_result | default('') | trim) in ['PASS','FAIL','SKIP','ERROR'] else -1 }}"
+      data_06: "{{ cis_result | default('') | trim }}"
+      status_06: "{{ cis_result | default('') | trim }}"
+      details_06: "{{ ('Overall remediation status is ' ~ (cis_result | default('') | trim)) | trim }}"
+    tags: [execute]
+
+  - name: "Generate remediation report"
+    debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 18.9.20.1.1"
+      - "Reference: CIS Benchmark checkpoint 18.9.20.1.1"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: {{ task_01_name | default('Not recorded') }}"
+      - "  Command: {{ task_01_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_01_rc | default(-1) }}"
+      - "  Data: {{ data_01 | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: {{ task_02_name | default('Not recorded') }}"
+      - "  Command: {{ task_02_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_02_rc | default(-1) }}"
+      - "  Data: {{ data_02 | default('') | trim }}"
+      - "  Status: {{ status_02 | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: {{ task_03_name | default('Not recorded') }}"
+      - "  Command: {{ task_03_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_03_rc | default(-1) }}"
+      - "  Data: {{ data_03 | default('') | trim }}"
+      - "  Status: {{ status_03 | default('ERROR') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: {{ task_04_name | default('Not recorded') }}"
+      - "  Command: {{ task_04_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_04_rc | default(-1) }}"
+      - "  Data: {{ data_04 | default('') | trim }}"
+      - "  Status: {{ status_04 | default('ERROR') | trim }}"
+      - "  Details: {{ details_04 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: {{ task_05_name | default('Not recorded') }}"
+      - "  Command: {{ task_05_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_05_rc | default(-1) }}"
+      - "  Data: {{ data_05 | default('') | trim }}"
+      - "  Status: {{ status_05 | default('ERROR') | trim }}"
+      - "  Details: {{ details_05 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: {{ task_06_name | default('Not recorded') }}"
+      - "  Command: {{ task_06_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_06_rc | default(-1) }}"
+      - "  Data: {{ data_06 | default('') | trim }}"
+      - "  Status: {{ status_06 | default('ERROR') | trim }}"
+      - "  Details: {{ details_06 | default('') | trim }}"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Check if registry value backup exists"
+    ansible.windows.win_stat:
+      path: "{{ backup_dir | trim }}/DisableWebPnPDownload.present"
+    register: _restore_present
+    failed_when: false
+    tags: [restore]
+
+  - name: "Restore - Check if registry absent marker exists"
+    ansible.windows.win_stat:
+      path: "{{ backup_dir | trim }}/DisableWebPnPDownload.absent"
+    register: _restore_absent
+    failed_when: false
+    tags: [restore]
+
+  - name: "Restore - Overwrite registry value with original"
+    ansible.windows.win_shell: |
+      $backup = "{{ backup_dir | trim }}/DisableWebPnPDownload.present"
+      $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      $name = 'DisableWebPnPDownload'
+      if (Test-Path -LiteralPath $backup) {
+        $value = (Get-Content -LiteralPath $backup -Raw).Trim()
+        if ($value -match '^\d+$') {
+          Set-ItemProperty -Path $key -Name $name -Value ([int]$value) -Type DWord -Force
+        } else {
+          Set-ItemProperty -Path $key -Name $name -Value $value -Force
+        }
+        Write-Output "RESTORED:$value"
+      } else {
+        Write-Output "NO_PRESENT_BACKUP"
+      }
+    when: false
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove registry value if originally absent"
+    ansible.windows.win_shell: |
+      $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers'
+      $name = 'DisableWebPnPDownload'
+      Remove-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue
+      Write-Output "REMOVED_ABSENT"
+    when: false
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir | trim }}"
+      state: absent
+    failed_when: false
+    tags: [restore]
