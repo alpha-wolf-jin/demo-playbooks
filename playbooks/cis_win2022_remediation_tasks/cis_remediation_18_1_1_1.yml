@@ -1,0 +1,223 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_18_1_1_1.yml
+
+- name: "Snapshot - Remove stale backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: absent
+  tags: [snapshot]
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: directory
+  tags: [snapshot]
+- name: "Snapshot - Capture current NoLockScreenCamera registry value"
+  ansible.windows.win_shell: |
+    $val = Get-ItemProperty -Path '{{ registry_path }}' -Name {{ registry_name }} -ErrorAction SilentlyContinue
+    if ($null -eq $val) { Write-Output 'ABSENT' } else { Write-Output $val.{{ registry_name }} }
+  register: _snap_reg
+  failed_when: false
+  changed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Save registry value to backup file"
+  ansible.windows.win_copy:
+    dest: "{{ backup_dir }}/NoLockScreenCamera.snapshot"
+    content: "{{ _snap_reg.stdout | default('ABSENT') | trim }}"
+  tags: [snapshot]
+
+- block:
+  - name: "Req step-01 - Detect Windows server role"
+    ansible.windows.win_shell: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+    register: _step01_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set server role flags"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set NoLockScreenCamera registry value for Domain Controller"
+    ansible.windows.win_regedit:
+      path: "{{ registry_path }}"
+      name: "{{ registry_name }}"
+      data: "{{ registry_data }}"
+      type: dword
+    when: is_dc | bool
+    register: _step02_output
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-03 - Set NoLockScreenCamera registry value for Member Server"
+    ansible.windows.win_regedit:
+      path: "{{ registry_path }}"
+      name: "{{ registry_name }}"
+      data: "{{ registry_data }}"
+      type: dword
+    when: is_member | bool
+    register: _step03_output
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Verify NoLockScreenCamera registry value for Domain Controller"
+    ansible.windows.win_shell: |
+      $val = Get-ItemProperty -Path '{{ registry_path }}' -Name {{ registry_name }} -ErrorAction SilentlyContinue
+      if ($null -eq $val) { Write-Output 'NOT_CONFIGURED' } else { Write-Output $val.{{ registry_name }} }
+    when: is_dc | bool
+    register: _step04_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Verify NoLockScreenCamera registry value for Member Server"
+    ansible.windows.win_shell: |
+      $val = Get-ItemProperty -Path '{{ registry_path }}' -Name {{ registry_name }} -ErrorAction SilentlyContinue
+      if ($null -eq $val) { Write-Output 'NOT_CONFIGURED' } else { Write-Output $val.{{ registry_name }} }
+    when: is_member | bool
+    register: _step05_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Set status for all steps"
+    ansible.builtin.set_fact:
+      status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim in ['1','2','3','4','5'])) else 'ERROR' }}"
+      data_01: "{{ _step01_output.stdout | default('') | trim }}"
+      task_01_name: "Detect Windows server role"
+      task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+      task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+      details_01: "{{ 'Role detected successfully' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim in ['1','2','3','4','5'])) else 'Detection failed or invalid role' }}"
+
+      status_02: "{{ 'SKIP' if not (is_dc | bool) else 'FAIL' if (_step02_output.rc | default(0) | int != 0) or (_step02_output.failed | default(false) | bool) else 'PASS' }}"
+      data_02: "{{ 'Registry key set' if (is_dc | bool and (_step02_output.rc | default(0) | int == 0) and not (_step02_output.failed | default(false) | bool)) else '' }}"
+      task_02_name: "Set NoLockScreenCamera registry value for DC"
+      task_02_cmd: "win_regedit path={{ registry_path }}, name={{ registry_name }}, data={{ registry_data }}, type=dword"
+      task_02_rc: "{{ _step02_output.rc | default(0) }}"
+      details_02: "{{ 'Registry key set' if (is_dc | bool and (_step02_output.rc | default(0) | int == 0) and not (_step02_output.failed | default(false) | bool)) else 'Failed to set registry key' if (is_dc | bool) else 'Not applicable for this role' }}"
+
+      status_03: "{{ 'SKIP' if not (is_member | bool) else 'FAIL' if (_step03_output.rc | default(0) | int != 0) or (_step03_output.failed | default(false) | bool) else 'PASS' }}"
+      data_03: "{{ 'Registry key set' if (is_member | bool and (_step03_output.rc | default(0) | int == 0) and not (_step03_output.failed | default(false) | bool)) else '' }}"
+      task_03_name: "Set NoLockScreenCamera registry value for Member Server"
+      task_03_cmd: "win_regedit path={{ registry_path }}, name={{ registry_name }}, data={{ registry_data }}, type=dword"
+      task_03_rc: "{{ _step03_output.rc | default(0) }}"
+      details_03: "{{ 'Registry key set' if (is_member | bool and (_step03_output.rc | default(0) | int == 0) and not (_step03_output.failed | default(false) | bool)) else 'Failed to set registry key' if (is_member | bool) else 'Not applicable for this role' }}"
+
+      status_04: "{{ 'SKIP' if not (is_dc | bool) else 'PASS' if (_step04_output.stdout | default('') | trim) == '1' else 'ERROR' if _step04_output.rc | default(-1) != 0 else 'FAIL' }}"
+      data_04: "{{ _step04_output.stdout | default('') | trim }}"
+      task_04_name: "Verify NoLockScreenCamera registry value for DC"
+      task_04_cmd: "Get-ItemProperty -Path '{{ registry_path }}' -Name {{ registry_name }}"
+      task_04_rc: "{{ _step04_output.rc | default(-1) }}"
+      details_04: "{{ 'Verified value equals 1' if (_step04_output.stdout | default('') | trim) == '1' else 'Value is ' + (_step04_output.stdout | default('') | trim) }}"
+
+      status_05: "{{ 'SKIP' if not (is_member | bool) else 'PASS' if (_step05_output.stdout | default('') | trim) == '1' else 'ERROR' if _step05_output.rc | default(-1) != 0 else 'FAIL' }}"
+      data_05: "{{ _step05_output.stdout | default('') | trim }}"
+      task_05_name: "Verify NoLockScreenCamera registry value for Member Server"
+      task_05_cmd: "Get-ItemProperty -Path '{{ registry_path }}' -Name {{ registry_name }}"
+      task_05_rc: "{{ _step05_output.rc | default(-1) }}"
+      details_05: "{{ 'Verified value equals 1' if (_step05_output.stdout | default('') | trim) == '1' else 'Value is ' + (_step05_output.stdout | default('') | trim) }}"
+    tags: [execute]
+
+  - name: "Req step-06 - Store final remediation result in cis_result"
+    ansible.builtin.set_fact:
+      cis_result: "{{ 'ERROR' if (status_01 | default('') == 'ERROR') or (not (is_dc | bool) and not (is_member | bool)) or (is_dc | bool and status_04 | default('') == 'ERROR') or (is_member | bool and status_05 | default('') == 'ERROR') else 'FAIL' if (is_dc | bool and (status_02 | default('') == 'FAIL' or status_04 | default('') == 'FAIL')) else 'FAIL' if (is_member | bool and (status_03 | default('') == 'FAIL' or status_05 | default('') == 'FAIL')) else 'PASS' if (is_dc | bool and status_04 | default('') == 'PASS') else 'PASS' if (is_member | bool and status_05 | default('') == 'PASS') else 'SKIP' }}"
+    tags: [execute]
+
+  - name: "Req step-07 - Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 18.1.1.1"
+      - "Reference: CIS Benchmark checkpoint 18.1.1.1"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: {{ task_01_name | default('Not recorded') }}"
+      - "  Command: {{ task_01_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_01_rc | default(-1) }}"
+      - "  Data: {{ data_01 | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: {{ task_02_name | default('Not recorded') }}"
+      - "  Command: {{ task_02_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_02_rc | default(-1) }}"
+      - "  Data: {{ data_02 | default('') | trim }}"
+      - "  Status: {{ status_02 | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: {{ task_03_name | default('Not recorded') }}"
+      - "  Command: {{ task_03_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_03_rc | default(-1) }}"
+      - "  Data: {{ data_03 | default('') | trim }}"
+      - "  Status: {{ status_03 | default('ERROR') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: {{ task_04_name | default('Not recorded') }}"
+      - "  Command: {{ task_04_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_04_rc | default(-1) }}"
+      - "  Data: {{ data_04 | default('') | trim }}"
+      - "  Status: {{ status_04 | default('ERROR') | trim }}"
+      - "  Details: {{ details_04 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: {{ task_05_name | default('Not recorded') }}"
+      - "  Command: {{ task_05_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_05_rc | default(-1) }}"
+      - "  Data: {{ data_05 | default('') | trim }}"
+      - "  Status: {{ status_05 | default('ERROR') | trim }}"
+      - "  Details: {{ details_05 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: Store final remediation result in cis_result"
+      - "  Command: set_fact"
+      - "  Exit code: 0"
+      - "  Data: {{ cis_result | default('ERROR') | trim }}"
+      - "  Status: {{ cis_result | default('ERROR') | trim }}"
+      - "  Details: Final remediation status"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Check if registry snapshot exists"
+    ansible.windows.win_stat:
+      path: "{{ backup_dir }}/NoLockScreenCamera.snapshot"
+    register: _restore_stat
+    failed_when: false
+    tags: [restore]
+
+  - name: "Restore - Restore original NoLockScreenCamera registry value"
+    ansible.windows.win_shell: |
+      $snapshotFile = "{{ backup_dir }}/NoLockScreenCamera.snapshot"
+      if (Test-Path -LiteralPath $snapshotFile) {
+        $oldValue = (Get-Content -LiteralPath $snapshotFile -Raw).Trim()
+        $key = '{{ registry_path }}'
+        $name = '{{ registry_name }}'
+        if ($oldValue -eq 'ABSENT') {
+          Remove-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue
+          Write-Output "Removed registry value"
+        } else {
+          Set-ItemProperty -Path $key -Name $name -Value $oldValue -Type DWord
+          Write-Output "Restored registry value to $oldValue"
+        }
+      } else {
+        Write-Output "No snapshot found; nothing to restore"
+      }
+    when: _restore_stat.stat.exists | default(false)
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir }}"
+      state: absent
+    failed_when: false
+    tags: [restore]
