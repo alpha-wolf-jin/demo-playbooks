@@ -1,15 +1,17 @@
 playbook_name: "cis_18_7_1_remediation"
 backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
 reg_path: |-
-  HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
-reg_name: 'RegisterSpoolerRemoteConnections'
-reg_expected: 0
-
+  HKLM:\Software\Policies\Microsoft\Windows NT\Printers
+reg_name: 'RegisterSpoolerRemoteRpcEndPoint'
+reg_expected: 2
 req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
 req_02: |-
-  If Domain Controller: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept client connections' to 'Disabled'. The path is under HKLM:\\SOFTWARE\\Policies\\... — consult the CIS benchmark reference or ADMX template for the exact path and value name. type=dword. Do NOT use win_shell or PowerShell Set-ItemProperty — win_regedit is idempotent and correct for GP registry settings.
+  If Domain Controller: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers', name='RegisterSpoolerRemoteRpcEndPoint', data=2, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.
 req_03: |-
-  If Member Server: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept client connections' to 'Disabled'. The path is under HKLM:\\SOFTWARE\\Policies\\... — consult the CIS benchmark reference or ADMX template for the exact path and value name. type=dword. Do NOT use win_shell or PowerShell Set-ItemProperty — win_regedit is idempotent and correct for GP registry settings.
-req_04: "If Domain Controller: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module returns structured data — check result.exists==true AND result.value equals the required DWORD. Do NOT check .stdout or .rc. changed_when: false."
-req_05: "If Member Server: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module returns structured data — check result.exists==true AND result.value equals the required DWORD. Do NOT check .stdout or .rc. changed_when: false."
+  If Member Server: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers', name='RegisterSpoolerRemoteRpcEndPoint', data=2, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.
+req_04: |-
+  If Domain Controller: Verify the GP registry key: use ansible.windows.win_reg_stat path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers' name='RegisterSpoolerRemoteRpcEndPoint'. The module returns structured data — .exists (bool) and .value (integer for REG_DWORD). PASS if .exists == true AND .value == 2. FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 2. Do NOT check .stdout or .rc — win_reg_stat returns structured data. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.
+req_05: |-
+  If Member Server: Verify the GP registry key: use ansible.windows.win_reg_stat path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers' name='RegisterSpoolerRemoteRpcEndPoint'. The module returns structured data — .exists (bool) and .value (integer for REG_DWORD). PASS if .exists == true AND .value == 2. FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 2. Do NOT check .stdout or .rc — win_reg_stat returns structured data. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.
 req_06: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+req_07: "Create a task named 'Generate remediation report' using debug msg with the required CIS 18.7.1 report format."
