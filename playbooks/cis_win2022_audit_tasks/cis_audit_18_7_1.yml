@@ -2,97 +2,230 @@
 - name: Initialize meta data variables
   include_vars: cis_audit_var_18_7_1.yml
 
-- name: "Req step-01 - Detect Windows server role"
-  ansible.windows.win_shell: |
-    (Get-WmiObject Win32_ComputerSystem).DomainRole
+- name: "Initialize audit report variables"
+  ansible.builtin.set_fact:
+    status_01: "SKIP"
+    status_02: "SKIP"
+    status_03: "SKIP"
+    status_04: "SKIP"
+    status_05: "SKIP"
+    status_06: "SKIP"
+    status_10: "SKIP"
+    data_01: ""
+    data_02: ""
+    data_03: ""
+    data_04: ""
+    data_05: ""
+    data_06: ""
+    data_10: ""
+    details_01: ""
+    details_02: ""
+    details_03: ""
+    details_04: ""
+    details_05: ""
+    details_06: ""
+    details_10: ""
+    task_01_name: "Not executed"
+    task_01_cmd: "N/A"
+    task_01_rc: -1
+    task_02_name: "Not executed"
+    task_02_cmd: "N/A"
+    task_02_rc: -1
+    task_03_name: "Not executed"
+    task_03_cmd: "N/A"
+    task_03_rc: -1
+    task_04_name: "Not executed"
+    task_04_cmd: "N/A"
+    task_04_rc: -1
+    task_05_name: "Not executed"
+    task_05_cmd: "N/A"
+    task_05_rc: -1
+    task_06_name: "Not executed"
+    task_06_cmd: "N/A"
+    task_06_rc: -1
+    task_10_name: "Not executed"
+    task_10_cmd: "N/A"
+    task_10_rc: -1
+    spooler_installed: false
+    spooler_check_error: false
+  changed_when: false
+
+- name: "Req step-01 - Detect Windows server role using DomainRole"
+  ansible.windows.win_shell: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
   register: _step01_output
   changed_when: false
   failed_when: false
 
-- name: "Req step-01 - Set server role flags and store requirement 01 details"
+- name: "Req step-01 - Set role flags and store requirement 01 details"
   ansible.builtin.set_fact:
     is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
     is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
     role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
     status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0) and ((_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5']) else 'ERROR' }}"
     data_01: "{{ _step01_output.stdout | default('') | trim }}"
-    task_01_name: "Detect Windows server role using Win32_ComputerSystem.DomainRole"
+    details_01: "{{ 'DomainRole ' ~ (_step01_output.stdout | default('') | trim) ~ ' detected' if (_step01_output.rc | default(-1) == 0) and ((_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5']) else 'Failed or invalid DomainRole' }}"
+    task_01_name: "Detect Windows server role via Win32_ComputerSystem.DomainRole"
     task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
     task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-    details_01: "{{ 'Successfully detected DomainRole' if (_step01_output.rc | default(-1) == 0) and ((_step01_output.stdout | default('') | trim) in ['1', '2', '3', '4', '5']) else 'Failed to detect DomainRole' }}"
+  changed_when: false
 
-- name: "Req step-10 - Check if Print Spooler service is installed"
+- name: "Req step-10 - Check Print Spooler service availability"
   ansible.windows.win_service_info:
     name: Spooler
-  register: spooler_check
+  register: spooler_service_info
   changed_when: false
   failed_when: false
 
-- name: "Req step-10 - Set spooler_installed fact and store requirement 10 details"
+- name: "Req step-10 - Store spooler_installed fact and requirement 10 details"
   ansible.builtin.set_fact:
-    spooler_installed: "{{ (spooler_check.services | default([]) | length > 0) }}"
-    status_10: "{{ 'PASS' if (spooler_check.services | default([]) | length > 0) else 'SKIP' }}"
-    data_10: "{{ 'Spooler service present' if (spooler_check.services | default([]) | length > 0) else 'Spooler service not found' }}"
-    details_10: "{{ 'Print Spooler service is installed; proceeding with registry audit' if (spooler_check.services | default([]) | length > 0) else 'Print Spooler service is not installed; skipping registry audit (SKIP)' }}"
-    task_10_name: "Check if Print Spooler service is installed"
-    task_10_cmd: "ansible.windows.win_service_info name=Spooler"
-    task_10_rc: "{{ 0 if (spooler_check.services | default([]) | length > 0) else 1 }}"
+    spooler_installed: "{{ (spooler_service_info.exists | default(false)) | bool }}"
+    spooler_check_error: "{{ spooler_service_info.exists is not defined }}"
+    status_10: >-
+      {{ 'ERROR' if (spooler_service_info.exists is not defined) else
+         'PASS' if (spooler_service_info.exists | default(false) | bool) else
+         'SKIP' }}
+    data_10: "{{ (spooler_service_info.exists | default('') | string) if spooler_service_info.exists is defined else 'N/A' }}"
+    details_10: >-
+      {{ 'Print Spooler service check failed' if (spooler_service_info.exists is not defined) else
+         'Print Spooler service is installed' if (spooler_service_info.exists | default(false) | bool) else
+         'Print Spooler service is not installed' }}
+    task_10_name: "Check Print Spooler service availability"
+    task_10_cmd: "ansible.windows.win_service_info name='Spooler'"
+    task_10_rc: "{{ 0 if spooler_service_info.exists is defined else 1 }}"
+  changed_when: false
 
-- name: "Req step-02 - Read print spooler client connections registry key on Domain Controller"
+- name: "Req step-02 - Read GP registry key on Domain Controller"
   ansible.windows.win_reg_stat:
     path: "{{ reg_path }}"
     name: "{{ reg_name }}"
   register: _step02_output
+  when: is_dc | bool and spooler_installed | bool
   changed_when: false
   failed_when: false
-  when: is_dc | bool and spooler_installed | bool
 
-- name: "Req step-03 - Read print spooler client connections registry key on Member Server"
+- name: "Req step-02 - Store DC registry read details"
+  ansible.builtin.set_fact:
+    status_02: >-
+      {{ 'ERROR' if (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         'PASS' if (_step02_output is defined and _step02_output.exists is defined) else
+         'ERROR' }}
+    data_02: "{{ (_step02_output.value | default('')) if (spooler_installed | bool and _step02_output is defined and _step02_output.exists is defined) else 'N/A' }}"
+    details_02: >-
+      {{ 'ERROR: Print Spooler service check failed' if (spooler_check_error | bool) else
+         'SKIP: Print Spooler service not installed' if not (spooler_installed | bool) else
+         'Registry key read successfully; exists=' ~ (_step02_output.exists | default(false) | string) ~ ', value=' ~ (_step02_output.value | default('') | string) if (_step02_output is defined and _step02_output.exists is defined) else
+         'Registry read failed' }}
+    task_02_name: "Read GP registry key on Domain Controller"
+    task_02_cmd: |-
+      ansible.windows.win_reg_stat path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers' name='RegisterSpoolerRemoteRpcEndPoint'
+    task_02_rc: "{{ 0 if (_step02_output is defined and _step02_output.exists is defined) else 1 }}"
+  when: is_dc | bool
+  changed_when: false
+
+- name: "Req step-03 - Read GP registry key on Member Server"
   ansible.windows.win_reg_stat:
     path: "{{ reg_path }}"
     name: "{{ reg_name }}"
   register: _step03_output
+  when: is_member | bool and spooler_installed | bool
   changed_when: false
   failed_when: false
-  when: is_member | bool and spooler_installed | bool
 
-- name: "Req step-04 - Evaluate Domain Controller compliance and store details"
+- name: "Req step-03 - Store Member registry read details"
   ansible.builtin.set_fact:
-    status_04: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if (_step02_output.failed | default(false) | bool) or ('exists' not in (_step02_output | default({}))) else 'PASS' if (((_step02_output | default({})).exists | default(false) | bool) and (((_step02_output | default({})).value | default(-1) | int) == (disabled_value | int))) else 'FAIL' }}"
-    details_04: "{{ 'Compliant: registry value exists and equals 2 (Disabled)' if (((_step02_output | default({})).exists | default(false) | bool) and (((_step02_output | default({})).value | default(-1) | int) == (disabled_value | int))) else ('Non-compliant: registry value missing or not equal to 2 (Disabled)' if ('exists' in (_step02_output | default({}))) else 'Registry read did not return structured data') }}"
-    data_04: "{{ ((_step02_output | default({})).value | default('')) | string }}"
-    task_04_name: "Evaluate Domain Controller compliance from win_reg_stat result"
-    task_04_cmd: "Jinja2 evaluation of _step02_output.exists and _step02_output.value"
-    task_04_rc: "{{ 0 if not (_step02_output.failed | default(false) | bool) else 1 }}"
-    status_02: "{{ 'PASS' if ((_step02_output | default({})).exists | default(false) | bool) else ('FAIL' if ('exists' in (_step02_output | default({}))) else 'ERROR') }}"
-    data_02: "{{ 'exists=' ~ ((_step02_output | default({})).exists | default(false) | string) ~ ' value=' ~ ((_step02_output | default({})).value | default('') | string) }}"
-    details_02: "{{ 'Registry read returned structured data' if ('exists' in (_step02_output | default({}))) else 'Registry read did not return structured data' }}"
-    task_02_name: "Read print spooler client connections registry key on Domain Controller"
-    task_02_cmd: "ansible.windows.win_reg_stat path={{ reg_path }} name={{ reg_name }}"
-    task_02_rc: "{{ 0 if ('exists' in (_step02_output | default({}))) else -1 }}"
-  register: _step04_output
-  when: is_dc | bool and spooler_installed | bool
+    status_03: >-
+      {{ 'ERROR' if (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         'PASS' if (_step03_output is defined and _step03_output.exists is defined) else
+         'ERROR' }}
+    data_03: "{{ (_step03_output.value | default('')) if (spooler_installed | bool and _step03_output is defined and _step03_output.exists is defined) else 'N/A' }}"
+    details_03: >-
+      {{ 'ERROR: Print Spooler service check failed' if (spooler_check_error | bool) else
+         'SKIP: Print Spooler service not installed' if not (spooler_installed | bool) else
+         'Registry key read successfully; exists=' ~ (_step03_output.exists | default(false) | string) ~ ', value=' ~ (_step03_output.value | default('') | string) if (_step03_output is defined and _step03_output.exists is defined) else
+         'Registry read failed' }}
+    task_03_name: "Read GP registry key on Member Server"
+    task_03_cmd: |-
+      ansible.windows.win_reg_stat path='HKLM:\\Software\\Policies\\Microsoft\\Windows NT\\Printers' name='RegisterSpoolerRemoteRpcEndPoint'
+    task_03_rc: "{{ 0 if (_step03_output is defined and _step03_output.exists is defined) else 1 }}"
+  when: is_member | bool
+  changed_when: false
 
-- name: "Req step-05 - Evaluate Member Server compliance and store details"
+- name: "Req step-04 - Evaluate DC registry compliance"
   ansible.builtin.set_fact:
-    status_05: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if (_step03_output.failed | default(false) | bool) or ('exists' not in (_step03_output | default({}))) else 'PASS' if (((_step03_output | default({})).exists | default(false) | bool) and (((_step03_output | default({})).value | default(-1) | int) == (disabled_value | int))) else 'FAIL' }}"
-    details_05: "{{ 'Compliant: registry value exists and equals 2 (Disabled)' if (((_step03_output | default({})).exists | default(false) | bool) and (((_step03_output | default({})).value | default(-1) | int) == (disabled_value | int))) else ('Non-compliant: registry value missing or not equal to 2 (Disabled)' if ('exists' in (_step03_output | default({}))) else 'Registry read did not return structured data') }}"
-    data_05: "{{ ((_step03_output | default({})).value | default('')) | string }}"
-    task_05_name: "Evaluate Member Server compliance from win_reg_stat result"
-    task_05_cmd: "Jinja2 evaluation of _step03_output.exists and _step03_output.value"
-    task_05_rc: "{{ 0 if not (_step03_output.failed | default(false) | bool) else 1 }}"
-    status_03: "{{ 'PASS' if ((_step03_output | default({})).exists | default(false) | bool) else ('FAIL' if ('exists' in (_step03_output | default({}))) else 'ERROR') }}"
-    data_03: "{{ 'exists=' ~ ((_step03_output | default({})).exists | default(false) | string) ~ ' value=' ~ ((_step03_output | default({})).value | default('') | string) }}"
-    details_03: "{{ 'Registry read returned structured data' if ('exists' in (_step03_output | default({}))) else 'Registry read did not return structured data' }}"
-    task_03_name: "Read print spooler client connections registry key on Member Server"
-    task_03_cmd: "ansible.windows.win_reg_stat path={{ reg_path }} name={{ reg_name }}"
-    task_03_rc: "{{ 0 if ('exists' in (_step03_output | default({}))) else -1 }}"
-  register: _step05_output
-  when: is_member | bool and spooler_installed | bool
+    _cis_status: >-
+      {{ 'ERROR' if (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         'ERROR' if not (_step02_output is defined and _step02_output.exists is defined) else
+         'PASS' if (_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 2) else
+         'FAIL' }}
+    status_04: >-
+      {{ 'ERROR' if (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         'ERROR' if not (_step02_output is defined and _step02_output.exists is defined) else
+         'PASS' if (_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 2) else
+         'FAIL' }}
+    data_04: "{{ (_step02_output.value | default('')) if (spooler_installed | bool and _step02_output is defined and _step02_output.exists is defined) else 'N/A' }}"
+    details_04: >-
+      {{ 'ERROR: Print Spooler service check failed' if (spooler_check_error | bool) else
+         'SKIP: Print Spooler service not installed' if not (spooler_installed | bool) else
+         'ERROR: registry read failed' if not (_step02_output is defined and _step02_output.exists is defined) else
+         'PASS: exists=true value=2' if (_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 2) else
+         'FAIL: exists=' ~ (_step02_output.exists | default(false) | string) ~ ' value=' ~ (_step02_output.value | default('') | string) }}
+    task_04_name: "Evaluate DC compliance status"
+    task_04_cmd: "N/A"
+    task_04_rc: "{{ 0 if (_step02_output is defined and _step02_output.exists is defined) else 1 }}"
+  when: is_dc | bool
+  changed_when: false
 
-- name: "Req step-06 - Set cis_result fact based on active branch compliance status"
+- name: "Req step-05 - Evaluate Member registry compliance"
   ansible.builtin.set_fact:
-    cis_result: "{{ 'ERROR' if (role_detection_error | default(true) | bool) else 'SKIP' if not (spooler_installed | bool) else (status_04 | default('SKIP') | trim) if (is_dc | bool) else (status_05 | default('SKIP') | trim) if (is_member | bool) else 'ERROR' }}"
+    _cis_status: >-
+      {{ 'ERROR' if (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         'ERROR' if not (_step03_output is defined and _step03_output.exists is defined) else
+         'PASS' if (_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 2) else
+         'FAIL' }}
+    status_05: >-
+      {{ 'ERROR' if (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         'ERROR' if not (_step03_output is defined and _step03_output.exists is defined) else
+         'PASS' if (_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 2) else
+         'FAIL' }}
+    data_05: "{{ (_step03_output.value | default('')) if (spooler_installed | bool and _step03_output is defined and _step03_output.exists is defined) else 'N/A' }}"
+    details_05: >-
+      {{ 'ERROR: Print Spooler service check failed' if (spooler_check_error | bool) else
+         'SKIP: Print Spooler service not installed' if not (spooler_installed | bool) else
+         'ERROR: registry read failed' if not (_step03_output is defined and _step03_output.exists is defined) else
+         'PASS: exists=true value=2' if (_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 2) else
+         'FAIL: exists=' ~ (_step03_output.exists | default(false) | string) ~ ' value=' ~ (_step03_output.value | default('') | string) }}
+    task_05_name: "Evaluate Member compliance status"
+    task_05_cmd: "N/A"
+    task_05_rc: "{{ 0 if (_step03_output is defined and _step03_output.exists is defined) else 1 }}"
+  when: is_member | bool
+  changed_when: false
+
+- name: "Req step-06 - Store final audit result in cis_result"
+  ansible.builtin.set_fact:
+    cis_result: >-
+      {{ 'ERROR' if (role_detection_error | default(false) | bool) or (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         (status_04 if (is_dc | default(false) | bool) else
+          status_05 if (is_member | default(false) | bool) else
+          'ERROR') }}
+    status_06: >-
+      {{ 'ERROR' if (role_detection_error | default(false) | bool) or (spooler_check_error | bool) else
+         'SKIP' if not (spooler_installed | bool) else
+         (status_04 if (is_dc | default(false) | bool) else
+          status_05 if (is_member | default(false) | bool) else
+          'ERROR') }}
+    data_06: "N/A"
+    details_06: "Stored final audit result in cis_result"
+    task_06_name: "Store final audit result in cis_result"
+    task_06_cmd: "set_fact"
+    task_06_rc: 0
+  changed_when: false
 
 - name: "Req step-07 - Generate audit report"
   ansible.builtin.debug:
@@ -108,6 +241,46 @@
     - "  Status: {{ status_01 | default('ERROR') | trim }}"
     - "  Details: {{ details_01 | default('') | trim }}"
     - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: {{ task_02_name | default('Not recorded') }}"
+    - "  Command: {{ task_02_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_02_rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: {{ task_03_name | default('Not recorded') }}"
+    - "  Command: {{ task_03_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_03_rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: {{ task_04_name | default('Not recorded') }}"
+    - "  Command: {{ task_04_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_04_rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: {{ task_05_name | default('Not recorded') }}"
+    - "  Command: {{ task_05_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_05_rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
+    - "  Status: {{ status_05 | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 06 - {{ req_06 }}:"
+    - "  Task: {{ task_06_name | default('Not recorded') }}"
+    - "  Command: {{ task_06_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_06_rc | default(-1) }}"
+    - "  Data: {{ data_06 | default('') | trim }}"
+    - "  Status: {{ status_06 | default('ERROR') | trim }}"
+    - "  Details: {{ details_06 | default('') | trim }}"
+    - ""
     - "REQUIREMENT 10 - {{ req_10 }}:"
     - "  Task: {{ task_10_name | default('Not recorded') }}"
     - "  Command: {{ task_10_cmd | default('N/A') }}"
@@ -116,48 +289,7 @@
     - "  Status: {{ status_10 | default('ERROR') | trim }}"
     - "  Details: {{ details_10 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 02 - {{ req_02 }}:"
-    - "  Task: {{ task_02_name | default('Not recorded') }}"
-    - "  Command: {{ task_02_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_02_rc | default(-1) }}"
-    - "  Data: {{ data_02 | default('') | trim }}"
-    - "  Status: {{ status_02 | default('SKIP') | trim }}"
-    - "  Details: {{ details_02 | default('Not applicable') | trim }}"
-    - ""
-    - "REQUIREMENT 03 - {{ req_03 }}:"
-    - "  Task: {{ task_03_name | default('Not recorded') }}"
-    - "  Command: {{ task_03_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_03_rc | default(-1) }}"
-    - "  Data: {{ data_03 | default('') | trim }}"
-    - "  Status: {{ status_03 | default('SKIP') | trim }}"
-    - "  Details: {{ details_03 | default('Not applicable') | trim }}"
-    - ""
-    - "REQUIREMENT 04 - {{ req_04 }}:"
-    - "  Task: {{ task_04_name | default('Not recorded') }}"
-    - "  Command: {{ task_04_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_04_rc | default(-1) }}"
-    - "  Data: {{ data_04 | default('') | trim }}"
-    - "  Status: {{ status_04 | default('SKIP') | trim }}"
-    - "  Details: {{ details_04 | default('Not applicable') | trim }}"
-    - ""
-    - "REQUIREMENT 05 - {{ req_05 }}:"
-    - "  Task: {{ task_05_name | default('Not recorded') }}"
-    - "  Command: {{ task_05_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_05_rc | default(-1) }}"
-    - "  Data: {{ data_05 | default('') | trim }}"
-    - "  Status: {{ status_05 | default('SKIP') | trim }}"
-    - "  Details: {{ details_05 | default('Not applicable') | trim }}"
-    - ""
-    - "REQUIREMENT 06 - {{ req_06 }}:"
-    - "  Task: Req step-06 - Set cis_result fact based on active branch compliance status"
-    - "  Command: set_fact cis_result"
-    - "  Exit code: 0"
-    - "  Data: {{ cis_result | default('ERROR') | trim }}"
-    - "  Status: {{ cis_result | default('ERROR') | trim }}"
-    - "  Details: Final audit result stored in cis_result"
-    - ""
     - "========================================================"
     - "OVERALL COMPLIANCE:"
     - "  Result: {{ cis_result | default('ERROR') | trim }}"
-    - "  Details: {{ details_04 | default(details_05 | default('Not evaluated') | trim) | trim }}"
     - "========================================================"
