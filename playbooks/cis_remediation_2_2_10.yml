@@ -1,0 +1,259 @@
+---
+- name: "Remediate CIS checkpoint 2.2.10: Ensure 'Allow log on through Remote Desktop Services' is set to 'Administrators, Remote Desktop Users' (MS only)"
+  hosts: all
+  gather_facts: false
+  vars:
+    playbook_name: "cis_2_2_10_remediation"
+    backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+    req_01: "Check if the Remote Desktop Services role is installed. Use ansible.windows.win_shell to run a PowerShell command that checks the presence of the Remote Desktop Services role. If not installed, set a variable to skip the remediation."
+    req_02: "Set 'Allow log on through Remote Desktop Services' to 'Administrators, Remote Desktop Users'. Recommended module: ansible.windows.win_user_right with action: set and the appropriate users list (empty list [] for No One, or named accounts). Do NOT use secedit — it does not manage User Rights Assignment."
+    req_03: "Verify 'Allow log on through Remote Desktop Services' is correctly set to 'Administrators, Remote Desktop Users'. Use read-only PowerShell to query the value; changed_when: false."
+    req_04: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  pre_tasks:
+    - name: "Snapshot - Create backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir }}"
+        state: directory
+      failed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Record current SeRemoteInteractiveLogonRight assignments"
+      ansible.windows.win_shell: |
+        $backupDir = "{{ backup_dir }}"
+        $cfgPath = [System.IO.Path]::GetFullPath("$backupDir/snapshot_ura_export.cfg")
+        $outPath = [System.IO.Path]::GetFullPath("$backupDir/original_users.txt")
+        $out = secedit /export /cfg "$cfgPath" /areas USER_RIGHTS 2>&1 | Out-String
+        if (-not (Test-Path -LiteralPath $cfgPath)) {
+          Set-Content -LiteralPath $outPath -Value "SNAPSHOT_EXPORT_FAILED" -Encoding utf8
+          Write-Output "SNAPSHOT_EXPORT_FAILED"
+          exit 0
+        }
+        $lines = [System.IO.File]::ReadAllLines($cfgPath, [System.Text.Encoding]::Unicode)
+        $line = $lines | Where-Object { $_ -match '^\s*SeRemoteInteractiveLogonRight\s*=' } | Select-Object -First 1
+        if (-not $line) {
+          Set-Content -LiteralPath $outPath -Value "NOT_FOUND" -Encoding utf8
+          Write-Output "SNAPSHOT_NOT_FOUND"
+        } else {
+          $value = ($line -replace '^\s*SeRemoteInteractiveLogonRight\s*=\s*','').Trim()
+          if ([string]::IsNullOrWhiteSpace($value)) {
+            Set-Content -LiteralPath $outPath -Value "EMPTY" -Encoding utf8
+            Write-Output "SNAPSHOT_EMPTY"
+          } else {
+            $sids = @($value.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            $names = @()
+            foreach ($sid in $sids) {
+              try {
+                $sidObj = New-Object System.Security.Principal.SecurityIdentifier($sid)
+                $name = $sidObj.Translate([System.Security.Principal.NTAccount]).Value
+                if ($name -match '^BUILTIN\\(.+)$') {
+                  $names += $Matches[1]
+                } else {
+                  $names += $name
+                }
+              } catch {
+                $names += $sid
+              }
+            }
+            $namesJoined = $names -join ','
+            Set-Content -LiteralPath $outPath -Value $namesJoined -Encoding utf8
+            Write-Output "SNAPSHOT_OK:$namesJoined"
+          }
+        }
+        Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
+      register: snapshot_ura_result
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Req step-01 - Check if Remote Desktop Services role is installed"
+          ansible.windows.win_shell: |
+            if (-not (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue)) {
+              Write-Output 'NOT_INSTALLED'
+              exit 0
+            }
+            $feature = Get-WindowsFeature -Name Remote-Desktop-Services -ErrorAction SilentlyContinue
+            if ($feature -and $feature.InstallState -eq 'Installed') {
+              Write-Output 'INSTALLED'
+            } else {
+              Write-Output 'NOT_INSTALLED'
+            }
+          register: _step01_output
+          changed_when: false
+          failed_when: false
+          tags: [execute]
+
+        - name: "Req step-01 - Set RDS role installed flag and status"
+          ansible.builtin.set_fact:
+            rds_installed: "{{ 'true' if (_step01_output.stdout | default('') | trim) == 'INSTALLED' else 'false' }}"
+            status_01: "{{ 'PASS' if (_step01_output.stdout | default('') | trim) == 'INSTALLED' else 'SKIP' }}"
+            details_01: "{{ 'Remote Desktop Services role is installed' if (_step01_output.stdout | default('') | trim) == 'INSTALLED' else 'Remote Desktop Services role is not installed; remediation skipped' }}"
+            task_01_name: "Check RDS role"
+            task_01_cmd: "Get-WindowsFeature -Name Remote-Desktop-Services"
+            task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+            data_01: "{{ _step01_output.stdout | default('') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Set Allow log on through Remote Desktop Services"
+          ansible.windows.win_user_right:
+            name: SeRemoteInteractiveLogonRight
+            users:
+              - Administrators
+              - Remote Desktop Users
+            action: set
+          register: _step02_output
+          failed_when: false
+          when: rds_installed | bool
+          tags: [execute]
+
+        - name: "Req step-02 - Store set result"
+          ansible.builtin.set_fact:
+            status_02: "{{ 'SKIP' if not (rds_installed | bool) else ('PASS' if not (_step02_output.failed | default(false)) else 'FAIL') }}"
+            details_02: "{{ 'RDS role not installed; skipped' if not (rds_installed | bool) else ('User right set successfully' if not (_step02_output.failed | default(false)) else 'Failed to set user right: ' ~ (_step02_output.msg | default('unknown'))) }}"
+            task_02_name: "Set SeRemoteInteractiveLogonRight"
+            task_02_cmd: "ansible.windows.win_user_right action=set"
+            task_02_rc: "0"
+            data_02: "{{ 'N/A (skipped)' if not (rds_installed | bool) else ('Administrators, Remote Desktop Users' if not (_step02_output.failed | default(false)) else (_step02_output.msg | default(''))) }}"
+          tags: [execute]
+
+        - name: "Req step-03 - Verify user right assignment"
+          ansible.windows.win_shell: |
+            $cfg = Join-Path $env:TEMP 'cis_2_2_10_verify.cfg'
+            try {
+              $out = secedit /export /cfg "$cfg" /areas USER_RIGHTS 2>&1 | Out-String
+              $rc = $LASTEXITCODE
+              if ($rc -ne 0) {
+                Write-Output "VERIFY_ERROR: $out"
+                exit 2
+              }
+              $lines = [System.IO.File]::ReadAllLines($cfg, [System.Text.Encoding]::Unicode)
+              $line = $lines | Where-Object { $_ -match '^\s*SeRemoteInteractiveLogonRight\s*=' } | Select-Object -First 1
+              if (-not $line) {
+                Write-Output "FAIL: SeRemoteInteractiveLogonRight not found"
+                exit 1
+              }
+              $value = ($line -replace '^\s*SeRemoteInteractiveLogonRight\s*=\s*','').Trim()
+              $sids = @($value.Split(',') | ForEach-Object { $_.Trim() })
+              $adminSid = '*S-1-5-32-544'
+              $rduSid = '*S-1-5-32-555'
+              if ($sids.Count -eq 2 -and $sids -contains $adminSid -and $sids -contains $rduSid) {
+                Write-Output "PASS: $value"
+                exit 0
+              } else {
+                Write-Output "FAIL: $value"
+                exit 1
+              }
+            }
+            finally {
+              Remove-Item -Path $cfg -Force -ErrorAction SilentlyContinue
+            }
+          register: _step03_output
+          changed_when: false
+          failed_when: false
+          when: rds_installed | bool
+          tags: [execute]
+
+        - name: "Req step-03 - Store verify result"
+          ansible.builtin.set_fact:
+            status_03: "{{ 'SKIP' if not (rds_installed | bool) else ('ERROR' if (_step03_output.rc | default(-1)) == 2 else ('PASS' if (_step03_output.rc | default(-1)) == 0 else 'FAIL')) }}"
+            details_03: "{{ 'RDS role not installed; skipped' if not (rds_installed | bool) else ('Verification completed with exit code ' ~ (_step03_output.rc | default(-1))) }}"
+            task_03_name: "Verify SeRemoteInteractiveLogonRight"
+            task_03_cmd: "secedit /export /cfg $env:TEMP/cis_2_2_10_verify.cfg /areas USER_RIGHTS"
+            task_03_rc: "{{ _step03_output.rc | default(-1) }}"
+            data_03: "{{ _step03_output.stdout | default('') | trim }}"
+          tags: [execute]
+
+        - name: "Req step-04 - Store final remediation result in cis_result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ status_03 | default('ERROR') | trim }}"
+            status_04: "{{ status_03 | default('ERROR') | trim }}"
+            details_04: "Final remediation result derived from verification status"
+            task_04_name: "Store cis_result"
+            task_04_cmd: "N/A"
+            task_04_rc: "-1"
+            data_04: "{{ status_03 | default('ERROR') | trim }}"
+          tags: [execute]
+
+        - name: "Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 2.2.10"
+              - "Reference: CIS Benchmark checkpoint 2.2.10"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 04 - {{ req_04 }}:"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
+              - ""
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Read original user rights from snapshot"
+          ansible.windows.win_shell: |
+            $f = "{{ backup_dir }}/original_users.txt"
+            if (Test-Path -LiteralPath $f) {
+              Get-Content -LiteralPath $f -Raw
+            } else {
+              Write-Output "__MISSING__"
+            }
+          register: _restore_users_raw
+          failed_when: false
+          changed_when: false
+          tags: [restore]
+
+        - name: "Restore - Parse original user rights list"
+          ansible.builtin.set_fact:
+            _restore_users: >-
+              {{ [] if (_restore_users_raw.stdout | default('') | trim) in ['', '__MISSING__', 'NOT_FOUND', 'SNAPSHOT_EXPORT_FAILED'] else
+                 [] if (_restore_users_raw.stdout | default('') | trim) == 'EMPTY' else
+                 (_restore_users_raw.stdout | default('') | trim).split(',') | map('trim') | select | list }}
+          tags: [restore]
+
+        - name: "Restore - Restore original 'Allow log on through Remote Desktop Services' user right assignment"
+          ansible.windows.win_user_right:
+            name: SeRemoteInteractiveLogonRight
+            users: "{{ _restore_users | default([]) }}"
+            action: set
+          when:
+            - _restore_users_raw.stdout is defined
+            - _restore_users_raw.stdout | default('') | trim not in ['__MISSING__', 'NOT_FOUND', 'SNAPSHOT_EXPORT_FAILED']
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.windows.win_file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
