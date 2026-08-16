@@ -1,0 +1,226 @@
+---
+- name: "Audit CIS checkpoint 9.3.9: Ensure 'Windows Firewall: Public: Logging: Log successful connections' is set to 'Yes'"
+  hosts: all
+  gather_facts: false
+  vars:
+    req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
+    req_02: |-
+      If Domain Controller: Read the CIS benchmark GP registry key using PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging' -Name LogSuccessfulConnections -ErrorAction SilentlyContinue. If the key is absent output 'NOT_CONFIGURED' and exit 1. If present output the numeric value. changed_when: false; failed_when: false.
+    req_03: |-
+      If Member Server: Read the CIS benchmark GP registry key using PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging' -Name LogSuccessfulConnections -ErrorAction SilentlyContinue. If the key is absent output 'NOT_CONFIGURED' and exit 1. If present output the numeric value. changed_when: false; failed_when: false.
+    req_04: "If Domain Controller: Evaluate whether 'Ensure 'Windows Firewall: Public: Logging: Log successful connections' is set to 'Yes'' is set correctly: PASS if the registry value equals 1. FAIL if the value is 0 or absent (NOT_CONFIGURED). ERROR if the registry read step failed unexpectedly."
+    req_05: "If Member Server: Evaluate whether 'Ensure 'Windows Firewall: Public: Logging: Log successful connections' is set to 'Yes'' is set correctly: PASS if the registry value equals 1. FAIL if the value is 0 or absent (NOT_CONFIGURED). ERROR if the registry read step failed unexpectedly."
+    req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  tasks:
+    - name: "Initialize audit report variables"
+      ansible.builtin.set_fact:
+        is_dc: false
+        is_member: false
+        role_detection_error: false
+        data_01: ""
+        status_01: "SKIP"
+        details_01: "Not evaluated"
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        data_02: ""
+        status_02: "SKIP"
+        details_02: "Not evaluated"
+        task_02_name: "Not executed"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        data_03: ""
+        status_03: "SKIP"
+        details_03: "Not evaluated"
+        task_03_name: "Not executed"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
+        data_04: ""
+        status_04: "SKIP"
+        details_04: "Not evaluated"
+        task_04_name: "Not executed"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
+        data_05: ""
+        status_05: "SKIP"
+        details_05: "Not evaluated"
+        task_05_name: "Not executed"
+        task_05_cmd: "N/A"
+        task_05_rc: -1
+        data_06: ""
+        status_06: "SKIP"
+        details_06: "Not evaluated"
+        task_06_name: "Not executed"
+        task_06_cmd: "N/A"
+        task_06_rc: -1
+
+    - name: "Req step-01 - Detect Windows server role using Win32_ComputerSystem DomainRole property"
+      ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+      register: _step01_output
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-01 - Set role flags and store detection details"
+      ansible.builtin.set_fact:
+        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+        role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        status_01: "{{ 'ERROR' if ((_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5'])) else 'PASS' }}"
+        details_01: "{{ 'DomainRole=' ~ (_step01_output.stdout | default('') | trim) }}"
+        task_01_name: "Detect Windows server role using Win32_ComputerSystem DomainRole property"
+        task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+
+    - name: "Req step-02 - Read DC registry key for Windows Firewall Public Logging successful connections"
+      ansible.windows.win_shell: |
+        $key = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile\Logging'
+        $v = Get-ItemProperty -Path $key -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+        if ($null -eq $v) {
+          Write-Output 'NOT_CONFIGURED'
+          exit 1
+        } else {
+          Write-Output $v.LogSuccessfulConnections
+          exit 0
+        }
+      register: _step02_output
+      when: "is_dc | bool"
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-02 - Store DC registry read details"
+      ansible.builtin.set_fact:
+        data_02: "{{ _step02_output.stdout | default('') | trim }}"
+        status_02: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if ((_step02_output.rc | default(-1) not in [0, 1]) or ((_step02_output.stdout | default('') | trim) not in ['0', '1', 'NOT_CONFIGURED'])) else 'PASS' }}"
+        details_02: "Read registry key LogSuccessfulConnections for Domain Controller"
+        task_02_name: "Read DC registry key for Windows Firewall Public Logging successful connections"
+        task_02_cmd: |-
+          Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging' -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+      when: "is_dc | bool"
+
+    - name: "Req step-03 - Read Member Server registry key for Windows Firewall Public Logging successful connections"
+      ansible.windows.win_shell: |
+        $key = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile\Logging'
+        $v = Get-ItemProperty -Path $key -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+        if ($null -eq $v) {
+          Write-Output 'NOT_CONFIGURED'
+          exit 1
+        } else {
+          Write-Output $v.LogSuccessfulConnections
+          exit 0
+        }
+      register: _step03_output
+      when: "is_member | bool"
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-03 - Store Member Server registry read details"
+      ansible.builtin.set_fact:
+        data_03: "{{ _step03_output.stdout | default('') | trim }}"
+        status_03: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if ((_step03_output.rc | default(-1) not in [0, 1]) or ((_step03_output.stdout | default('') | trim) not in ['0', '1', 'NOT_CONFIGURED'])) else 'PASS' }}"
+        details_03: "Read registry key LogSuccessfulConnections for Member Server"
+        task_03_name: "Read Member Server registry key for Windows Firewall Public Logging successful connections"
+        task_03_cmd: |-
+          Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging' -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+        task_03_rc: "{{ _step03_output.rc | default(-1) }}"
+      when: "is_member | bool"
+
+    - name: "Req step-04 - Evaluate Domain Controller compliance for Windows Firewall Public Logging successful connections"
+      ansible.builtin.set_fact:
+        _cis_status: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if ((_step02_output.rc | default(-1) != 0) and ((_step02_output.stdout | default('') | trim) != 'NOT_CONFIGURED')) else 'PASS' if ((_step02_output.stdout | default('') | trim) == '1') else 'FAIL' }}"
+        data_04: "{{ _step02_output.stdout | default('') | trim }}"
+        status_04: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if ((_step02_output.rc | default(-1) != 0) and ((_step02_output.stdout | default('') | trim) != 'NOT_CONFIGURED')) else 'PASS' if ((_step02_output.stdout | default('') | trim) == '1') else 'FAIL' }}"
+        details_04: "Expected registry value 1; observed {{ _step02_output.stdout | default('') | trim }}"
+        task_04_name: "Evaluate Domain Controller compliance for Windows Firewall Public Logging successful connections"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
+      when: "is_dc | bool"
+
+    - name: "Req step-05 - Evaluate Member Server compliance for Windows Firewall Public Logging successful connections"
+      ansible.builtin.set_fact:
+        _cis_status: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if ((_step03_output.rc | default(-1) != 0) and ((_step03_output.stdout | default('') | trim) != 'NOT_CONFIGURED')) else 'PASS' if ((_step03_output.stdout | default('') | trim) == '1') else 'FAIL' }}"
+        data_05: "{{ _step03_output.stdout | default('') | trim }}"
+        status_05: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if ((_step03_output.rc | default(-1) != 0) and ((_step03_output.stdout | default('') | trim) != 'NOT_CONFIGURED')) else 'PASS' if ((_step03_output.stdout | default('') | trim) == '1') else 'FAIL' }}"
+        details_05: "Expected registry value 1; observed {{ _step03_output.stdout | default('') | trim }}"
+        task_05_name: "Evaluate Member Server compliance for Windows Firewall Public Logging successful connections"
+        task_05_cmd: "N/A"
+        task_05_rc: -1
+      when: "is_member | bool"
+
+    - name: "Req step-06 - Build active branch status list"
+      ansible.builtin.set_fact:
+        _active_statuses: "{{ [status_01] + ([status_02, status_04] if (is_dc | bool) else []) + ([status_03, status_05] if (is_member | bool) else []) }}"
+
+    - name: "Req step-06 - Set overall audit status from active branch"
+      ansible.builtin.set_fact:
+        status_06: "{{ 'ERROR' if ((role_detection_error | default(true) | bool) or (not (is_dc | bool) and not (is_member | bool))) else 'ERROR' if 'ERROR' in _active_statuses else 'FAIL' if 'FAIL' in _active_statuses else 'PASS' if 'PASS' in _active_statuses else 'SKIP' }}"
+
+    - name: "Req step-06 - Store final audit result in cis_result"
+      ansible.builtin.set_fact:
+        cis_result: "{{ status_06 | default('ERROR') | trim }}"
+        data_06: "{{ status_06 | default('ERROR') | trim }}"
+        details_06: "Final audit result stored in cis_result"
+        task_06_name: "Store final audit result in cis_result"
+        task_06_cmd: "N/A"
+        task_06_rc: -1
+
+    - name: "Req step-07 - Generate audit report"
+      ansible.builtin.debug:
+        msg:
+          - "AUDIT REPORT — CIS 9.3.9"
+          - "Reference: CIS Benchmark checkpoint 9.3.9"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 05 - {{ req_05 }}:"
+          - "  Task: {{ task_05_name | default('Not recorded') }}"
+          - "  Command: {{ task_05_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_05_rc | default(-1) }}"
+          - "  Data: {{ data_05 | default('') | trim }}"
+          - "  Status: {{ status_05 | default('ERROR') | trim }}"
+          - "  Details: {{ details_05 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 06 - {{ req_06 }}:"
+          - "  Task: {{ task_06_name | default('Not recorded') }}"
+          - "  Command: {{ task_06_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_06_rc | default(-1) }}"
+          - "  Data: {{ data_06 | default('') | trim }}"
+          - "  Status: {{ status_06 | default('ERROR') | trim }}"
+          - "  Details: {{ details_06 | default('') | trim }}"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "========================================================"
