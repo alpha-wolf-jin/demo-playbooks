@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "17.1.1",
-  "title": "Ensure 'Audit Credential Validation' is set to 'Success and Failure'",
+  "checkpoint_id": "18.1.1.1",
+  "title": "Ensure 'Prevent enabling lock screen camera' is set to 'Enabled'",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
@@ -32,7 +32,7 @@
     },
     "result_aggregation": "PASS if the active branch verify step passes; SKIP if a branch is not applicable to this host (the other role); FAIL if the active branch check fails; ERROR if role detection fails or DomainRole value is unrecognised. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Audit CIS checkpoint 17.1.1: Ensure 'Audit Credential Validation' is set to 'Success and Failure'",
+  "objective": "Audit CIS checkpoint 18.1.1.1: Ensure 'Prevent enabling lock screen camera' is set to 'Enabled'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -88,10 +88,10 @@
     },
     {
       "id": "step-02",
-      "type": "action",
-      "name": "If Domain Controller: Read 'Validation' audit policy setting. Use ansible.windows.win_shell with 'auditpol /get…",
-      "function": "2. If Domain Controller: Read 'Validation' audit policy setting. Use ansible.windows.win_shell with 'auditpol /get /subcategory:\"Validation\"' to read the current audit policy setting as plain text. changed_when: false; failed_when: rc not in [0, 1].",
-      "module": "ansible.windows.win_shell",
+      "type": "collect",
+      "name": "If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key…",
+      "function": "2. If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization' name='NoLockScreenCamera'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.",
+      "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-01",
         "fields": [
@@ -107,10 +107,10 @@
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "If Member Server: Read 'Validation' audit policy setting. Use ansible.windows.win_shell with 'auditpol /get…",
-      "function": "3. If Member Server: Read 'Validation' audit policy setting. Use ansible.windows.win_shell with 'auditpol /get /subcategory:\"Validation\"' to read the current audit policy setting as plain text. changed_when: false; failed_when: rc not in [0, 1].",
-      "module": "ansible.windows.win_shell",
+      "type": "collect",
+      "name": "If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key…",
+      "function": "3. If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization' name='NoLockScreenCamera'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.",
+      "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-01",
         "fields": [
@@ -127,8 +127,8 @@
     {
       "id": "step-04",
       "type": "transform",
-      "name": "If Domain Controller: Evaluate whether 'Validation' is equals 'Success and Failure'. PASS if compliant, FAIL if not…",
-      "function": "4. If Domain Controller: Evaluate whether 'Validation' is equals 'Success and Failure'. PASS if compliant, FAIL if not, ERROR if the check failed.",
+      "name": "If Domain Controller: Evaluate whether 'Ensure 'Prevent enabling lock screen camera' is set to 'Enabled'' is set…",
+      "function": "4. If Domain Controller: Evaluate whether 'Ensure 'Prevent enabling lock screen camera' is set to 'Enabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 1 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 1. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict.",
       "input": {
         "source": "step-02",
         "fields": [
@@ -136,7 +136,7 @@
         ]
       },
       "computations": {
-        "_cis_status": "PASS if the win_shell stdout contains the required audit policy setting value (e.g. 'Success and Failure'); FAIL if stdout contains 'No Auditing' or a non-matching setting; ERROR if rc != 0 or stdout is empty"
+        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==1 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=1; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
       },
       "stores": [
         "_cis_status"
@@ -147,8 +147,8 @@
     {
       "id": "step-05",
       "type": "transform",
-      "name": "If Member Server: Evaluate whether 'Validation' is equals 'Success and Failure'. PASS if compliant, FAIL if not, ERROR…",
-      "function": "5. If Member Server: Evaluate whether 'Validation' is equals 'Success and Failure'. PASS if compliant, FAIL if not, ERROR if the check failed.",
+      "name": "If Member Server: Evaluate whether 'Ensure 'Prevent enabling lock screen camera' is set to 'Enabled'' is set correctly.…",
+      "function": "5. If Member Server: Evaluate whether 'Ensure 'Prevent enabling lock screen camera' is set to 'Enabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 1 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 1. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict.",
       "input": {
         "source": "step-03",
         "fields": [
@@ -156,7 +156,7 @@
         ]
       },
       "computations": {
-        "_cis_status": "PASS if the win_shell stdout contains the required audit policy setting value (e.g. 'Success and Failure'); FAIL if stdout contains 'No Auditing' or a non-matching setting; ERROR if rc != 0 or stdout is empty"
+        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==1 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=1; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
       },
       "stores": [
         "_cis_status"
@@ -186,7 +186,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 17.1.1\nReference: CIS Benchmark checkpoint 17.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 18.1.1.1\nReference: CIS Benchmark checkpoint 18.1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -213,7 +213,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 17.1.1 audit failed",
+      "error_message": "ERROR: CIS 18.1.1.1 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -223,7 +223,13 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-01",
+        "step-01"
+      ]
+    },
+    {
+      "name": "Data Collection",
+      "description": "Execute read-only commands on the target host.",
+      "steps": [
         "step-02",
         "step-03"
       ]
@@ -262,16 +268,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed.\nOR\nTo audit the system using auditpol.exe, perform the following and confirm it is set as prescribed:\nauditpol /get /subcategory:\"{0cce923f-69ae-11d9-bed3-505054503030}\"",
+  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed. This group policy setting is backed by the following registry location with a\nREG_DWORD value of 1.\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization:NoLockScreenCamera",
   "example_output": "",
-  "filename": "cis_audit_17_1_1.yml",
+  "filename": "cis_audit_18_1_1_1.yml",
   "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-16T12:02:35",
+    "drafted_at": "2026-08-16T15:14:54",
     "revision": 4,
-    "approved_at": "2026-08-16T12:02:39",
+    "approved_at": "2026-08-16T15:14:58",
     "saved_by": null
   }
 }
