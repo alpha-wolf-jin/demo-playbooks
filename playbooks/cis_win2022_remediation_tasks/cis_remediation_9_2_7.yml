@@ -1,0 +1,190 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_9_2_7.yml
+
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: directory
+  tags: [snapshot]
+- name: "Snapshot - Backup current registry value if exists"
+  ansible.windows.win_shell: |
+    $key = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile\Logging'
+    $val = Get-ItemProperty -Path $key -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+    $backupFile = Join-Path "{{ backup_dir }}" 'LogSuccessfulConnections.regbak'
+    if ($null -eq $val) {
+      Set-Content -Path $backupFile -Value 'ABSENT' -Encoding ascii
+      Write-Output 'ABSENT'
+    } else {
+      Set-Content -Path $backupFile -Value ($val.LogSuccessfulConnections) -Encoding ascii
+      Write-Output $val.LogSuccessfulConnections
+    }
+  register: _snapshot_registry
+  failed_when: false
+  tags: [snapshot]
+
+- block:
+  - name: "Req step-01 - Detect Windows server role"
+    ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    register: _step01_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set role flags"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+      role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set GP registry key on Domain Controller"
+    ansible.windows.win_regedit:
+      path: |-
+        HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile\Logging
+      name: LogSuccessfulConnections
+      data: 1
+      type: dword
+    register: _step02_output
+    when: is_dc | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-03 - Set GP registry key on Member Server"
+    ansible.windows.win_regedit:
+      path: |-
+        HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile\Logging
+      name: LogSuccessfulConnections
+      data: 1
+      type: dword
+    register: _step03_output
+    when: is_member | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Verify GP registry key on Domain Controller"
+    ansible.windows.win_shell: |
+      $key = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile\Logging'
+      $v = Get-ItemProperty -Path $key -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+      if ($null -eq $v) {
+        Write-Output 'NOT_CONFIGURED'
+      } else {
+        Write-Output $v.LogSuccessfulConnections
+      }
+    register: _step04_output
+    when: is_dc | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Verify GP registry key on Member Server"
+    ansible.windows.win_shell: |
+      $key = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile\Logging'
+      $v = Get-ItemProperty -Path $key -Name LogSuccessfulConnections -ErrorAction SilentlyContinue
+      if ($null -eq $v) {
+        Write-Output 'NOT_CONFIGURED'
+      } else {
+        Write-Output $v.LogSuccessfulConnections
+      }
+    register: _step05_output
+    when: is_member | bool
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-06 - Compute per-requirement statuses"
+    ansible.builtin.set_fact:
+      status_01: "{{ 'PASS' if (_step01_output.rc | default(-1) == 0 and (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
+      status_02: "{{ 'SKIP' if not (is_dc | bool) else 'PASS' if (_step02_output.failed | default(false) == false) else 'FAIL' }}"
+      status_03: "{{ 'SKIP' if not (is_member | bool) else 'PASS' if (_step03_output.failed | default(false) == false) else 'FAIL' }}"
+      status_04: "{{ 'SKIP' if not (is_dc | bool) else 'ERROR' if (_step04_output.rc | default(-1) != 0) or ((_step04_output.stdout | default('') | trim) == '') else 'PASS' if (_step04_output.stdout | default('') | trim) == '1' else 'FAIL' if (_step04_output.stdout | default('') | trim) in ['0', 'NOT_CONFIGURED'] else 'ERROR' }}"
+      status_05: "{{ 'SKIP' if not (is_member | bool) else 'ERROR' if (_step05_output.rc | default(-1) != 0) or ((_step05_output.stdout | default('') | trim) == '') else 'PASS' if (_step05_output.stdout | default('') | trim) == '1' else 'FAIL' if (_step05_output.stdout | default('') | trim) in ['0', 'NOT_CONFIGURED'] else 'ERROR' }}"
+    tags: [execute]
+
+  - name: "Req step-06 - Store final remediation result in cis_result"
+    ansible.builtin.set_fact:
+      cis_result: "{{ 'ERROR' if ((is_dc | bool) and (is_member | bool)) or ((not (is_dc | bool)) and (not (is_member | bool))) else 'FAIL' if (is_dc | bool) and (status_02 == 'FAIL' or status_04 == 'FAIL') else 'ERROR' if (is_dc | bool) and (status_02 == 'ERROR' or status_04 == 'ERROR') else 'PASS' if (is_dc | bool) and (status_02 == 'PASS' and status_04 == 'PASS') else 'FAIL' if (is_member | bool) and (status_03 == 'FAIL' or status_05 == 'FAIL') else 'ERROR' if (is_member | bool) and (status_03 == 'ERROR' or status_05 == 'ERROR') else 'PASS' if (is_member | bool) and (status_03 == 'PASS' and status_05 == 'PASS') else 'ERROR' }}"
+    tags: [execute]
+
+  - name: "Req step-07 - Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 9.2.7"
+      - "Reference: CIS Benchmark checkpoint 9.2.7"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: Detect Windows server role using Win32_ComputerSystem DomainRole"
+      - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
+      - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+      - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ 'Role detected successfully' if status_01 == 'PASS' else 'Role detection failed or unexpected DomainRole' }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: Set DC GP registry key LogSuccessfulConnections=1"
+      - "  Command: ansible.windows.win_regedit path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' name='LogSuccessfulConnections' data=1 type=dword"
+      - "  Exit code: {{ 0 if (_step02_output.failed | default(true) == false) else 1 }}"
+      - "  Data: {{ 'Registry value set or already present' if status_02 == 'PASS' else 'Not applied or skipped' }}"
+      - "  Status: {{ status_02 | default('SKIP') | trim }}"
+      - "  Details: {{ 'DC branch GP registry key configured' if status_02 == 'PASS' else 'DC branch skipped or failed' }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: Set Member GP registry key LogSuccessfulConnections=1"
+      - "  Command: ansible.windows.win_regedit path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' name='LogSuccessfulConnections' data=1 type=dword"
+      - "  Exit code: {{ 0 if (_step03_output.failed | default(true) == false) else 1 }}"
+      - "  Data: {{ 'Registry value set or already present' if status_03 == 'PASS' else 'Not applied or skipped' }}"
+      - "  Status: {{ status_03 | default('SKIP') | trim }}"
+      - "  Details: {{ 'Member branch GP registry key configured' if status_03 == 'PASS' else 'Member branch skipped or failed' }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: Verify DC GP registry key LogSuccessfulConnections"
+      - "  Command: PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' -Name LogSuccessfulConnections"
+      - "  Exit code: {{ _step04_output.rc | default(-1) }}"
+      - "  Data: {{ _step04_output.stdout | default('') | trim }}"
+      - "  Status: {{ status_04 | default('ERROR') | trim }}"
+      - "  Details: {{ 'Value equals 1' if status_04 == 'PASS' else 'Value is 0/NOT_CONFIGURED or verification error' }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: Verify Member GP registry key LogSuccessfulConnections"
+      - "  Command: PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' -Name LogSuccessfulConnections"
+      - "  Exit code: {{ _step05_output.rc | default(-1) }}"
+      - "  Data: {{ _step05_output.stdout | default('') | trim }}"
+      - "  Status: {{ status_05 | default('ERROR') | trim }}"
+      - "  Details: {{ 'Value equals 1' if status_05 == 'PASS' else 'Value is 0/NOT_CONFIGURED or verification error' }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: Store final remediation result in cis_result"
+      - "  Command: set_fact cis_result"
+      - "  Exit code: {{ 0 if cis_result in ['PASS','FAIL','SKIP','ERROR'] else 1 }}"
+      - "  Data: {{ cis_result | default('ERROR') | trim }}"
+      - "  Status: {{ cis_result | default('ERROR') | trim }}"
+      - "  Details: Overall remediation status derived from active branch"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Restore original registry value and cleanup"
+    ansible.windows.win_shell: |
+      $key = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile\Logging'
+      $backupFile = Join-Path "{{ backup_dir }}" 'LogSuccessfulConnections.regbak'
+      if (Test-Path -LiteralPath $backupFile) {
+        $val = (Get-Content -LiteralPath $backupFile -Raw).Trim()
+        if ($val -eq 'ABSENT') {
+          Remove-ItemProperty -Path $key -Name 'LogSuccessfulConnections' -ErrorAction SilentlyContinue
+          Write-Output 'Restored to absent'
+        } else {
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name 'LogSuccessfulConnections' -Value ([int]$val) -Type DWord
+          Write-Output "Restored to $val"
+        }
+      } else {
+        Write-Output 'No snapshot; nothing to restore'
+      }
+      Remove-Item -LiteralPath "{{ backup_dir }}" -Recurse -Force -ErrorAction SilentlyContinue
+    failed_when: false
+    changed_when: false
+    tags: [restore]
