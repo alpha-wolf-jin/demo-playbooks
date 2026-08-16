@@ -1,8 +1,8 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "9.2.7",
-  "title": "Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to 'Yes'",
+  "checkpoint_id": "9.3.9",
+  "title": "Ensure 'Windows Firewall: Public: Logging: Log successful connections' is set to 'Yes'",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
@@ -32,7 +32,7 @@
     },
     "result_aggregation": "PASS if the active branch verify step confirms the change took effect; SKIP if a branch step is not applicable to this host (the other role); FAIL if any active branch apply-or-verify step fails; ERROR if role detection fails or neither branch ran. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Remediate CIS checkpoint 9.2.7: Ensure 'Windows Firewall: Private: Logging: Log successful connections' is set to 'Yes'",
+  "objective": "Remediate CIS checkpoint 9.3.9: Ensure 'Windows Firewall: Public: Logging: Log successful connections' is set to 'Yes'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -90,7 +90,7 @@
       "id": "step-02",
       "type": "action",
       "name": "If Domain Controller: Set the CIS-required GP registry key using ansible.windows.win_regedit…",
-      "function": "2. If Domain Controller: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging', name='LogSuccessfulConnections', data=1, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.",
+      "function": "2. If Domain Controller: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging', name='LogSuccessfulConnections', data=1, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.",
       "module": "ansible.windows.win_regedit",
       "input": {
         "source": "step-01",
@@ -109,7 +109,7 @@
       "id": "step-03",
       "type": "action",
       "name": "If Member Server: Set the CIS-required GP registry key using ansible.windows.win_regedit…",
-      "function": "3. If Member Server: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging', name='LogSuccessfulConnections', data=1, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.",
+      "function": "3. If Member Server: Set the CIS-required GP registry key using ansible.windows.win_regedit: path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging', name='LogSuccessfulConnections', data=1, type=dword. IMPORTANT: Do NOT use ansible.windows.win_firewall or any Windows API module — they set runtime/effective state but do NOT write the GP registry key that the CIS benchmark audit checks.",
       "module": "ansible.windows.win_regedit",
       "input": {
         "source": "step-02",
@@ -128,7 +128,7 @@
       "id": "step-04",
       "type": "collect",
       "name": "If Domain Controller: Verify the GP registry key: use PowerShell Get-ItemProperty -Path…",
-      "function": "4. If Domain Controller: Verify the GP registry key: use PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' -Name LogSuccessfulConnections. PASS if value equals 1. FAIL if 0 or NOT_CONFIGURED. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.",
+      "function": "4. If Domain Controller: Verify the GP registry key: use PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging' -Name LogSuccessfulConnections. PASS if value equals 1. FAIL if 0 or NOT_CONFIGURED. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.",
       "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-03",
@@ -147,7 +147,7 @@
       "id": "step-05",
       "type": "collect",
       "name": "If Member Server: Verify the GP registry key: use PowerShell Get-ItemProperty -Path…",
-      "function": "5. If Member Server: Verify the GP registry key: use PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PrivateProfile\\Logging' -Name LogSuccessfulConnections. PASS if value equals 1. FAIL if 0 or NOT_CONFIGURED. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.",
+      "function": "5. If Member Server: Verify the GP registry key: use PowerShell Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile\\Logging' -Name LogSuccessfulConnections. PASS if value equals 1. FAIL if 0 or NOT_CONFIGURED. changed_when: false; failed_when: false. IMPORTANT: Do NOT verify using Get-NetFirewallProfile or any API — verify ONLY from the same GP registry key the audit reads.",
       "module": "ansible.windows.win_reg_stat",
       "input": {
         "source": "step-04",
@@ -184,7 +184,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 9.2.7\nReference: CIS Benchmark checkpoint 9.2.7\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 9.3.9\nReference: CIS Benchmark checkpoint 9.3.9\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -211,7 +211,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 9.2.7 audit failed",
+      "error_message": "ERROR: CIS 9.3.9 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -265,16 +265,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to Yes:\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Windows\nDefender Firewall with Advanced Security\\Windows Defender Firewall with\nAdvanced Security\\Windows Defender Firewall Properties\\Private\nProfile\\Logging Customize\\Log successful connections",
+  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to Yes:\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Windows\nDefender Firewall with Advanced Security\\Windows Defender Firewall with\nAdvanced Security\\Windows Defender Firewall Properties\\Public Profile\\Logging\nCustomize\\Log successful connections",
   "example_output": "",
-  "filename": "cis_remediation_9_2_7.yml",
+  "filename": "cis_remediation_9_3_9.yml",
   "output_dir": "./cis_win2022_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-15T23:53:37",
-    "revision": 6,
-    "approved_at": "2026-08-15T23:53:40",
+    "drafted_at": "2026-08-16T10:23:31",
+    "revision": 1,
+    "approved_at": "2026-08-16T10:23:34",
     "saved_by": null
   }
 }
