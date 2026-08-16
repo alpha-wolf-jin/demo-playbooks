@@ -1,0 +1,247 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_18_6_9_1.yml
+
+- name: "Snapshot - Remove stale backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: absent
+  tags: [snapshot]
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: directory
+  tags: [snapshot]
+- name: "Snapshot - Record current LLTD registry values"
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'SilentlyContinue'
+    $key = '{{ lltd_path }}'
+    $backupDir = [System.IO.Path]::GetFullPath('{{ backup_dir }}')
+    $names = @('AllowLLTDIOOnDomain','AllowLLTDIOOnPublicNet','EnableLLTDIO','ProhibitLLTDIOOnPrivateNet')
+    $result = @()
+    foreach ($n in $names) {
+      $val = Get-ItemProperty -Path $key -Name $n -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $n
+      if ($null -eq $val) {
+        $result += "$n=ABSENT"
+      } else {
+        $result += "$n=$val"
+      }
+    }
+    $outFile = Join-Path $backupDir 'lltd_original_values.txt'
+    $result | Set-Content -Path $outFile -Encoding ascii
+    Write-Output 'SNAPSHOT_OK'
+  register: _snap_lltd
+  failed_when: false
+  changed_when: false
+  tags: [snapshot]
+
+- name: "Remediation block"
+  block:
+  - name: "Req step-01 - Detect Windows server role"
+    ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    register: _step01_output
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set server role flags"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
+      role_ok: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5'] }}"
+      status_01: "{{ 'PASS' if (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5'] else 'ERROR' }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set LLTDIO GP registry values for Domain Controller"
+    ansible.windows.win_regedit:
+      path: "{{ lltd_path }}"
+      name: "{{ item }}"
+      data: 0
+      type: dword
+    register: _step02_output
+    loop: "{{ lltd_values }}"
+    when: is_dc | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-02 - Store DC apply status"
+    ansible.builtin.set_fact:
+      status_02: >-
+        {{ 'SKIP' if not (is_dc | bool)
+           else 'FAIL' if ((_step02_output.results | selectattr('failed', 'equalto', true) | list | length) > 0) or ((_step02_output.results | selectattr('msg', 'defined') | selectattr('msg', 'search', 'failed to create registry key') | list | length) > 0)
+           else 'PASS' }}
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-03 - Set LLTDIO GP registry values for Member Server"
+    ansible.windows.win_regedit:
+      path: "{{ lltd_path }}"
+      name: "{{ item }}"
+      data: 0
+      type: dword
+    register: _step03_output
+    loop: "{{ lltd_values }}"
+    when: is_member | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-03 - Store Member apply status"
+    ansible.builtin.set_fact:
+      status_03: >-
+        {{ 'SKIP' if not (is_member | bool)
+           else 'FAIL' if ((_step03_output.results | selectattr('failed', 'equalto', true) | list | length) > 0) or ((_step03_output.results | selectattr('msg', 'defined') | selectattr('msg', 'search', 'failed to create registry key') | list | length) > 0)
+           else 'PASS' }}
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-04 - Verify LLTDIO GP registry values for Domain Controller"
+    ansible.windows.win_reg_stat:
+      path: "{{ lltd_path }}"
+      name: "{{ item }}"
+    register: _step04_output
+    loop: "{{ lltd_values }}"
+    when: is_dc | bool
+    changed_when: false
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Store DC verify status"
+    ansible.builtin.set_fact:
+      status_04: "{{ 'SKIP' if not (is_dc | bool) else 'PASS' if ((_step04_output.results | selectattr('exists', 'equalto', true) | selectattr('value', 'equalto', 0) | list | length) == 4) else 'FAIL' }}"
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req step-05 - Verify LLTDIO GP registry values for Member Server"
+    ansible.windows.win_reg_stat:
+      path: "{{ lltd_path }}"
+      name: "{{ item }}"
+    register: _step05_output
+    loop: "{{ lltd_values }}"
+    when: is_member | bool
+    changed_when: false
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Store Member verify status"
+    ansible.builtin.set_fact:
+      status_05: "{{ 'SKIP' if not (is_member | bool) else 'PASS' if ((_step05_output.results | selectattr('exists', 'equalto', true) | selectattr('value', 'equalto', 0) | list | length) == 4) else 'FAIL' }}"
+    when: is_member | bool
+    tags: [execute]
+
+  - name: "Req step-06 - Store final remediation result in cis_result"
+    ansible.builtin.set_fact:
+      cis_result: "{{ 'ERROR' if not (role_ok | default(false) | bool) else 'FAIL' if (is_dc | bool) and ('FAIL' in [status_02, status_04]) else 'ERROR' if (is_dc | bool) and ('ERROR' in [status_02, status_04]) else 'PASS' if (is_dc | bool) else 'FAIL' if (is_member | bool) and ('FAIL' in [status_03, status_05]) else 'ERROR' if (is_member | bool) and ('ERROR' in [status_03, status_05]) else 'PASS' if (is_member | bool) else 'ERROR' }}"
+      status_06: "{{ 'PASS' }}"
+    tags: [execute]
+
+  - name: "Req step-07 - Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 18.6.9.1"
+      - "Reference: CIS Benchmark checkpoint 18.6.9.1"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: Req step-01 - Detect Windows server role"
+      - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
+      - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+      - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ _step01_output.stdout | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: Req step-02 - Set LLTDIO GP registry values for Domain Controller"
+      - "  Command: ansible.windows.win_regedit (loop over {{ lltd_values | join(', ') }})"
+      - "  Exit code: {{ _step02_output.rc | default(0) }}"
+      - "  Data: {{ lltd_values | join(', ') }}"
+      - "  Status: {{ status_02 | default('SKIP') | trim }}"
+      - "  Details: {{ 'Applied to registry' if status_02 | default('SKIP') == 'PASS' else 'Not applied or skipped' }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: Req step-03 - Set LLTDIO GP registry values for Member Server"
+      - "  Command: ansible.windows.win_regedit (loop over {{ lltd_values | join(', ') }})"
+      - "  Exit code: {{ _step03_output.rc | default(0) }}"
+      - "  Data: {{ lltd_values | join(', ') }}"
+      - "  Status: {{ status_03 | default('SKIP') | trim }}"
+      - "  Details: {{ 'Applied to registry' if status_03 | default('SKIP') == 'PASS' else 'Not applied or skipped' }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: Req step-04 - Verify LLTDIO GP registry values for Domain Controller"
+      - "  Command: ansible.windows.win_reg_stat (loop over {{ lltd_values | join(', ') }})"
+      - "  Exit code: 0"
+      - "  Data: {{ lltd_values | join(', ') }}"
+      - "  Status: {{ status_04 | default('SKIP') | trim }}"
+      - "  Details: {{ 'All values exist and equal 0' if status_04 | default('SKIP') == 'PASS' else 'One or more values missing or non-zero' }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: Req step-05 - Verify LLTDIO GP registry values for Member Server"
+      - "  Command: ansible.windows.win_reg_stat (loop over {{ lltd_values | join(', ') }})"
+      - "  Exit code: 0"
+      - "  Data: {{ lltd_values | join(', ') }}"
+      - "  Status: {{ status_05 | default('SKIP') | trim }}"
+      - "  Details: {{ 'All values exist and equal 0' if status_05 | default('SKIP') == 'PASS' else 'One or more values missing or non-zero' }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: Req step-06 - Store final remediation result in cis_result"
+      - "  Command: set_fact"
+      - "  Exit code: 0"
+      - "  Data: {{ cis_result | default('ERROR') | trim }}"
+      - "  Status: {{ status_06 | default('ERROR') | trim }}"
+      - "  Details: Derived from active branch application and verification statuses"
+      - ""
+      - "REQUIREMENT 07 - {{ req_07 }}:"
+      - "  Task: Req step-07 - Generate remediation report"
+      - "  Command: debug"
+      - "  Exit code: 0"
+      - "  Data: REMEDIATION REPORT — CIS 18.6.9.1"
+      - "  Status: {{ status_07 | default('PASS') | trim }}"
+      - "  Details: Report generated"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "  Details: CIS 18.6.9.1 LLTDIO GP registry values"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Check if LLTD backup exists"
+    ansible.windows.win_stat:
+      path: "{{ backup_dir }}/lltd_original_values.txt"
+    register: _restore_lltd_file
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Apply original LLTD registry values"
+    ansible.windows.win_shell: |
+      $ErrorActionPreference = 'SilentlyContinue'
+      $key = '{{ lltd_path }}'
+      $file = [System.IO.Path]::GetFullPath('{{ backup_dir }}/lltd_original_values.txt')
+      if (Test-Path -LiteralPath $file) {
+        $lines = Get-Content -LiteralPath $file
+        foreach ($line in $lines) {
+          $parts = $line -split '=', 2
+          if ($parts.Count -eq 2) {
+            if ($parts[1] -eq 'ABSENT') {
+              Remove-ItemProperty -Path $key -Name $parts[0] -ErrorAction SilentlyContinue
+            } else {
+              New-Item -Path $key -Force | Out-Null
+              Set-ItemProperty -Path $key -Name $parts[0] -Value ([int]$parts[1]) -Type DWord
+            }
+          }
+        }
+        Write-Output 'RESTORE_OK'
+      } else {
+        Write-Output 'NO_BACKUP'
+      }
+    when: _restore_lltd_file.stat.exists | default(false)
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir }}"
+      state: absent
+    failed_when: false
+    tags: [restore]
