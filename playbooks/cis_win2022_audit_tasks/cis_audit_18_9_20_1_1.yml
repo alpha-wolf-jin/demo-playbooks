@@ -1,0 +1,162 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_18_9_20_1_1.yml
+
+- name: "Req step-01 - Detect Windows server role using DomainRole"
+  ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+  register: _step01_output
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-01 - Set role flags and initialize branch statuses"
+  ansible.builtin.set_fact:
+    is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+    is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+    task_01_name: "Detect Windows server role using DomainRole"
+    task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+    data_01: "{{ _step01_output.stdout | default('') | trim }}"
+    status_01: "{{ ('ERROR' if (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) else 'PASS') | trim }}"
+    details_01: "{{ ('Detected DomainRole=' ~ (_step01_output.stdout | default('') | trim) if (_step01_output.rc | default(-1) == 0) else 'Failed to detect role') | trim }}"
+    status_02: "{{ ('SKIP' if ((_step01_output.stdout | default('') | trim) not in ['4','5']) else '') | trim }}"
+    status_03: "{{ ('SKIP' if ((_step01_output.stdout | default('') | trim) not in ['1','2','3']) else '') | trim }}"
+    status_04: "{{ ('SKIP' if ((_step01_output.stdout | default('') | trim) not in ['4','5']) else '') | trim }}"
+    status_05: "{{ ('SKIP' if ((_step01_output.stdout | default('') | trim) not in ['1','2','3']) else '') | trim }}"
+
+- name: "Req step-02 - Read DisableWebPnPDownload registry value for Domain Controller"
+  ansible.windows.win_reg_stat:
+    path: |-
+      HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+    name: 'DisableWebPnPDownload'
+  register: _step02_output
+  when: is_dc | bool
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-02 - Store Domain Controller registry read report data"
+  ansible.builtin.set_fact:
+    task_02_name: "Read DisableWebPnPDownload registry value for Domain Controller"
+    task_02_cmd: |-
+      ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload'
+    task_02_rc: "{{ _step02_output.rc | default(0) }}"
+    data_02: "{{ 'exists=' ~ (_step02_output.exists | default('missing')) ~ ', value=' ~ (_step02_output.value | default('missing')) }}"
+    status_02: "{{ ('ERROR' if ('exists' not in (_step02_output | default({}))) else 'PASS') | trim }}"
+    details_02: "{{ ('ERROR: registry read returned no structured data' if ('exists' not in (_step02_output | default({}))) else 'Registry read succeeded') | trim }}"
+  when: is_dc | bool
+
+- name: "Req step-03 - Read DisableWebPnPDownload registry value for Member Server"
+  ansible.windows.win_reg_stat:
+    path: |-
+      HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+    name: 'DisableWebPnPDownload'
+  register: _step03_output
+  when: is_member | bool
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-03 - Store Member Server registry read report data"
+  ansible.builtin.set_fact:
+    task_03_name: "Read DisableWebPnPDownload registry value for Member Server"
+    task_03_cmd: |-
+      ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload'
+    task_03_rc: "{{ _step03_output.rc | default(0) }}"
+    data_03: "{{ 'exists=' ~ (_step03_output.exists | default('missing')) ~ ', value=' ~ (_step03_output.value | default('missing')) }}"
+    status_03: "{{ ('ERROR' if ('exists' not in (_step03_output | default({}))) else 'PASS') | trim }}"
+    details_03: "{{ ('ERROR: registry read returned no structured data' if ('exists' not in (_step03_output | default({}))) else 'Registry read succeeded') | trim }}"
+  when: is_member | bool
+
+- name: "Req step-04 - Evaluate Domain Controller registry result for DisableWebPnPDownload"
+  ansible.builtin.set_fact:
+    task_04_name: "Evaluate Domain Controller registry result for DisableWebPnPDownload"
+    task_04_cmd: |-
+      ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload'
+    task_04_rc: "{{ _step02_output.rc | default(0) }}"
+    data_04: "{{ 'exists=' ~ (_step02_output.exists | default('missing')) ~ ', value=' ~ (_step02_output.value | default('missing')) }}"
+    status_04: "{{ ('ERROR' if ('exists' not in (_step02_output | default({}))) else ('PASS' if ((_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 1)) else 'FAIL')) | trim }}"
+    details_04: "{{ ('ERROR: registry read returned no structured data' if ('exists' not in (_step02_output | default({}))) else ('Compliant: DisableWebPnPDownload exists and equals 1' if ((_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 1)) else 'Non-compliant: DisableWebPnPDownload missing or not equal to 1')) | trim }}"
+    _cis_status: "{{ ('ERROR' if ('exists' not in (_step02_output | default({}))) else ('PASS' if ((_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 1)) else 'FAIL')) | trim }}"
+  when: is_dc | bool
+
+- name: "Req step-05 - Evaluate Member Server registry result for DisableWebPnPDownload"
+  ansible.builtin.set_fact:
+    task_05_name: "Evaluate Member Server registry result for DisableWebPnPDownload"
+    task_05_cmd: |-
+      ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers' name='DisableWebPnPDownload'
+    task_05_rc: "{{ _step03_output.rc | default(0) }}"
+    data_05: "{{ 'exists=' ~ (_step03_output.exists | default('missing')) ~ ', value=' ~ (_step03_output.value | default('missing')) }}"
+    status_05: "{{ ('ERROR' if ('exists' not in (_step03_output | default({}))) else ('PASS' if ((_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 1)) else 'FAIL')) | trim }}"
+    details_05: "{{ ('ERROR: registry read returned no structured data' if ('exists' not in (_step03_output | default({}))) else ('Compliant: DisableWebPnPDownload exists and equals 1' if ((_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 1)) else 'Non-compliant: DisableWebPnPDownload missing or not equal to 1')) | trim }}"
+    _cis_status: "{{ ('ERROR' if ('exists' not in (_step03_output | default({}))) else ('PASS' if ((_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 1)) else 'FAIL')) | trim }}"
+  when: is_member | bool
+
+- name: "Req step-06 - Set cis_result from active branch verify status"
+  ansible.builtin.set_fact:
+    cis_result: "{{ 'ERROR' if not (is_dc | bool) and not (is_member | bool) else (_cis_status | default('ERROR') | trim) }}"
+
+- name: "Req step-06 - Store requirement 06 report data"
+  ansible.builtin.set_fact:
+    task_06_name: "Store final audit result in cis_result"
+    task_06_cmd: "set_fact cis_result"
+    task_06_rc: "0"
+    data_06: "{{ cis_result | default('ERROR') | trim }}"
+    status_06: "{{ cis_result | default('ERROR') | trim }}"
+    details_06: "Overall compliance derived from active branch verify status"
+
+- name: "Req step-07 - Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 18.9.20.1.1"
+    - "Reference: CIS Benchmark checkpoint 18.9.20.1.1"
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: {{ task_01_name | default('Not recorded') }}"
+    - "  Command: {{ task_01_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_01_rc | default(-1) }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: {{ task_02_name | default('Not recorded') }}"
+    - "  Command: {{ task_02_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_02_rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: {{ task_03_name | default('Not recorded') }}"
+    - "  Command: {{ task_03_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_03_rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: {{ task_04_name | default('Not recorded') }}"
+    - "  Command: {{ task_04_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_04_rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: {{ task_05_name | default('Not recorded') }}"
+    - "  Command: {{ task_05_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_05_rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
+    - "  Status: {{ status_05 | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 06 - {{ req_06 }}:"
+    - "  Task: {{ task_06_name | default('Not recorded') }}"
+    - "  Command: {{ task_06_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_06_rc | default(-1) }}"
+    - "  Data: {{ data_06 | default('') | trim }}"
+    - "  Status: {{ status_06 | default('ERROR') | trim }}"
+    - "  Details: {{ details_06 | default('') | trim }}"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: {{ details_06 | default('Not evaluated') | trim }}"
+    - "========================================================"
