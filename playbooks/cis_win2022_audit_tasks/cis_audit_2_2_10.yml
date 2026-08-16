@@ -1,0 +1,125 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_2_2_10.yml
+
+- name: "Req step-01 - Check if Remote Desktop Services system service is installed and running"
+  ansible.windows.win_shell: |
+    $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
+    if (-not $svc) {
+      Write-Output 'NOT_FOUND'
+      exit 1
+    }
+    Write-Output ("{0}|{1}" -f $svc.Status, $svc.StartType)
+    if ($svc.Status -eq 'Running') { exit 0 } else { exit 1 }
+  register: _service_status
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-02 - Evaluate Remote Desktop Services service status and set skip flag if not installed or running"
+  ansible.builtin.set_fact:
+    _rdp_service_ok: "{{ (_service_status.rc | default(-1) | int) == 0 }}"
+    _cis_status: "{{ 'SKIP' if (_service_status.rc | default(-1) | int) != 0 else 'RUNNING' }}"
+
+- name: "Req step-03 - Read current value of Allow log on through Remote Desktop Services"
+  ansible.windows.win_shell: |
+    $tmp = Join-Path $env:TEMP 'cis_2_2_10_userright.cfg'
+    secedit /export /cfg $tmp /areas USER_RIGHTS | Out-Null
+    if (-not (Test-Path -LiteralPath $tmp)) {
+      Write-Output 'EXPORT_FAILED'
+      exit 2
+    }
+    $content = Get-Content -LiteralPath $tmp -Raw -Encoding Unicode
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    $m = [regex]::Match($content, '(?m)^\s*SeRemoteInteractiveLogonRight\s*=\s*(.*?)\s*$')
+    if (-not $m.Success) {
+      Write-Output 'NOT_FOUND'
+      exit 1
+    }
+    $raw = $m.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+      Write-Output 'NOT_FOUND'
+      exit 1
+    }
+    $sids = $raw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+    $names = foreach ($sid in $sids) {
+      try {
+        $nt = (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value
+        if ($nt -like 'BUILTIN\*') { $nt.Substring(8) } else { $nt }
+      } catch { $sid }
+    }
+    (($names | Sort-Object) -join ', ')
+    exit 0
+  register: _step03_output
+  changed_when: false
+  failed_when: false
+  when: _rdp_service_ok | bool
+
+- name: "Req step-04 - Evaluate whether Allow log on through Remote Desktop Services matches Administrators and Remote Desktop Users"
+  ansible.builtin.set_fact:
+    status_04: >-
+      {{ 'SKIP' if not (_rdp_service_ok | bool) else
+         'ERROR' if ((_step03_output.rc | default(-1) | int) not in [0, 1]) else
+         'PASS' if ((_step03_output.stdout | default('') | trim) == 'Administrators, Remote Desktop Users') else
+         'FAIL' }}
+    data_04: >-
+      {{ 'Not applicable: Remote Desktop Services not running' if not (_rdp_service_ok | bool) else
+         (_step03_output.stdout | default('') | trim) }}
+    details_04: >-
+      {{ 'Skipped because Remote Desktop Services is not installed or running' if not (_rdp_service_ok | bool) else
+         'Policy read failed or returned no data' if ((_step03_output.rc | default(-1) | int) not in [0, 1]) else
+         'Policy value is ' ~ (_step03_output.stdout | default('') | trim) ~ '; required Administrators, Remote Desktop Users' }}
+
+- name: "Req step-05 - Store final audit result in cis_result variable"
+  ansible.builtin.set_fact:
+    cis_result: "{{ status_04 | default('ERROR') | trim }}"
+
+- name: "Req step-06 - Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 2.2.10"
+    - "Reference: CIS Benchmark checkpoint 2.2.10"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: Check if Remote Desktop Services system service is installed and running"
+    - "  Command: PowerShell Get-Service -Name TermService"
+    - "  Exit code: {{ _service_status.rc | default(-1) }}"
+    - "  Data: {{ _service_status.stdout | default('') | trim }}"
+    - "  Status: {{ 'ERROR' if ((_service_status.rc | default(-1) | int) not in [0, 1]) else 'PASS' }}"
+    - "  Details: {{ 'Command returned rc ' ~ (_service_status.rc | default(-1)) }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: Evaluate whether Remote Desktop Services is installed and running"
+    - "  Command: set_fact"
+    - "  Exit code: {{ 0 }}"
+    - "  Data: {{ _cis_status | default('') | trim }}"
+    - "  Status: {{ 'PASS' if (_rdp_service_ok | bool) else 'SKIP' }}"
+    - "  Details: {{ 'Service is installed and running' if (_rdp_service_ok | bool) else 'Service is not installed or not running; skip policy evaluation' }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: Read current value of Allow log on through Remote Desktop Services"
+    - "  Command: PowerShell secedit export and parse SeRemoteInteractiveLogonRight"
+    - "  Exit code: {{ _step03_output.rc | default(-1) }}"
+    - "  Data: {{ _step03_output.stdout | default('') | trim }}"
+    - "  Status: {{ 'SKIP' if not (_rdp_service_ok | bool) else 'ERROR' if ((_step03_output.rc | default(-1) | int) not in [0, 1]) else 'PASS' }}"
+    - "  Details: {{ 'Skipped because Remote Desktop Services is not running' if not (_rdp_service_ok | bool) else 'Policy read completed' if ((_step03_output.rc | default(-1) | int) in [0, 1]) else 'Policy read failed' }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: Evaluate whether Allow log on through Remote Desktop Services matches Administrators and Remote Desktop Users"
+    - "  Command: set_fact"
+    - "  Exit code: {{ _step03_output.rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: Store final audit result in cis_result"
+    - "  Command: set_fact"
+    - "  Exit code: {{ 0 }}"
+    - "  Data: {{ cis_result | default('') | trim }}"
+    - "  Status: {{ 'PASS' if cis_result | default('') | trim in ['PASS','FAIL','SKIP','ERROR'] else 'ERROR' }}"
+    - "  Details: Final audit result stored"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "========================================================"
