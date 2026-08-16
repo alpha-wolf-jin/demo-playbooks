@@ -1,5 +1,5 @@
 ---
-- name: "Audit CIS checkpoint 18.6.9.1 - Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'"
+- name: "Audit CIS checkpoint 18.6.9.1: Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'"
   hosts: all
   gather_facts: false
   vars:
@@ -11,7 +11,7 @@
     req_04: "If Domain Controller: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly configured. Check ALL 4 registry values from the loop results: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. PASS only if ALL loop items have .exists == true AND .value == 0 (REG_DWORD). FAIL if ANY value is absent (NOT_CONFIGURED) OR has .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the loop results are structured dicts."
     req_05: "If Member Server: Evaluate whether 'Ensure 'Turn on Mapper I/O (LLTDIO) driver' is set to 'Disabled'' is correctly configured. Check ALL 4 registry values from the loop results: ['AllowLLTDIOOnDomain', 'AllowLLTDIOOnPublicNet', 'EnableLLTDIO', 'ProhibitLLTDIOOnPrivateNet']. PASS only if ALL loop items have .exists == true AND .value == 0 (REG_DWORD). FAIL if ANY value is absent (NOT_CONFIGURED) OR has .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the loop results are structured dicts."
     req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    lltd_path: |-
+    lltd_reg_path: |-
       HKLM:\SOFTWARE\Policies\Microsoft\Windows\LLTD
     lltd_value_names:
       - AllowLLTDIOOnDomain
@@ -23,145 +23,135 @@
     - name: "Req step-01 - Detect Windows server role using Win32_ComputerSystem DomainRole property"
       ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
       register: _step01_output
-      changed_when: false
       failed_when: false
+      changed_when: false
 
-    - name: "Req step-01 - Set role flags and store step-01 data"
+    - name: "Req step-01 - Set role flags"
       ansible.builtin.set_fact:
         is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
         is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
-        role_detection_error: "{{ (_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5'] }}"
-        task_01_name: "Detect Windows server role using Win32_ComputerSystem DomainRole property"
-        task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
-        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-        data_01: "{{ _step01_output.stdout | default('') | trim }}"
-        status_01: "{{ 'PASS' if ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
-        details_01: "{{ 'DomainRole ' ~ (_step01_output.stdout | default('') | trim) if ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'Failed to detect a valid DomainRole' }}"
+        role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
 
     - name: "Req step-02 - Read LLTDIO registry values for Domain Controller"
       ansible.windows.win_reg_stat:
-        path: "{{ lltd_path }}"
+        path: "{{ lltd_reg_path }}"
         name: "{{ item }}"
       register: _step02_output
       loop: "{{ lltd_value_names }}"
       when: is_dc | bool
-      changed_when: false
       failed_when: false
-
-    - name: "Req step-02 - Store Domain Controller registry read status"
-      ansible.builtin.set_fact:
-        task_02_name: "Read LLTDIO registry values for Domain Controller"
-        task_02_cmd: "ansible.windows.win_reg_stat loop over AllowLLTDIOOnDomain, AllowLLTDIOOnPublicNet, EnableLLTDIO, ProhibitLLTDIOOnPrivateNet"
-        task_02_rc: "{{ '0' if (is_dc | bool) else 'N/A' }}"
-        data_02: "{{ ((_step02_output.results | default([])) | to_json) if (is_dc | bool) else 'SKIP' }}"
-        status_02: "{{ 'SKIP' if not (is_dc | bool) else 'PASS' if ((_step02_output.results | default([])) | length == 4) else 'ERROR' }}"
-        details_02: "{{ 'Not applicable for Member Server' if not (is_dc | bool) else 'Read 4 LLTDIO registry values successfully' if ((_step02_output.results | default([])) | length == 4) else 'Failed to read all 4 LLTDIO registry values' }}"
+      changed_when: false
 
     - name: "Req step-03 - Read LLTDIO registry values for Member Server"
       ansible.windows.win_reg_stat:
-        path: "{{ lltd_path }}"
+        path: "{{ lltd_reg_path }}"
         name: "{{ item }}"
       register: _step03_output
       loop: "{{ lltd_value_names }}"
       when: is_member | bool
-      changed_when: false
       failed_when: false
+      changed_when: false
 
-    - name: "Req step-03 - Store Member Server registry read status"
+    - name: "Req step-04 - Verify LLTDIO registry values for Domain Controller"
       ansible.builtin.set_fact:
-        task_03_name: "Read LLTDIO registry values for Member Server"
-        task_03_cmd: "ansible.windows.win_reg_stat loop over AllowLLTDIOOnDomain, AllowLLTDIOOnPublicNet, EnableLLTDIO, ProhibitLLTDIOOnPrivateNet"
-        task_03_rc: "{{ '0' if (is_member | bool) else 'N/A' }}"
-        data_03: "{{ ((_step03_output.results | default([])) | to_json) if (is_member | bool) else 'SKIP' }}"
-        status_03: "{{ 'SKIP' if not (is_member | bool) else 'PASS' if ((_step03_output.results | default([])) | length == 4) else 'ERROR' }}"
-        details_03: "{{ 'Not applicable for Domain Controller' if not (is_member | bool) else 'Read 4 LLTDIO registry values successfully' if ((_step03_output.results | default([])) | length == 4) else 'Failed to read all 4 LLTDIO registry values' }}"
-
-    - name: "Req step-04 - Verify LLTDIO registry values are disabled for Domain Controller"
-      ansible.builtin.set_fact:
-        task_04_name: "Verify LLTDIO registry values are disabled for Domain Controller"
-        task_04_cmd: "Evaluate ansible.windows.win_reg_stat loop results"
-        task_04_rc: "0"
-        data_04: "{{ ((_step02_output.results | default([])) | to_json) if (is_dc | bool) else 'SKIP' }}"
-        status_04: "{{ 'ERROR' if ((_step02_output.results | default([])) | length != 4) else 'PASS' if (((_step02_output.results | default([])) | selectattr('exists') | list | length == 4) and (((_step02_output.results | default([])) | selectattr('exists') | map(attribute='value') | map('int') | list) == [0,0,0,0])) else 'FAIL' }}"
-        _cis_status: "{{ 'ERROR' if ((_step02_output.results | default([])) | length != 4) else 'PASS' if (((_step02_output.results | default([])) | selectattr('exists') | list | length == 4) and (((_step02_output.results | default([])) | selectattr('exists') | map(attribute='value') | map('int') | list) == [0,0,0,0])) else 'FAIL' }}"
-        details_04: "DC LLTDIO GP registry verification completed"
+        dc_verify_status: >-
+          {%- set results = _step02_output.results | default([]) -%}
+          {%- set existing_values = results | selectattr('exists') | map(attribute='value') | map('int') | list -%}
+          {{- 'ERROR' if results | length != 4 else
+              'PASS' if existing_values | length == 4 and (existing_values | reject('equalto', 0) | list | length == 0) else
+              'FAIL' -}}
+        _cis_status: >-
+          {%- set results = _step02_output.results | default([]) -%}
+          {%- set existing_values = results | selectattr('exists') | map(attribute='value') | map('int') | list -%}
+          {{- 'ERROR' if results | length != 4 else
+              'PASS' if existing_values | length == 4 and (existing_values | reject('equalto', 0) | list | length == 0) else
+              'FAIL' -}}
       when: is_dc | bool
 
-    - name: "Req step-05 - Verify LLTDIO registry values are disabled for Member Server"
+    - name: "Req step-05 - Verify LLTDIO registry values for Member Server"
       ansible.builtin.set_fact:
-        task_05_name: "Verify LLTDIO registry values are disabled for Member Server"
-        task_05_cmd: "Evaluate ansible.windows.win_reg_stat loop results"
-        task_05_rc: "0"
-        data_05: "{{ ((_step03_output.results | default([])) | to_json) if (is_member | bool) else 'SKIP' }}"
-        status_05: "{{ 'ERROR' if ((_step03_output.results | default([])) | length != 4) else 'PASS' if (((_step03_output.results | default([])) | selectattr('exists') | list | length == 4) and (((_step03_output.results | default([])) | selectattr('exists') | map(attribute='value') | map('int') | list) == [0,0,0,0])) else 'FAIL' }}"
-        _cis_status: "{{ 'ERROR' if ((_step03_output.results | default([])) | length != 4) else 'PASS' if (((_step03_output.results | default([])) | selectattr('exists') | list | length == 4) and (((_step03_output.results | default([])) | selectattr('exists') | map(attribute='value') | map('int') | list) == [0,0,0,0])) else 'FAIL' }}"
-        details_05: "Member Server LLTDIO GP registry verification completed"
+        member_verify_status: >-
+          {%- set results = _step03_output.results | default([]) -%}
+          {%- set existing_values = results | selectattr('exists') | map(attribute='value') | map('int') | list -%}
+          {{- 'ERROR' if results | length != 4 else
+              'PASS' if existing_values | length == 4 and (existing_values | reject('equalto', 0) | list | length == 0) else
+              'FAIL' -}}
+        _cis_status: >-
+          {%- set results = _step03_output.results | default([]) -%}
+          {%- set existing_values = results | selectattr('exists') | map(attribute='value') | map('int') | list -%}
+          {{- 'ERROR' if results | length != 4 else
+              'PASS' if existing_values | length == 4 and (existing_values | reject('equalto', 0) | list | length == 0) else
+              'FAIL' -}}
       when: is_member | bool
 
-    - name: "Req step-06 - Store final audit result in cis_result"
+    - name: "Req step-06 - Set cis_result"
       ansible.builtin.set_fact:
-        task_06_name: "Aggregate branch verify status into cis_result"
-        task_06_cmd: "set_fact"
-        task_06_rc: "0"
-        data_06: "{{ _step01_output.stdout | default('') | trim }}"
-        details_06: "Overall compliance derived from active branch verification status"
-        cis_result: "{{ 'ERROR' if (role_detection_error | bool) else (status_04 | default('ERROR')) if (is_dc | bool) else (status_05 | default('ERROR')) if (is_member | bool) else 'ERROR' }}"
+        cis_result: >-
+          {{- 'ERROR' if (role_detection_error | bool) else
+              'PASS' if (is_dc | bool) and (dc_verify_status | default('ERROR') | trim == 'PASS') else
+              'FAIL' if (is_dc | bool) and (dc_verify_status | default('ERROR') | trim == 'FAIL') else
+              'ERROR' if (is_dc | bool) else
+              'PASS' if (is_member | bool) and (member_verify_status | default('ERROR') | trim == 'PASS') else
+              'FAIL' if (is_member | bool) and (member_verify_status | default('ERROR') | trim == 'FAIL') else
+              'ERROR' if (is_member | bool) else
+              'SKIP' -}}
 
-    - name: "Generate audit report"
+    - name: "Req step-07 - Generate audit report"
       ansible.builtin.debug:
         msg:
           - "AUDIT REPORT — CIS 18.6.9.1"
           - "Reference: CIS Benchmark checkpoint 18.6.9.1"
           - ""
           - "REQUIREMENT 01 - {{ req_01 }}:"
-          - "  Task: {{ task_01_name | default('Not recorded') }}"
-          - "  Command: {{ task_01_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_01_rc | default(-1) }}"
-          - "  Data: {{ data_01 | default('') | trim }}"
-          - "  Status: {{ status_01 | default('ERROR') | trim }}"
-          - "  Details: {{ details_01 | default('') | trim }}"
+          - "  Task: Detect Windows server role using Win32_ComputerSystem DomainRole property"
+          - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
+          - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+          - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+          - "  Status: {{ 'PASS' if ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'ERROR' }}"
+          - "  Details: {{ 'Detected DomainRole=' ~ (_step01_output.stdout | default('') | trim) if ((_step01_output.stdout | default('') | trim) in ['1','2','3','4','5']) else 'Detection failed or unrecognized value' }}"
           - ""
           - "REQUIREMENT 02 - {{ req_02 }}:"
-          - "  Task: {{ task_02_name | default('Not recorded') }}"
-          - "  Command: {{ task_02_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_02_rc | default('N/A') }}"
-          - "  Data: {{ data_02 | default('') | trim }}"
-          - "  Status: {{ status_02 | default('ERROR') | trim }}"
-          - "  Details: {{ details_02 | default('') | trim }}"
+          - "  Task: Read LLTDIO registry values for Domain Controller"
+          - "  Command: ansible.windows.win_reg_stat loop over ['AllowLLTDIOOnDomain','AllowLLTDIOOnPublicNet','EnableLLTDIO','ProhibitLLTDIOOnPrivateNet']"
+          - "  Exit code: {{ -1 if not (is_dc | bool) else 0 if ((_step02_output.results | default([]) | length) == 4) else 1 }}"
+          - "  Data: {{ _step02_output.results | default([]) | to_json }}"
+          - "  Status: {{ 'SKIP' if not (is_dc | bool) else 'ERROR' if ((_step02_output.results | default([]) | length) != 4) else 'PASS' }}"
+          - "  Details: {{ 'Not applicable on this server role' if not (is_dc | bool) else 'Read 4 registry values' if ((_step02_output.results | default([]) | length) == 4) else 'Registry read did not return 4 values' }}"
           - ""
           - "REQUIREMENT 03 - {{ req_03 }}:"
-          - "  Task: {{ task_03_name | default('Not recorded') }}"
-          - "  Command: {{ task_03_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_03_rc | default('N/A') }}"
-          - "  Data: {{ data_03 | default('') | trim }}"
-          - "  Status: {{ status_03 | default('ERROR') | trim }}"
-          - "  Details: {{ details_03 | default('') | trim }}"
+          - "  Task: Read LLTDIO registry values for Member Server"
+          - "  Command: ansible.windows.win_reg_stat loop over ['AllowLLTDIOOnDomain','AllowLLTDIOOnPublicNet','EnableLLTDIO','ProhibitLLTDIOOnPrivateNet']"
+          - "  Exit code: {{ -1 if not (is_member | bool) else 0 if ((_step03_output.results | default([]) | length) == 4) else 1 }}"
+          - "  Data: {{ _step03_output.results | default([]) | to_json }}"
+          - "  Status: {{ 'SKIP' if not (is_member | bool) else 'ERROR' if ((_step03_output.results | default([]) | length) != 4) else 'PASS' }}"
+          - "  Details: {{ 'Not applicable on this server role' if not (is_member | bool) else 'Read 4 registry values' if ((_step03_output.results | default([]) | length) == 4) else 'Registry read did not return 4 values' }}"
           - ""
           - "REQUIREMENT 04 - {{ req_04 }}:"
-          - "  Task: {{ task_04_name | default('Not recorded') }}"
-          - "  Command: {{ task_04_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_04_rc | default('N/A') }}"
-          - "  Data: {{ data_04 | default('') | trim }}"
-          - "  Status: {{ status_04 | default('SKIP') | trim }}"
-          - "  Details: {{ details_04 | default('') | trim }}"
+          - "  Task: Verify LLTDIO registry values for Domain Controller"
+          - "  Command: set_fact dc_verify_status from win_reg_stat loop results"
+          - "  Exit code: {{ -1 if not (is_dc | bool) else 0 if (dc_verify_status | default('ERROR') | trim) in ['PASS','FAIL'] else 1 }}"
+          - "  Data: {{ dc_verify_status | default('ERROR') | trim }}"
+          - "  Status: {{ 'SKIP' if not (is_dc | bool) else (dc_verify_status | default('ERROR') | trim) }}"
+          - "  Details: {{ 'Not applicable on this server role' if not (is_dc | bool) else 'Compliant: all four LLTDIO values exist and equal 0' if ((dc_verify_status | default('ERROR') | trim) == 'PASS') else 'Non-compliant or unable to verify: ' ~ (dc_verify_status | default('ERROR') | trim) }}"
           - ""
           - "REQUIREMENT 05 - {{ req_05 }}:"
-          - "  Task: {{ task_05_name | default('Not recorded') }}"
-          - "  Command: {{ task_05_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_05_rc | default('N/A') }}"
-          - "  Data: {{ data_05 | default('') | trim }}"
-          - "  Status: {{ status_05 | default('SKIP') | trim }}"
-          - "  Details: {{ details_05 | default('') | trim }}"
+          - "  Task: Verify LLTDIO registry values for Member Server"
+          - "  Command: set_fact member_verify_status from win_reg_stat loop results"
+          - "  Exit code: {{ -1 if not (is_member | bool) else 0 if (member_verify_status | default('ERROR') | trim) in ['PASS','FAIL'] else 1 }}"
+          - "  Data: {{ member_verify_status | default('ERROR') | trim }}"
+          - "  Status: {{ 'SKIP' if not (is_member | bool) else (member_verify_status | default('ERROR') | trim) }}"
+          - "  Details: {{ 'Not applicable on this server role' if not (is_member | bool) else 'Compliant: all four LLTDIO values exist and equal 0' if ((member_verify_status | default('ERROR') | trim) == 'PASS') else 'Non-compliant or unable to verify: ' ~ (member_verify_status | default('ERROR') | trim) }}"
           - ""
           - "REQUIREMENT 06 - {{ req_06 }}:"
-          - "  Task: {{ task_06_name | default('Not recorded') }}"
-          - "  Command: {{ task_06_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_06_rc | default('N/A') }}"
-          - "  Data: {{ data_06 | default('') | trim }}"
+          - "  Task: Store final audit result in cis_result"
+          - "  Command: set_fact cis_result from active branch verify status"
+          - "  Exit code: {{ 0 if (cis_result | default('ERROR') | trim) in ['PASS','FAIL','SKIP','ERROR'] else 1 }}"
+          - "  Data: {{ cis_result | default('ERROR') | trim }}"
           - "  Status: {{ cis_result | default('ERROR') | trim }}"
-          - "  Details: {{ details_06 | default('') | trim }}"
+          - "  Details: {{ 'Overall compliance is ' ~ (cis_result | default('ERROR') | trim) }}"
           - ""
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: {{ 'Overall compliance is ' ~ (cis_result | default('ERROR') | trim) }}"
           - "========================================================"
