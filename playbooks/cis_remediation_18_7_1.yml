@@ -1,0 +1,327 @@
+---
+- name: "Remediate CIS checkpoint 18.7.1: Ensure 'Allow Print Spooler to accept client connections' is set to 'Disabled'"
+  hosts: all
+  gather_facts: false
+  vars:
+    playbook_name: "cis_18_7_1_remediation"
+    backup_dir: "C:/ai-playbooks-backup/{{ playbook_name }}"
+    reg_path: |-
+      HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers
+    reg_name: 'RegisterSpoolerRemoteConnections'
+    reg_expected: 0
+
+    req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
+    req_02: |-
+      If Domain Controller: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept client connections' to 'Disabled'. The path is under HKLM:\\SOFTWARE\\Policies\\... — consult the CIS benchmark reference or ADMX template for the exact path and value name. type=dword. Do NOT use win_shell or PowerShell Set-ItemProperty — win_regedit is idempotent and correct for GP registry settings.
+    req_03: |-
+      If Member Server: Use ansible.windows.win_regedit to write the CIS-required registry DWORD for 'Spooler to accept client connections' to 'Disabled'. The path is under HKLM:\\SOFTWARE\\Policies\\... — consult the CIS benchmark reference or ADMX template for the exact path and value name. type=dword. Do NOT use win_shell or PowerShell Set-ItemProperty — win_regedit is idempotent and correct for GP registry settings.
+    req_04: "If Domain Controller: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module returns structured data — check result.exists==true AND result.value equals the required DWORD. Do NOT check .stdout or .rc. changed_when: false."
+    req_05: "If Member Server: Verify using ansible.windows.win_reg_stat on the same registry path and value name. The module returns structured data — check result.exists==true AND result.value equals the required DWORD. Do NOT check .stdout or .rc. changed_when: false."
+    req_06: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+
+  pre_tasks:
+    - name: "Snapshot - Remove stale backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir }}"
+        state: absent
+      tags: [snapshot]
+
+    - name: "Snapshot - Create backup directory"
+      ansible.windows.win_file:
+        path: "{{ backup_dir }}"
+        state: directory
+      tags: [snapshot]
+
+    - name: "Snapshot - Capture current registry value"
+      ansible.windows.win_shell: |
+        $path = '{{ reg_path }}'
+        $name = '{{ reg_name }}'
+        $val = Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue
+        $snapshotFile = '{{ backup_dir }}/reg_snapshot.txt'
+        if ($null -eq $val) {
+          Set-Content -LiteralPath $snapshotFile -Value 'ABSENT' -Encoding utf8
+        } else {
+          Set-Content -LiteralPath $snapshotFile -Value ([string]($val.$name)) -Encoding utf8
+        }
+        Write-Output 'SNAPSHOT_OK'
+      register: _snapshot_reg
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+  tasks:
+    - block:
+        - name: "Initialize data variables"
+          ansible.builtin.set_fact:
+            data_01: "Not collected yet"
+            status_01: "ERROR"
+            details_01: "Not evaluated"
+            data_02: "Not collected yet"
+            status_02: "SKIP"
+            details_02: "Not applicable"
+            data_03: "Not collected yet"
+            status_03: "SKIP"
+            details_03: "Not applicable"
+            data_04: "Not collected yet"
+            status_04: "SKIP"
+            details_04: "Not applicable"
+            data_05: "Not collected yet"
+            status_05: "SKIP"
+            details_05: "Not applicable"
+            data_06: "Not collected yet"
+            status_06: "ERROR"
+            details_06: "Not evaluated"
+            task_01_name: "Not executed"
+            task_01_cmd: "N/A"
+            task_01_rc: -1
+            task_02_name: "Not executed"
+            task_02_cmd: "N/A"
+            task_02_rc: -1
+            task_03_name: "Not executed"
+            task_03_cmd: "N/A"
+            task_03_rc: -1
+            task_04_name: "Not executed"
+            task_04_cmd: "N/A"
+            task_04_rc: -1
+            task_05_name: "Not executed"
+            task_05_cmd: "N/A"
+            task_05_rc: -1
+            task_06_name: "Not executed"
+            task_06_cmd: "N/A"
+            task_06_rc: -1
+          tags: [execute]
+
+        - name: "Req step-01 - Detect Windows server role"
+          ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+          register: _step01_output
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-01 - Set role flags and detection status"
+          ansible.builtin.set_fact:
+            is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+            is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+            status_01: "{{ 'PASS' if (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5'] else 'ERROR' }}"
+            data_01: "{{ _step01_output.stdout | default('') | trim }}"
+            details_01: "{{ 'Detected DomainRole ' ~ (_step01_output.stdout | default('') | trim) if (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5'] else 'Role detection failed or returned invalid DomainRole' }}"
+            task_01_name: "Detect Windows server role"
+            task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+            task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+          tags: [execute]
+
+        - name: "Req step-00 - Check Print Spooler service presence"
+          ansible.windows.win_shell: |
+            $s = Get-Service -Name Spooler -ErrorAction SilentlyContinue
+            if ($null -eq $s) {
+              Write-Output 'ABSENT'
+            } else {
+              Write-Output 'PRESENT'
+            }
+          register: _spooler_check
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-00 - Set spooler installed flag"
+          ansible.builtin.set_fact:
+            spooler_installed: "{{ (_spooler_check.stdout | default('') | trim) == 'PRESENT' }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Disable print spooler client connections on Domain Controller"
+          ansible.windows.win_regedit:
+            path: "{{ reg_path }}"
+            name: "{{ reg_name }}"
+            data: "{{ reg_expected }}"
+            type: dword
+          when: "(is_dc | bool) and (spooler_installed | bool)"
+          failed_when: false
+          register: _step02_output
+          tags: [execute]
+
+        - name: "Req step-02 - Store DC apply status"
+          ansible.builtin.set_fact:
+            status_02: "{{ 'SKIP' if not (is_dc | bool) else 'SKIP' if not (spooler_installed | bool) else 'PASS' }}"
+            data_02: "{{ 'Print Spooler service not installed' if not (spooler_installed | bool) else 'Registry ' ~ reg_path ~ ':' ~ reg_name ~ ' set to ' ~ reg_expected }}"
+            details_02: "{{ 'Print Spooler service not installed - skipped' if not (spooler_installed | bool) else 'win_regedit applied type=dword data=' ~ reg_expected }}"
+            task_02_name: "Disable print spooler client connections on Domain Controller"
+            task_02_cmd: "win_regedit path={{ reg_path }} name={{ reg_name }} data={{ reg_expected }} type=dword"
+            task_02_rc: "{{ _step02_output.rc | default(0) }}"
+          when: is_dc | bool
+          tags: [execute]
+
+        - name: "Req step-03 - Disable print spooler client connections on Member Server"
+          ansible.windows.win_regedit:
+            path: "{{ reg_path }}"
+            name: "{{ reg_name }}"
+            data: "{{ reg_expected }}"
+            type: dword
+          when: "(is_member | bool) and (spooler_installed | bool)"
+          failed_when: false
+          register: _step03_output
+          tags: [execute]
+
+        - name: "Req step-03 - Store Member Server apply status"
+          ansible.builtin.set_fact:
+            status_03: "{{ 'SKIP' if not (is_member | bool) else 'SKIP' if not (spooler_installed | bool) else 'PASS' }}"
+            data_03: "{{ 'Print Spooler service not installed' if not (spooler_installed | bool) else 'Registry ' ~ reg_path ~ ':' ~ reg_name ~ ' set to ' ~ reg_expected }}"
+            details_03: "{{ 'Print Spooler service not installed - skipped' if not (spooler_installed | bool) else 'win_regedit applied type=dword data=' ~ reg_expected }}"
+            task_03_name: "Disable print spooler client connections on Member Server"
+            task_03_cmd: "win_regedit path={{ reg_path }} name={{ reg_name }} data={{ reg_expected }} type=dword"
+            task_03_rc: "{{ _step03_output.rc | default(0) }}"
+          when: is_member | bool
+          tags: [execute]
+
+        - name: "Req step-04 - Verify registry on Domain Controller"
+          ansible.windows.win_reg_stat:
+            path: "{{ reg_path }}"
+            name: "{{ reg_name }}"
+          register: _step04_output
+          when: "(is_dc | bool) and (spooler_installed | bool)"
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-04 - Set DC verify status"
+          ansible.builtin.set_fact:
+            status_04: "{{ 'SKIP' if not (is_dc | bool) else 'SKIP' if not (spooler_installed | bool) else 'PASS' if ((_step04_output.exists | default(false) | bool) and ((_step04_output.value | default(-1) | int) == (reg_expected | int))) else 'FAIL' }}"
+            data_04: "{{ 'Print Spooler service not installed' if not (spooler_installed | bool) else (_step04_output.value | default('')) }}"
+            details_04: "{{ 'Print Spooler service not installed - skipped' if not (spooler_installed | bool) else ('Registry value exists and equals ' ~ reg_expected if ((_step04_output.exists | default(false) | bool) and ((_step04_output.value | default(-1) | int) == (reg_expected | int))) else 'Registry value missing or not equal to ' ~ reg_expected) }}"
+            task_04_name: "Verify registry on Domain Controller"
+            task_04_cmd: "win_reg_stat path={{ reg_path }} name={{ reg_name }}"
+            task_04_rc: 0
+          when: is_dc | bool
+          tags: [execute]
+
+        - name: "Req step-05 - Verify registry on Member Server"
+          ansible.windows.win_reg_stat:
+            path: "{{ reg_path }}"
+            name: "{{ reg_name }}"
+          register: _step05_output
+          when: "(is_member | bool) and (spooler_installed | bool)"
+          failed_when: false
+          changed_when: false
+          tags: [execute]
+
+        - name: "Req step-05 - Set Member Server verify status"
+          ansible.builtin.set_fact:
+            status_05: "{{ 'SKIP' if not (is_member | bool) else 'SKIP' if not (spooler_installed | bool) else 'PASS' if ((_step05_output.exists | default(false) | bool) and ((_step05_output.value | default(-1) | int) == (reg_expected | int))) else 'FAIL' }}"
+            data_05: "{{ 'Print Spooler service not installed' if not (spooler_installed | bool) else (_step05_output.value | default('')) }}"
+            details_05: "{{ 'Print Spooler service not installed - skipped' if not (spooler_installed | bool) else ('Registry value exists and equals ' ~ reg_expected if ((_step05_output.exists | default(false) | bool) and ((_step05_output.value | default(-1) | int) == (reg_expected | int))) else 'Registry value missing or not equal to ' ~ reg_expected) }}"
+            task_05_name: "Verify registry on Member Server"
+            task_05_cmd: "win_reg_stat path={{ reg_path }} name={{ reg_name }}"
+            task_05_rc: 0
+          when: is_member | bool
+          tags: [execute]
+
+        - name: "Req step-06 - Compute final remediation result"
+          ansible.builtin.set_fact:
+            _cis_result: >-
+              {{ 'ERROR' if (status_01 | trim) == 'ERROR' else
+                 'FAIL' if ((is_dc | bool) and ((status_02 | trim) == 'FAIL' or (status_04 | trim) == 'FAIL')) else
+                 'FAIL' if ((is_member | bool) and ((status_03 | trim) == 'FAIL' or (status_05 | trim) == 'FAIL')) else
+                 'PASS' if ((is_dc | bool) and (status_04 | trim) == 'PASS') or ((is_member | bool) and (status_05 | trim) == 'PASS') else
+                 'SKIP' }}
+          tags: [execute]
+
+        - name: "Req step-06 - Store final remediation result"
+          ansible.builtin.set_fact:
+            cis_result: "{{ _cis_result | trim }}"
+            status_06: "{{ _cis_result | trim }}"
+            data_06: "{{ _cis_result | trim }}"
+            details_06: "Final remediation result aggregated from active branch statuses"
+            task_06_name: "Store final remediation result"
+            task_06_cmd: "set_fact cis_result"
+            task_06_rc: 0
+          tags: [execute]
+
+        - name: "Req step-07 - Generate remediation report"
+          ansible.builtin.debug:
+            msg:
+              - "REMEDIATION REPORT — CIS 18.7.1"
+              - "Reference: CIS Benchmark checkpoint 18.7.1"
+              - ""
+              - "REQUIREMENT 01 - {{ req_01 }}:"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 04 - {{ req_04 }}:"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 05 - {{ req_05 }}:"
+              - "  Task: {{ task_05_name | default('Not recorded') }}"
+              - "  Command: {{ task_05_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_05_rc | default(-1) }}"
+              - "  Data: {{ data_05 | default('') | trim }}"
+              - "  Status: {{ status_05 | default('ERROR') | trim }}"
+              - "  Details: {{ details_05 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 06 - {{ req_06 }}:"
+              - "  Task: {{ task_06_name | default('Not recorded') }}"
+              - "  Command: {{ task_06_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_06_rc | default(-1) }}"
+              - "  Data: {{ data_06 | default('') | trim }}"
+              - "  Status: {{ status_06 | default('ERROR') | trim }}"
+              - "  Details: {{ details_06 | default('') | trim }}"
+              - ""
+              - "========================================================"
+              - "OVERALL REMEDIATION:"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "========================================================"
+          tags: [execute]
+
+      always:
+        - name: "Restore - Check if snapshot exists"
+          ansible.windows.win_stat:
+            path: "{{ backup_dir }}/reg_snapshot.txt"
+          register: _restore_snap_check
+          failed_when: false
+          tags: [restore]
+
+        - name: "Restore - Restore registry value from snapshot"
+          ansible.windows.win_shell: |
+            $snapFile = '{{ backup_dir }}/reg_snapshot.txt'
+            $saved = (Get-Content -LiteralPath $snapFile -Raw).Trim()
+            if ($saved -eq 'ABSENT') {
+              Remove-ItemProperty -Path '{{ reg_path }}' -Name '{{ reg_name }}' -ErrorAction SilentlyContinue
+              Write-Output 'RESTORED_ABSENT'
+            } else {
+              Set-ItemProperty -Path '{{ reg_path }}' -Name '{{ reg_name }}' -Value ([int]$saved)
+              Write-Output "RESTORED:$saved"
+            }
+          when: _restore_snap_check.stat.exists | default(false)
+          failed_when: false
+          changed_when: false
+          tags: [restore]
+
+        - name: "Restore - Remove backup directory"
+          ansible.windows.win_file:
+            path: "{{ backup_dir }}"
+            state: absent
+          failed_when: false
+          tags: [restore]
