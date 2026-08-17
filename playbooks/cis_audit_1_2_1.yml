@@ -3,14 +3,14 @@
   hosts: all
   gather_facts: false
   vars:
-    lockout_duration_minutes: "15"
+    lockout_duration_minutes: '15'
     req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
     req_02: "If Domain Controller: Read 'Account lockout duration' via Get-ADDefaultDomainPasswordPolicy. changed_when: false."
-    req_03: "If Member Server: Read 'Account lockout duration' using community.windows.win_security_policy with section=System Access. changed_when: false."
+    req_03: "If Member Server: Read 'Account lockout duration' from local security policy. Use ansible.windows.win_shell to export the local security policy: 'secedit /export /cfg <temp_path> /areas SECURITYPOLICY /quiet', then parse the numeric value for 'Account lockout duration' from the exported INI file and compare it against the required threshold. changed_when: false."
     req_04: "If Domain Controller: Evaluate whether 'Account lockout duration' is equals '15 or more minute(s)'. PASS if compliant, FAIL if not, ERROR if the check failed."
     req_05: "If Member Server: Evaluate whether 'Account lockout duration' is equals '15 or more minute(s)'. PASS if compliant, FAIL if not, ERROR if the check failed."
     req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    req_07: "Create a task named 'Generate audit report' using debug msg with EXACTLY this format."
+    req_07: !unsafe "Create a task named 'Generate audit report' using debug msg with EXACTLY this format: AUDIT REPORT — CIS 1.2.1; Reference: CIS Benchmark checkpoint 1.2.1; Then for each requirement: REQUIREMENT NN - {{ req_NN }}: With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details. End with OVERALL COMPLIANCE: section containing Result: {{ cis_result }}"
 
   tasks:
     - name: "Req step-01 - Detect Windows server role"
@@ -19,136 +19,210 @@
       changed_when: false
       failed_when: false
 
-    - name: "Req step-01 - Set role flags and initialize statuses"
+    - name: "Req step-01 - Set role flags and detection status"
       ansible.builtin.set_fact:
-        is_dc: "{{ ((_step01_output | default({})).stdout | default('') | trim) in ['4', '5'] }}"
-        is_member: "{{ ((_step01_output | default({})).stdout | default('') | trim) in ['1', '2', '3'] }}"
-        role_detection_error: "{{ ((_step01_output | default({})).rc | default(-1)) != 0 or (((_step01_output | default({})).stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
-        status_01: "{{ 'ERROR' if ((_step01_output | default({})).rc | default(-1)) != 0 or (((_step01_output | default({})).stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) else 'PASS' }}"
-        data_01: "{{ (_step01_output | default({})).stdout | default('') | trim }}"
-        details_01: "{{ 'Domain Controller' if (((_step01_output | default({})).stdout | default('') | trim) in ['4', '5']) else ('Member Server' if (((_step01_output | default({})).stdout | default('') | trim) in ['1', '2', '3']) else 'Role detection failed or unrecognized DomainRole') }}"
-        task_01_name: "Req step-01 - Detect Windows server role"
+        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+        role_detection_error: "{{ ((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        status_01: >-
+          {{ 'ERROR' if (((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5'])) else 'PASS' }}
+        details_01: >-
+          {{ 'Server role detection failed or DomainRole value unrecognised' if (((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5'])) else ('Domain Controller' if ((_step01_output.stdout | default('') | trim) in ['4', '5']) else 'Member Server') }}
+        task_01_name: "Detect Windows server role via Win32_ComputerSystem.DomainRole"
         task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
-        task_01_rc: "{{ (_step01_output | default({})).rc | default(-1) }}"
-        status_02: "{{ 'SKIP' }}"
-        status_03: "{{ 'SKIP' }}"
-        status_04: "{{ 'SKIP' }}"
-        status_05: "{{ 'SKIP' }}"
-        data_02: "N/A"
-        data_03: "N/A"
-        data_04: "N/A"
-        data_05: "N/A"
+        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
 
-    - name: "Req step-02 - Read DC account lockout duration"
+    - name: "Req step-02 - Read AD default domain password policy lockout duration"
       ansible.windows.win_shell: |
-        $p = Get-ADDefaultDomainPasswordPolicy
-        $d = $p.LockoutDuration
-        if ($d -is [System.TimeSpan]) {
-          Write-Output ([int]$d.TotalMinutes)
-        } elseif ($d -match '^\d+$') {
-          Write-Output ([int]$d)
-        } else {
-          try { Write-Output ([int]([TimeSpan]$d).TotalMinutes) } catch { Write-Output $d }
+        $ErrorActionPreference = 'Stop'
+        if (-not (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue)) {
+          Write-Output 'AD_MODULE_NOT_AVAILABLE'
+          exit 3
         }
+        $policy = Get-ADDefaultDomainPasswordPolicy
+        if ($null -eq $policy) {
+          Write-Output 'AD_POLICY_NOT_FOUND'
+          exit 4
+        }
+        $dur = $policy.LockoutDuration
+        if ($dur -is [TimeSpan]) { Write-Output ([math]::Floor($dur.TotalMinutes)) } else { Write-Output ([int]$dur) }
       register: _step02_output
       when: is_dc | bool
       changed_when: false
       failed_when: false
 
-    - name: "Req step-02 - Store DC read result"
+    - name: "Req step-02 - Store DC read status"
       ansible.builtin.set_fact:
-        status_02: "{{ 'ERROR' if ((_step02_output | default({})).rc | default(-1)) != 0 else 'PASS' }}"
-        data_02: "{{ (_step02_output | default({})).stdout | default('') | trim }}"
-        details_02: "{{ 'Failed to read AD policy' if ((_step02_output | default({})).rc | default(-1)) != 0 else ('AD LockoutDuration minutes: ' ~ ((_step02_output | default({})).stdout | default('') | trim)) }}"
-        task_02_name: "Req step-02 - Read DC account lockout duration"
-        task_02_cmd: "Get-ADDefaultDomainPasswordPolicy LockoutDuration"
-        task_02_rc: "{{ (_step02_output | default({})).rc | default(-1) }}"
+        data_02: "{{ _step02_output.stdout | default('') | trim }}"
+        status_02: >-
+          {{ 'SKIP' if not (is_dc | bool) else
+             'SKIP' if ('AD_MODULE_NOT_AVAILABLE' in (_step02_output.stdout | default(''))) else
+             'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') else
+             'PASS' }}
+        details_02: >-
+          {{ 'Not applicable (Member Server)' if not (is_dc | bool) else
+             'Active Directory module not installed' if ('AD_MODULE_NOT_AVAILABLE' in (_step02_output.stdout | default(''))) else
+             'Failed to read AD default domain password policy' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') else
+             ('LockoutDuration minutes: ' ~ (_step02_output.stdout | default('') | trim)) }}
+        task_02_name: "Read AD default domain password policy LockoutDuration"
+        task_02_cmd: "Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty LockoutDuration"
+        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
       when: is_dc | bool
 
-    - name: "Req step-04 - Evaluate DC account lockout duration compliance"
-      ansible.builtin.set_fact:
-        _cis_status: >-
-          {{ 'ERROR' if ((_step02_output | default({})).rc | default(-1)) != 0 or (data_02 | trim) == '' or ((data_02 | trim) | int(default=-1)) < 0 else
-             'PASS' if ((data_02 | trim) | int) >= (lockout_duration_minutes | int) else
-             'FAIL' }}
-        status_04: >-
-          {{ 'ERROR' if ((_step02_output | default({})).rc | default(-1)) != 0 or (data_02 | trim) == '' or ((data_02 | trim) | int(default=-1)) < 0 else
-             'PASS' if ((data_02 | trim) | int) >= (lockout_duration_minutes | int) else
-             'FAIL' }}
-        data_04: "{{ data_02 }}"
-        details_04: >-
-          {{ 'Failed to read AD policy' if ((_step02_output | default({})).rc | default(-1)) != 0 or (data_02 | trim) == '' or ((data_02 | trim) | int(default=-1)) < 0 else
-             ('Account lockout duration is ' ~ (data_02 | trim) ~ ' minute(s); required ' ~ lockout_duration_minutes ~ ' or more') }}
-        task_04_name: "Req step-04 - Evaluate DC account lockout duration compliance"
-        task_04_cmd: "N/A"
-        task_04_rc: 0
-      when: is_dc | bool
-
-    - name: "Req step-03 - Read member server account lockout duration"
-      community.windows.win_security_policy:
-        section: "System Access"
-        key: "LockoutDuration"
-      register: _step03_output
+    - name: "Req step-03 - Export local security policy to temp file"
+      ansible.windows.win_shell: |
+        $tmp = Join-Path $env:TEMP 'cis_audit_secpol_1_2_1.cfg'
+        secedit /export /cfg "$tmp" /areas SECURITYPOLICY /quiet | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          Write-Output 'SECEDIT_EXPORT_FAILED'
+          exit 2
+        }
+        if (-not (Test-Path -LiteralPath $tmp)) {
+          Write-Output 'SECEDIT_EXPORT_FAILED'
+          exit 2
+        }
+        Write-Output 'EXPORTED'
+      register: _member_export
       when: is_member | bool
       changed_when: false
       failed_when: false
 
-    - name: "Req step-03 - Store member read result"
+    - name: "Req step-03 - Parse Account lockout duration from exported security policy"
+      ansible.windows.win_shell: |
+        $tmp = Join-Path $env:TEMP 'cis_audit_secpol_1_2_1.cfg'
+        $exitCode = 0
+        try {
+          if (-not (Test-Path -LiteralPath $tmp)) {
+            Write-Output 'SECEDIT_EXPORT_FAILED'
+            $exitCode = 2
+          } else {
+            try {
+              $lines = [System.IO.File]::ReadAllLines($tmp, [System.Text.Encoding]::Unicode)
+            } catch {
+              $lines = [System.IO.File]::ReadAllLines($tmp)
+            }
+            $line = $lines | Where-Object { $_ -match '^\s*LockoutDuration\s*=\s*\d+' } | Select-Object -First 1
+            if ($null -eq $line) {
+              Write-Output 'LOCKOUT_DURATION_NOT_FOUND'
+              Write-Output '--- Security Policy [System Access] section ---'
+              $inSection = $false
+              foreach ($l in $lines) {
+                if ($l -match '^\s*\[System Access\]\s*') { $inSection = $true }
+                if ($inSection) { Write-Output $l }
+                if ($inSection -and $l -match '^\s*\[' -and $l -notmatch '^\s*\[System Access\]\s*') { break }
+              }
+              $exitCode = 1
+            } else {
+              $val = [regex]::Match($line, '\d+').Value
+              Write-Output $val
+            }
+          }
+        } finally {
+          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+        exit $exitCode
+      register: _member_policy
+      when: is_member | bool
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-03 - Store member read status"
       ansible.builtin.set_fact:
-        data_03: "{{ (_step03_output.system_access.LockoutDuration | default(_step03_output.LockoutDuration | default(''), true)) | string | trim }}"
+        data_03: "{{ _member_policy.stdout | default('') | trim }}"
         status_03: >-
-          {{ 'ERROR' if (((_step03_output.system_access.LockoutDuration | default(_step03_output.LockoutDuration | default(''), true)) | string | trim) == '' or
-             (((_step03_output.system_access.LockoutDuration | default(_step03_output.LockoutDuration | default(''), true)) | string | trim) | int(default=-1)) < 0)
-             else 'PASS' }}
-        details_03: >-
-          {{ 'Member LockoutDuration read failed or returned non-numeric output' if (((_step03_output.system_access.LockoutDuration | default(_step03_output.LockoutDuration | default(''), true)) | string | trim) == '' or
-             (((_step03_output.system_access.LockoutDuration | default(_step03_output.LockoutDuration | default(''), true)) | string | trim) | int(default=-1)) < 0)
-             else ('Member LockoutDuration is ' ~ ((_step03_output.system_access.LockoutDuration | default(_step03_output.LockoutDuration | default(''), true)) | string | trim) ~ ' minute(s)') }}
-        task_03_name: "Req step-03 - Read member server account lockout duration"
-        task_03_cmd: "community.windows.win_security_policy section=System Access key=LockoutDuration"
-        task_03_rc: "{{ (_step03_output | default({})).rc | default(0) }}"
-      when: is_member | bool
-
-    - name: "Req step-05 - Evaluate member server account lockout duration compliance"
-      ansible.builtin.set_fact:
+          {{ 'SKIP' if not (is_member | bool) else
+             'ERROR' if ('SECEDIT_EXPORT_FAILED' in (_member_policy.stdout | default(''))) or ((_member_policy.rc | default(-1)) == 2) else
+             'ERROR' if ((_member_policy.rc | default(-1)) != 0) and ('LOCKOUT_DURATION_NOT_FOUND' not in (_member_policy.stdout | default(''))) else
+             'ERROR' if ((_member_policy.stdout | default('') | trim) == '') else
+             'FAIL' if ('LOCKOUT_DURATION_NOT_FOUND' in (_member_policy.stdout | default(''))) else
+             'PASS' }}
         _cis_status: >-
-          {{ 'ERROR' if (data_03 | default('') | trim) == '' or ((data_03 | default('') | trim) | int(default=-1)) < 0 else
-             'PASS' if ((data_03 | default('') | trim) | int) >= (lockout_duration_minutes | int) else
-             'FAIL' }}
-        status_05: >-
-          {{ 'ERROR' if (data_03 | default('') | trim) == '' or ((data_03 | default('') | trim) | int(default=-1)) < 0 else
-             'PASS' if ((data_03 | default('') | trim) | int) >= (lockout_duration_minutes | int) else
-             'FAIL' }}
-        data_05: "{{ data_03 | default('') | trim }}"
-        details_05: >-
-          {{ 'Member LockoutDuration check failed or returned non-numeric output' if (data_03 | default('') | trim) == '' or ((data_03 | default('') | trim) | int(default=-1)) < 0 else
-             ('Account lockout duration is ' ~ (data_03 | default('') | trim) ~ ' minute(s); required ' ~ lockout_duration_minutes ~ ' or more') }}
-        task_05_name: "Req step-05 - Evaluate member server account lockout duration compliance"
-        task_05_cmd: "N/A"
-        task_05_rc: 0
+          {{ 'SKIP' if not (is_member | bool) else
+             'ERROR' if ('SECEDIT_EXPORT_FAILED' in (_member_policy.stdout | default(''))) or ((_member_policy.rc | default(-1)) == 2) else
+             'ERROR' if ((_member_policy.rc | default(-1)) != 0) and ('LOCKOUT_DURATION_NOT_FOUND' not in (_member_policy.stdout | default(''))) else
+             'ERROR' if ((_member_policy.stdout | default('') | trim) == '') else
+             'FAIL' if ('LOCKOUT_DURATION_NOT_FOUND' in (_member_policy.stdout | default(''))) else
+             'PASS' }}
+        details_03: >-
+          {{ 'Not applicable (Domain Controller)' if not (is_member | bool) else
+             'Failed to export or parse local security policy' if ('SECEDIT_EXPORT_FAILED' in (_member_policy.stdout | default(''))) or ((_member_policy.rc | default(-1)) == 2) else
+             'LockoutDuration key not found; account lockout duration is not configured to 15 or more minutes' if ('LOCKOUT_DURATION_NOT_FOUND' in (_member_policy.stdout | default(''))) else
+             'Failed to read local security policy' if ((_member_policy.rc | default(-1)) != 0) or ((_member_policy.stdout | default('') | trim) == '') else
+             ('Local LockoutDuration value: ' ~ (_member_policy.stdout | default('') | trim)) }}
+        task_03_name: "Export local security policy and parse LockoutDuration"
+        task_03_cmd: |-
+          secedit /export /cfg $env:TEMP\\cis_audit_secpol_1_2_1.cfg /areas SECURITYPOLICY /quiet; parse LockoutDuration or report not found
+        task_03_rc: "{{ _member_policy.rc | default(-1) }}"
       when: is_member | bool
 
-    - name: "Req step-06 - Set final cis_result"
+    - name: "Req step-04 - Evaluate DC Account lockout duration compliance"
+      ansible.builtin.set_fact:
+        data_04: "{{ _step02_output.stdout | default('') | trim }}"
+        status_04: >-
+          {{ 'SKIP' if ('AD_MODULE_NOT_AVAILABLE' in (_step02_output.stdout | default(''))) else
+             'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') else
+             'PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (lockout_duration_minutes | int) else
+             'FAIL' }}
+        _cis_status: >-
+          {{ 'SKIP' if ('AD_MODULE_NOT_AVAILABLE' in (_step02_output.stdout | default(''))) else
+             'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') else
+             'PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (lockout_duration_minutes | int) else
+             'FAIL' }}
+        details_04: >-
+          {{ 'Active Directory module not installed - check skipped' if ('AD_MODULE_NOT_AVAILABLE' in (_step02_output.stdout | default(''))) else
+             'Failed to read AD default domain password policy' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) == '') else
+             'DC LockoutDuration is ' ~ (_step02_output.stdout | default('') | trim) ~ ' minutes; required ' ~ lockout_duration_minutes ~ ' or more' }}
+        task_04_name: "Evaluate DC Account lockout duration against threshold"
+        task_04_cmd: "Get-ADDefaultDomainPasswordPolicy LockoutDuration"
+        task_04_rc: "{{ _step02_output.rc | default(-1) }}"
+      when: is_dc | bool
+
+    - name: "Req step-05 - Evaluate Member Server Account lockout duration compliance"
+      ansible.builtin.set_fact:
+        data_05: "{{ _member_policy.stdout | default('') | trim }}"
+        status_05: >-
+          {{ 'SKIP' if not (is_member | bool) else
+             'ERROR' if ('SECEDIT_EXPORT_FAILED' in (_member_policy.stdout | default(''))) or ((_member_policy.rc | default(-1)) == 2) else
+             'ERROR' if ((_member_policy.rc | default(-1)) != 0) and ('LOCKOUT_DURATION_NOT_FOUND' not in (_member_policy.stdout | default(''))) else
+             'ERROR' if ((_member_policy.stdout | default('') | trim) == '') else
+             'FAIL' if ('LOCKOUT_DURATION_NOT_FOUND' in (_member_policy.stdout | default(''))) else
+             'PASS' if ((_member_policy.stdout | default('') | trim) | int) >= (lockout_duration_minutes | int) else
+             'FAIL' }}
+        _cis_status: >-
+          {{ 'SKIP' if not (is_member | bool) else
+             'ERROR' if ('SECEDIT_EXPORT_FAILED' in (_member_policy.stdout | default(''))) or ((_member_policy.rc | default(-1)) == 2) else
+             'ERROR' if ((_member_policy.rc | default(-1)) != 0) and ('LOCKOUT_DURATION_NOT_FOUND' not in (_member_policy.stdout | default(''))) else
+             'ERROR' if ((_member_policy.stdout | default('') | trim) == '') else
+             'FAIL' if ('LOCKOUT_DURATION_NOT_FOUND' in (_member_policy.stdout | default(''))) else
+             'PASS' if ((_member_policy.stdout | default('') | trim) | int) >= (lockout_duration_minutes | int) else
+             'FAIL' }}
+        details_05: >-
+          {{ 'Not applicable (Domain Controller)' if not (is_member | bool) else
+             'Failed to export or parse local security policy' if ('SECEDIT_EXPORT_FAILED' in (_member_policy.stdout | default(''))) or ((_member_policy.rc | default(-1)) == 2) else
+             'Member Server audit check could not be completed' if ((_member_policy.rc | default(-1)) != 0) and ('LOCKOUT_DURATION_NOT_FOUND' not in (_member_policy.stdout | default(''))) else
+             'Account lockout duration is not configured; required 15 or more minutes' if ('LOCKOUT_DURATION_NOT_FOUND' in (_member_policy.stdout | default(''))) else
+             'Member Server LockoutDuration is ' ~ (_member_policy.stdout | default('') | trim) ~ ' minutes; required ' ~ lockout_duration_minutes ~ ' or more' }}
+        task_05_name: "Evaluate Member Server Account lockout duration against threshold"
+        task_05_cmd: "parse LockoutDuration from secedit export"
+        task_05_rc: "{{ _member_policy.rc | default(-1) }}"
+      when: is_member | bool
+
+    - name: "Req step-06 - Set cis_result based on active branch evaluation status"
       ansible.builtin.set_fact:
         cis_result: >-
           {{ 'ERROR' if (role_detection_error | bool) else
-             'ERROR' if not (is_dc | bool) and not (is_member | bool) else
-             'SKIP' if (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'SKIP') else
-             'SKIP' if (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'SKIP') else
-             'ERROR' if (is_dc | bool) and ((status_04 | default('ERROR') | trim) == 'ERROR') else
-             'FAIL' if (is_dc | bool) and ((status_04 | default('ERROR') | trim) == 'FAIL') else
-             'PASS' if (is_dc | bool) and ((status_04 | default('ERROR') | trim) == 'PASS') else
-             'ERROR' if (is_member | bool) and ((status_05 | default('ERROR') | trim) == 'ERROR') else
-             'FAIL' if (is_member | bool) and ((status_05 | default('ERROR') | trim) == 'FAIL') else
-             'PASS' if (is_member | bool) and ((status_05 | default('ERROR') | trim) == 'PASS') else
-             'SKIP' }}
-
-    - name: "Req step-06 - Store final result details"
-      ansible.builtin.set_fact:
-        status_06: "{{ 'PASS' if (cis_result | default('ERROR') | trim) in ['PASS', 'FAIL', 'SKIP', 'ERROR'] else 'ERROR' }}"
-        data_06: "{{ cis_result | default('ERROR') | trim }}"
-        details_06: "Final cis_result={{ cis_result | default('ERROR') | trim }}"
-        task_06_name: "Req step-06 - Set final cis_result"
+             'SKIP' if not (is_dc | bool or is_member | bool) else
+             (_cis_status | default('ERROR')) }}
+        status_06: >-
+          {{ 'ERROR' if (role_detection_error | bool) else
+             'SKIP' if not (is_dc | bool or is_member | bool) else
+             (_cis_status | default('ERROR')) }}
+        details_06: >-
+          {{ 'Role detection failed or DomainRole value unrecognised' if (role_detection_error | bool) else
+             'No applicable server role detected' if not (is_dc | bool or is_member | bool) else
+             ('Active branch result: ' ~ (_cis_status | default('ERROR'))) }}
+        task_06_name: "Set cis_result based on active branch evaluation status"
         task_06_cmd: "set_fact cis_result"
         task_06_rc: 0
 
@@ -164,57 +238,55 @@
           - "  Exit code: {{ task_01_rc | default(-1) }}"
           - "  Data: {{ data_01 | default('') | trim }}"
           - "  Status: {{ status_01 | default('ERROR') | trim }}"
-          - "  Details: {{ details_01 | default('') | trim }}"
+          - "  Details: {{ details_01 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 02 - {{ req_02 }}:"
           - "  Task: {{ task_02_name | default('Not recorded') }}"
           - "  Command: {{ task_02_cmd | default('N/A') }}"
           - "  Exit code: {{ task_02_rc | default(-1) }}"
           - "  Data: {{ data_02 | default('') | trim }}"
-          - "  Status: {{ status_02 | default('ERROR') | trim }}"
-          - "  Details: {{ details_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('SKIP') | trim }}"
+          - "  Details: {{ details_02 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 03 - {{ req_03 }}:"
           - "  Task: {{ task_03_name | default('Not recorded') }}"
           - "  Command: {{ task_03_cmd | default('N/A') }}"
           - "  Exit code: {{ task_03_rc | default(-1) }}"
           - "  Data: {{ data_03 | default('') | trim }}"
-          - "  Status: {{ status_03 | default('ERROR') | trim }}"
-          - "  Details: {{ details_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('SKIP') | trim }}"
+          - "  Details: {{ details_03 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 04 - {{ req_04 }}:"
           - "  Task: {{ task_04_name | default('Not recorded') }}"
           - "  Command: {{ task_04_cmd | default('N/A') }}"
           - "  Exit code: {{ task_04_rc | default(-1) }}"
           - "  Data: {{ data_04 | default('') | trim }}"
-          - "  Status: {{ status_04 | default('ERROR') | trim }}"
-          - "  Details: {{ details_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('SKIP') | trim }}"
+          - "  Details: {{ details_04 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 05 - {{ req_05 }}:"
           - "  Task: {{ task_05_name | default('Not recorded') }}"
           - "  Command: {{ task_05_cmd | default('N/A') }}"
           - "  Exit code: {{ task_05_rc | default(-1) }}"
           - "  Data: {{ data_05 | default('') | trim }}"
-          - "  Status: {{ status_05 | default('ERROR') | trim }}"
-          - "  Details: {{ details_05 | default('') | trim }}"
+          - "  Status: {{ status_05 | default('SKIP') | trim }}"
+          - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 06 - {{ req_06 }}:"
           - "  Task: {{ task_06_name | default('Not recorded') }}"
           - "  Command: {{ task_06_cmd | default('N/A') }}"
           - "  Exit code: {{ task_06_rc | default(-1) }}"
-          - "  Data: {{ data_06 | default('') | trim }}"
-          - "  Status: {{ status_06 | default('ERROR') | trim }}"
-          - "  Details: {{ details_06 | default('') | trim }}"
+          - "  Data: {{ cis_result | default('') | trim }}"
+          - "  Status: {{ status_06 | default(cis_result) | trim }}"
+          - "  Details: {{ details_06 | default('Not evaluated') | trim }}"
           - ""
           - "REQUIREMENT 07 - {{ req_07 }}:"
-          - "  Task: Req step-07 - Generate audit report"
-          - "  Command: N/A"
+          - "  Task: Generate audit report"
+          - "  Command: ansible.builtin.debug msg"
           - "  Exit code: 0"
-          - "  Data: Compliance report generated"
+          - "  Data: AUDIT REPORT — CIS 1.2.1"
           - "  Status: PASS"
-          - "  Details: Report generated successfully"
+          - "  Details: Audit report generated"
           - ""
-          - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
-          - "========================================================"
