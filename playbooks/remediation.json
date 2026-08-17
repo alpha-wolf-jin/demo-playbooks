@@ -1,13 +1,13 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "1.1.1",
-  "title": "Ensure 'Enforce password history' is set to '24 or more password(s)'",
+  "checkpoint_id": "1.2.1",
+  "title": "Ensure 'Account lockout duration' is set to '15 or more minute(s)'",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
   "transport": "winrm",
-  "connection_risk": false,
+  "connection_risk": true,
   "profile_applicability": "•  Level 1 - Domain Controller\n•  Level 1 - Member Server",
   "branching": {
     "type": "windows_server_role",
@@ -32,7 +32,7 @@
     },
     "result_aggregation": "PASS if the active branch verify step confirms the change took effect; SKIP if a branch step is not applicable to this host (the other role); FAIL if any active branch apply-or-verify step fails; ERROR if role detection fails or neither branch ran. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
   },
-  "objective": "Remediate CIS checkpoint 1.1.1: Ensure 'Enforce password history' is set to '24 or more password(s)'",
+  "objective": "Remediate CIS checkpoint 1.2.1: Ensure 'Account lockout duration' is set to '15 or more minute(s)'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -57,12 +57,12 @@
         "description": "WinRM user (Windows Administrator login)"
       },
       {
-        "name": "password_history_min",
+        "name": "lockout_duration_minutes",
         "type": "integer",
         "required": false,
-        "default": 24,
-        "unit": "passwords",
-        "description": "Minimum number of passwords to remember (Enforce password history)"
+        "default": 15,
+        "unit": "minutes",
+        "description": "Account lockout duration in minutes (must be 15 or more)"
       }
     ]
   },
@@ -97,8 +97,8 @@
     {
       "id": "step-02",
       "type": "action",
-      "name": "If Domain Controller: Set 'Enforce password history' to '24 or more password(s)' via Active Directory cmdlets…",
-      "function": "2. If Domain Controller: Set 'Enforce password history' to '24 or more password(s)' via Active Directory cmdlets (Set-ADDefaultDomainPasswordPolicy) or Group Policy. Do NOT use community.windows.win_security_policy on DC — use AD/GPO cmdlets.",
+      "name": "If Domain Controller: Set 'Account lockout duration' to '15 or more minute(s)' via Active Directory cmdlets…",
+      "function": "2. If Domain Controller: Set 'Account lockout duration' to '15 or more minute(s)' via Active Directory cmdlets (Set-ADDefaultDomainPasswordPolicy) or Group Policy. Do NOT use community.windows.win_security_policy on DC — use AD/GPO cmdlets.",
       "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-01",
@@ -116,8 +116,8 @@
     {
       "id": "step-03",
       "type": "action",
-      "name": "If Member Server: Set 'Enforce password history' to '24 or more password(s)'. Recommended module…",
-      "function": "3. If Member Server: Set 'Enforce password history' to '24 or more password(s)'. Recommended module: community.windows.win_security_policy with section=System Access and the key name. Do NOT use raw secedit CLI — community.windows.win_security_policy handles secedit internally and avoids encoding / path issues.",
+      "name": "If Member Server: Set 'Account lockout duration' to '15 or more minute(s)'. Recommended module…",
+      "function": "3. If Member Server: Set 'Account lockout duration' to '15 or more minute(s)'. Recommended module: community.windows.win_security_policy with section=System Access and the key name. Do NOT use raw secedit CLI — community.windows.win_security_policy handles secedit internally and avoids encoding / path issues.",
       "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-01",
@@ -134,10 +134,10 @@
     },
     {
       "id": "step-04",
-      "type": "action",
-      "name": "If Domain Controller: Verify 'Enforce password history' is correctly set to '24 or more password(s)'. Use…",
-      "function": "4. If Domain Controller: Verify 'Enforce password history' is correctly set to '24 or more password(s)'. Use community.windows.win_security_policy to read the value; changed_when: false.",
-      "module": "community.windows.win_security_policy",
+      "type": "collect",
+      "name": "If Domain Controller: Verify 'Account lockout duration' is correctly set to '15 or more minute(s)'. Use read-only…",
+      "function": "4. If Domain Controller: Verify 'Account lockout duration' is correctly set to '15 or more minute(s)'. Use read-only PowerShell to query the value; changed_when: false.",
+      "module": "ansible.windows.win_shell",
       "input": {
         "source": "step-02",
         "fields": [
@@ -153,9 +153,9 @@
     },
     {
       "id": "step-05",
-      "type": "action",
-      "name": "If Member Server: Verify 'Enforce password history' is correctly set to '24 or more password(s)'. Use…",
-      "function": "5. If Member Server: Verify 'Enforce password history' is correctly set to '24 or more password(s)'. Use community.windows.win_security_policy to read the value; changed_when: false.",
+      "type": "collect",
+      "name": "If Member Server: Verify 'Account lockout duration' is correctly set to '15 or more minute(s)'. Use read-only…",
+      "function": "5. If Member Server: Verify 'Account lockout duration' is correctly set to '15 or more minute(s)'. Use read-only PowerShell to query the value; changed_when: false.",
       "module": "community.windows.win_security_policy",
       "input": {
         "source": "step-03",
@@ -192,7 +192,7 @@
       "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.1\nReference: CIS Benchmark checkpoint 1.1.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.2.1\nReference: CIS Benchmark checkpoint 1.2.1\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
         "source": "step-06",
@@ -219,7 +219,7 @@
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.1 audit failed",
+      "error_message": "ERROR: CIS 1.2.1 audit failed",
       "on_success": "end",
       "branch": "common"
     }
@@ -262,22 +262,21 @@
   "compliance_constraints": [
     "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole. DC branch: use Set-ADDefaultDomainPasswordPolicy or GPO cmdlets. Member Server branch: use community.windows.win_security_policy with the appropriate section and key — do NOT use raw secedit CLI, community.windows.win_security_policy handles it internally. Both branches MUST end with a VERIFY step.",
     "Use failed_when: false on all remediation tasks (except set_fact, debug) so all steps complete and report status",
-    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages.",
-    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then remediate via the correct path: DC → Set-ADDefaultDomainPasswordPolicy or GPO cmdlets; Member Server → secedit /export → edit cfg → secedit /configure /areas SECURITYPOLICY. Do NOT use Set-ItemProperty for security policy — it has no effect. Both branches must end with a VERIFY step."
+    "If the remediation targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, SKIP all remediation steps. Do NOT install prerequisite packages."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 24 or more password(s):\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Password Policy\\Enforce password history",
+  "reference_procedure": "To establish the recommended configuration via GP, set the following UI path to 15 or more minute(s):\nComputer Configuration\\Policies\\Windows Settings\\Security Settings\\Account\nPolicies\\Account Lockout Policy\\Account lockout duration",
   "example_output": "",
-  "filename": "cis_remediation_1_1_1.yml",
+  "filename": "cis_remediation_1_2_1.yml",
   "output_dir": "./cis_win2022_remediation_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-17T18:32:39",
-    "revision": 14,
-    "approved_at": "2026-08-17T18:32:43",
+    "drafted_at": "2026-08-17T21:18:08",
+    "revision": 4,
+    "approved_at": "2026-08-17T21:20:02",
     "saved_by": null
   }
 }
