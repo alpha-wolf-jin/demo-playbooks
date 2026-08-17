@@ -115,21 +115,22 @@
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "If Member Server: Read 'Account lockout duration' using community.windows.win_security_policy with section=System…",
-      "function": "3. If Member Server: Read 'Account lockout duration' using community.windows.win_security_policy with section=System Access. changed_when: false.",
-      "module": "ansible.windows.win_shell",
+      "type": "transform",
+      "name": "If Member Server: Read 'Account lockout duration' from local security policy. Use ansible.windows.win_shell to export…",
+      "function": "3. If Member Server: Read 'Account lockout duration' from local security policy. Use ansible.windows.win_shell to export the local security policy: 'secedit /export /cfg <temp_path> /areas SECURITYPOLICY /quiet', then parse the numeric value for 'Account lockout duration' from the exported INI file and compare it against the required threshold. changed_when: false.",
       "input": {
         "source": "step-01",
         "fields": [
           "_step01_output"
         ]
       },
+      "computations": {
+        "_cis_status": "PASS if audit output contains '** PASS **', FAIL if '** FAIL **', SKIP otherwise"
+      },
       "stores": [
-        "_step03_output"
+        "_cis_status"
       ],
       "on_success": "step-04",
-      "on_fail": "step-09",
       "branch": "member"
     },
     {
@@ -160,7 +161,7 @@
       "input": {
         "source": "step-03",
         "fields": [
-          "_step03_output"
+          "_cis_status"
         ]
       },
       "computations": {
@@ -232,14 +233,14 @@
       "description": "Apply remediation changes on the target host.",
       "steps": [
         "step-01",
-        "step-02",
-        "step-03"
+        "step-02"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
+        "step-03",
         "step-04",
         "step-05",
         "step-06"
@@ -277,9 +278,9 @@
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-17T20:01:54",
-    "revision": 3,
-    "approved_at": "2026-08-17T20:01:59",
+    "drafted_at": "2026-08-17T21:17:35",
+    "revision": 4,
+    "approved_at": "2026-08-17T21:17:49",
     "saved_by": null
   }
 }
