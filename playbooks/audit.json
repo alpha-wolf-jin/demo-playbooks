@@ -1,38 +1,16 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "18.1.3",
-  "title": "Ensure 'Allow Online Tips' is set to 'Disabled'",
+  "checkpoint_id": "2.2.2",
+  "title": "Ensure 'Access this computer from the network' is set to 'Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS' (DC only)",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "winrm",
   "connection_risk": false,
-  "profile_applicability": "•  Level 2 - Domain Controller\n•  Level 2 - Member Server",
-  "branching": {
-    "type": "windows_server_role",
-    "detection_step": "step-01",
-    "detection_var": "is_dc",
-    "secondary_var": "is_member",
-    "branches": {
-      "dc": {
-        "when": "is_dc | bool",
-        "steps": [
-          "step-02",
-          "step-04"
-        ]
-      },
-      "member": {
-        "when": "is_member | bool",
-        "steps": [
-          "step-03",
-          "step-05"
-        ]
-      }
-    },
-    "result_aggregation": "PASS if the active branch verify step passes; SKIP if a branch is not applicable to this host (the other role); FAIL if the active branch check fails; ERROR if role detection fails or DomainRole value is unrecognised. Use the DC verify status for cis_result when is_dc is true; use the Member Server verify status when is_member is true."
-  },
-  "objective": "Audit CIS checkpoint 18.1.3: Ensure 'Allow Online Tips' is set to 'Disabled'",
+  "profile_applicability": "•  Level 1 - Domain Controller",
+  "branching": null,
+  "objective": "Audit CIS checkpoint 2.2.2: Ensure 'Access this computer from the network' is set to 'Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS' (DC only)",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -68,110 +46,60 @@
         "nullable": false,
         "required_by_sop": true,
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
+      },
+      {
+        "name": "audit_output",
+        "type": "string",
+        "nullable": true,
+        "required_by_sop": false,
+        "description": "Raw output from the audit command"
       }
     ]
   },
-  "audit_script": "",
+  "audit_script": "$ErrorActionPreference = 'Stop'\ntry {\n    $role = (Get-CimInstance Win32_ComputerSystem).DomainRole\n    if ($role -ne 4 -and $role -ne 5) {\n        Write-Output '** SKIP **'\n        exit 0\n    }\n    $exportPath = Join-Path $env:TEMP ('secpol_{0}_{1}.cfg' -f $PID, (Get-Random))\n    secedit /export /cfg $exportPath /areas USER_RIGHTS | Out-Null\n    $content = Get-Content $exportPath -Raw\n    if ($content -match '(?m)^\\s*SeNetworkLogonRight\\s*=\\s*(.+?)\\s*$') {\n        $current = $Matches[1].Trim()\n        $currentSids = $current -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ } | Sort-Object\n        $expected = @('S-1-5-9','S-1-5-11','S-1-5-32-544') | Sort-Object\n        $diff = @(Compare-Object -ReferenceObject $expected -DifferenceObject $currentSids -SyncWindow 0)\n        if ($diff.Count -eq 0) {\n            Write-Output '** PASS **'\n        } else {\n            Write-Output '** FAIL **'\n            Write-Output ('Current: ' + ($current -join ','))\n        }\n    } else {\n        Write-Output '** ERROR **'\n        Write-Output 'SeNetworkLogonRight not found in security policy export'\n    }\n    Remove-Item $exportPath -Force -ErrorAction SilentlyContinue\n    exit 0\n} catch {\n    Write-Output '** ERROR **'\n    Write-Output $_.Exception.Message\n    exit 1\n}",
   "steps": [
     {
       "id": "step-01",
       "type": "action",
-      "name": "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain…",
-      "function": "1. Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server.",
+      "name": "Run read-only audit script for SeNetworkLogonRight",
+      "function": "1. Use read-only PowerShell to check if the host is a Domain Controller and query the current value of 'Access this computer from the network'. Emits ** PASS **, ** FAIL **, ** SKIP **, or ** ERROR **. changed_when: false; failed_when: rc not in [0, 1].",
       "module": "ansible.windows.win_shell",
+      "parameters": {
+        "cmd": "$ErrorActionPreference = 'Stop'\ntry {\n    $role = (Get-CimInstance Win32_ComputerSystem).DomainRole\n    if ($role -ne 4 -and $role -ne 5) {\n        Write-Output '** SKIP **'\n        exit 0\n    }\n    $exportPath = Join-Path $env:TEMP ('secpol_{0}_{1}.cfg' -f $PID, (Get-Random))\n    secedit /export /cfg $exportPath /areas USER_RIGHTS | Out-Null\n    $content = Get-Content $exportPath -Raw\n    if ($content -match '(?m)^\\s*SeNetworkLogonRight\\s*=\\s*(.+?)\\s*$') {\n        $current = $Matches[1].Trim()\n        $currentSids = $current -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ } | Sort-Object\n        $expected = @('S-1-5-9','S-1-5-11','S-1-5-32-544') | Sort-Object\n        $diff = @(Compare-Object -ReferenceObject $expected -DifferenceObject $currentSids -SyncWindow 0)\n        if ($diff.Count -eq 0) {\n            Write-Output '** PASS **'\n        } else {\n            Write-Output '** FAIL **'\n            Write-Output ('Current: ' + ($current -join ','))\n        }\n    } else {\n        Write-Output '** ERROR **'\n        Write-Output 'SeNetworkLogonRight not found in security policy export'\n    }\n    Remove-Item $exportPath -Force -ErrorAction SilentlyContinue\n    exit 0\n} catch {\n    Write-Output '** ERROR **'\n    Write-Output $_.Exception.Message\n    exit 1\n}"
+      },
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-09",
-      "branch": "detect"
+      "on_fail": "step-06"
     },
     {
       "id": "step-02",
-      "type": "collect",
-      "name": "If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key…",
-      "function": "2. If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' name='AllowOnlineTips'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.",
-      "module": "ansible.windows.win_reg_stat",
+      "type": "transform",
+      "name": "Determine CIS status from audit script markers",
+      "function": "2. Evaluate the output of step-01 to determine compliance. PASS if the script reported compliant value; FAIL if non-compliant; SKIP if not a domain controller; ERROR on any failure.",
       "input": {
         "source": "step-01",
         "fields": [
           "_step01_output"
         ]
       },
+      "computations": {
+        "_cis_status": "PASS if audit output contains '** PASS **', FAIL if it contains '** FAIL **', SKIP if it contains '** SKIP **', otherwise ERROR"
+      },
       "stores": [
-        "_step02_output"
+        "_cis_status"
       ],
-      "on_success": "step-03",
-      "on_fail": "step-09",
-      "branch": "dc"
+      "on_success": "step-03"
     },
     {
       "id": "step-03",
-      "type": "collect",
-      "name": "If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key…",
-      "function": "3. If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' name='AllowOnlineTips'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.",
-      "module": "ansible.windows.win_reg_stat",
-      "input": {
-        "source": "step-01",
-        "fields": [
-          "_step01_output"
-        ]
-      },
-      "stores": [
-        "_step03_output"
-      ],
-      "on_success": "step-04",
-      "on_fail": "step-09",
-      "branch": "member"
-    },
-    {
-      "id": "step-04",
       "type": "transform",
-      "name": "If Domain Controller: Evaluate whether 'Ensure 'Allow Online Tips' is set to 'Disabled'' is set correctly. Check the…",
-      "function": "4. If Domain Controller: Evaluate whether 'Ensure 'Allow Online Tips' is set to 'Disabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 0 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict.",
-      "input": {
-        "source": "step-02",
-        "fields": [
-          "_step02_output"
-        ]
-      },
-      "computations": {
-        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==0 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=0; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
-      },
-      "stores": [
-        "_cis_status"
-      ],
-      "on_success": "step-05",
-      "branch": "dc"
-    },
-    {
-      "id": "step-05",
-      "type": "transform",
-      "name": "If Member Server: Evaluate whether 'Ensure 'Allow Online Tips' is set to 'Disabled'' is set correctly. Check the…",
-      "function": "5. If Member Server: Evaluate whether 'Ensure 'Allow Online Tips' is set to 'Disabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 0 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict.",
-      "input": {
-        "source": "step-03",
-        "fields": [
-          "_step03_output"
-        ]
-      },
-      "computations": {
-        "_cis_status": "PASS if win_reg_stat shows exists==true AND value==0 (REG_DWORD); FAIL if exists==false (key absent / NOT_CONFIGURED) OR value!=0; ERROR if the registry read step failed unexpectedly. Do NOT check stdout or rc — win_reg_stat returns structured data."
-      },
-      "stores": [
-        "_cis_status"
-      ],
-      "on_success": "step-06",
-      "branch": "member"
-    },
-    {
-      "id": "step-06",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "6. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "name": "Store final audit result as cis_result",
+      "function": "3. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
       "module": "ansible.builtin.set_fact",
       "input": {
-        "source": "step-05",
+        "source": "step-02",
         "fields": [
           "_cis_status"
         ]
@@ -179,43 +107,39 @@
       "stores": [
         "cis_result"
       ],
-      "on_success": "step-07",
-      "branch": "common"
+      "on_success": "step-04"
     },
     {
-      "id": "step-07",
+      "id": "step-04",
       "type": "emit",
-      "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 18.1.3\nReference: CIS Benchmark checkpoint 18.1.3\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "name": "Generate audit report",
+      "function": "4. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 2.2.2\nReference: CIS Benchmark checkpoint 2.2.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-06",
+        "source": "step-03",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-08",
-      "branch": "common"
+      "on_success": "step-05"
     },
     {
-      "id": "step-08",
+      "id": "step-05",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
       "output_fields": {
         "cis_result": "{{ cis_result }}"
       },
-      "on_success": "end",
-      "branch": "common"
+      "on_success": "end"
     },
     {
-      "id": "step-09",
+      "id": "step-06",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 18.1.3 audit failed",
-      "on_success": "end",
-      "branch": "common"
+      "error_message": "ERROR: CIS 2.2.2 audit failed",
+      "on_success": "end"
     }
   ],
   "phases": [
@@ -227,57 +151,48 @@
       ]
     },
     {
-      "name": "Data Collection",
-      "description": "Execute read-only commands on the target host.",
+      "name": "Analysis",
+      "description": "Evaluate collected data and determine compliance status.",
       "steps": [
         "step-02",
         "step-03"
       ]
     },
     {
-      "name": "Analysis",
-      "description": "Evaluate collected data and determine compliance status.",
-      "steps": [
-        "step-04",
-        "step-05",
-        "step-06"
-      ]
-    },
-    {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-07",
-        "step-08"
+        "step-04",
+        "step-05"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-09"
+        "step-06"
       ]
     }
   ],
   "compliance_constraints": [
-    "This checkpoint applies to BOTH Domain Controllers (DomainRole 4/5) AND Member Servers (DomainRole 1-3). Detect the server role first using (Get-WmiObject Win32_ComputerSystem).DomainRole, then audit via the correct path: DC → Active Directory / GPO cmdlets; Member Server → use the most appropriate read-only Windows module. Do NOT return SKIP for a Member Server — it is a valid audit target.",
     "Use failed_when: false on all audit tasks (except set_fact, debug) so all checks complete and report status",
     "If the audit targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, report SKIP for all checks.",
-    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.)."
+    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.).",
+    "The audit script must be read-only: it may create a temporary export file for secedit but must remove it afterward and must not modify any system settings."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed. This group policy setting is backed by the following registry location with a\nREG_DWORD value of 0.\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer:AllowOnlineT ips",
+  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed.",
   "example_output": "",
-  "filename": "cis_audit_18_1_3.yml",
+  "filename": "cis_audit_2_2_2.yml",
   "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-08-18T22:00:15",
-    "revision": 4,
-    "approved_at": "2026-08-18T22:00:45",
+    "drafted_at": "2026-08-18T23:56:07",
+    "revision": 2,
+    "approved_at": "2026-08-19T00:04:16",
     "saved_by": null
   }
 }
