@@ -2,22 +2,37 @@
 - name: Initialize meta data variables
   include_vars: cis_audit_var_1_2_1.yml
 
-- name: "Req step-01 - Detect Windows server role"
+- name: "Req step-01 - Detect Windows server role using DomainRole property"
   ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
   register: _step01_output
-  changed_when: false
   failed_when: false
+  changed_when: false
 
-- name: "Req step-01 - Set role flags"
+- name: "Req step-01 - Set role flags and initialize audit data"
   ansible.builtin.set_fact:
-    is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
-    is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
-    role_detection_error: "{{ (_step01_output.rc | default(-1)) != 0 or (_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5'] }}"
-    status_01: "{{ 'ERROR' if ((_step01_output.rc | default(-1)) != 0 or (_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) else 'PASS' }}"
+    is_dc: "{{ ((_step01_output.stdout | default('') | trim) in ['4', '5']) }}"
+    is_member: "{{ ((_step01_output.stdout | default('') | trim) in ['1', '2', '3']) }}"
+    role_detection_error: "{{ ((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
+    data_01: "{{ _step01_output.stdout | default('') | trim }}"
+    status_01: "{{ 'ERROR' if ((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) else 'PASS' }}"
+    details_01: "Server role detected from Win32_ComputerSystem DomainRole"
+    data_02: "Not collected"
+    status_02: "SKIP"
+    details_02: "Not evaluated - DC branch not active"
+    data_03: "Not collected"
+    status_03: "SKIP"
+    details_03: "Not evaluated - Member Server branch not active"
+    data_04: "Not collected"
+    status_04: "SKIP"
+    details_04: "Not evaluated - DC branch not active"
+    data_05: "Not collected"
+    status_05: "SKIP"
+    details_05: "Not evaluated - Member Server branch not active"
+    _cis_status: "{{ 'SKIP' }}"
 
 - name: "Req step-02 - Read AD default domain password policy lockout duration"
   ansible.windows.win_shell: |
-    Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+    $ErrorActionPreference = 'Stop'
     if (-not (Get-Command Get-ADDefaultDomainPasswordPolicy -ErrorAction SilentlyContinue)) {
       Write-Output 'AD_MODULE_NOT_AVAILABLE'
       exit 3
@@ -50,7 +65,7 @@
   changed_when: false
   failed_when: false
 
-- name: "Req step-03 - Parse account lockout duration from local security policy"
+- name: "Req step-03 - Parse account lockout duration from exported security policy"
   ansible.windows.win_shell: |
     $tmp = Join-Path $env:TEMP 'cis_audit_secpol.cfg'
     $exitCode = 0
@@ -77,96 +92,115 @@
       Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
     exit $exitCode
-  register: _member_policy_output
+  register: _policy_parse_result
   when: is_member | bool
   changed_when: false
   failed_when: false
 
-- name: "Req step-03 - Set member policy read status"
+- name: "Req step-03 - Set Member Server policy read status"
   ansible.builtin.set_fact:
-    _cis_status: "{{ 'ERROR' if (_member_policy_output.rc | default(-1)) != 0 or (_member_policy_output.stdout | default('') | trim) in ['', 'FILE_NOT_FOUND', 'KEY_NOT_FOUND'] else 'PASS' }}"
+    _cis_status: >-
+      {{ 'ERROR' if ((_policy_parse_result.rc | default(-1)) != 0) or ((_policy_parse_result.stdout | default('') | trim) == '') else 'PASS' }}
   when: is_member | bool
 
 - name: "Req step-04 - Evaluate Domain Controller account lockout duration"
   ansible.builtin.set_fact:
-    status_04: "{{ 'SKIP' if not (is_dc | bool) else ('SKIP' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else ('ERROR' if (_step02_output.rc | default(-1)) != 0 or (_step02_output.stdout | default('') | trim) == '' else ('PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (lockout_duration_minutes | int) else 'FAIL'))) }}"
-    _cis_status: "{{ 'SKIP' if not (is_dc | bool) else ('SKIP' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else ('ERROR' if (_step02_output.rc | default(-1)) != 0 or (_step02_output.stdout | default('') | trim) == '' else ('PASS' if ((_step02_output.stdout | default('') | trim) | int) >= (lockout_duration_minutes | int) else 'FAIL'))) }}"
+    data_02: "{{ _step02_output.stdout | default('') | trim }}"
+    status_02: "{{ 'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) in ['AD_MODULE_NOT_AVAILABLE', 'AD_POLICY_NOT_FOUND']) or ((_step02_output.stdout | default('') | trim) == '') else 'PASS' }}"
+    details_02: "{{ 'DC policy read succeeded' if ((_step02_output.rc | default(-1)) == 0) and ((_step02_output.stdout | default('') | trim) not in ['AD_MODULE_NOT_AVAILABLE', 'AD_POLICY_NOT_FOUND']) and ((_step02_output.stdout | default('') | trim) != '') else 'DC policy read failed' }}"
+    data_04: "{{ _step02_output.stdout | default('') | trim }}"
+    status_04: >-
+      {{ 'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) in ['AD_MODULE_NOT_AVAILABLE', 'AD_POLICY_NOT_FOUND']) or ((_step02_output.stdout | default('') | trim) == '') else
+         'PASS' if ((_step02_output.stdout | default('') | trim | int) >= (lockout_duration_minutes | int)) else
+         'FAIL' }}
+    details_04: "DC lockout duration compared against 15 or more minute(s) threshold"
+    _cis_status: >-
+      {{ 'ERROR' if ((_step02_output.rc | default(-1)) != 0) or ((_step02_output.stdout | default('') | trim) in ['AD_MODULE_NOT_AVAILABLE', 'AD_POLICY_NOT_FOUND']) or ((_step02_output.stdout | default('') | trim) == '') else
+         'PASS' if ((_step02_output.stdout | default('') | trim | int) >= (lockout_duration_minutes | int)) else
+         'FAIL' }}
   when: is_dc | bool
 
 - name: "Req step-05 - Evaluate Member Server account lockout duration"
   ansible.builtin.set_fact:
+    data_03: "{{ _policy_parse_result.stdout | default('') | trim }}"
+    status_03: "{{ 'ERROR' if ((_policy_parse_result.rc | default(-1)) != 0) or ((_policy_parse_result.stdout | default('') | trim) == '') else 'PASS' }}"
+    details_03: "{{ 'Member Server policy read succeeded' if ((_policy_parse_result.rc | default(-1)) == 0) and ((_policy_parse_result.stdout | default('') | trim) != '') else 'Member Server policy read failed' }}"
+    data_05: "{{ _policy_parse_result.stdout | default('') | trim }}"
     status_05: >-
-      {{ 'SKIP' if not (is_member | bool) else
-         ('ERROR' if (_member_policy_output.rc | default(-1)) != 0
-           or (_member_policy_output.stdout | default('') | trim) in ['', 'FILE_NOT_FOUND', 'KEY_NOT_FOUND']
-           else ('PASS' if ((((_member_policy_output.stdout | default('0') | trim | int) / 60) | int) >= (lockout_duration_minutes | int)) else 'FAIL')) }}
+      {{ 'ERROR' if ((_policy_parse_result.rc | default(-1)) != 0) or ((_policy_parse_result.stdout | default('') | trim) == '') else
+         'PASS' if ((_policy_parse_result.stdout | default('') | trim | int) >= (lockout_duration_minutes | int)) else
+         'FAIL' }}
+    details_05: "Member Server lockout duration compared against 15 or more minute(s) threshold"
     _cis_status: >-
-      {{ 'SKIP' if not (is_member | bool) else
-         ('ERROR' if (_member_policy_output.rc | default(-1)) != 0
-           or (_member_policy_output.stdout | default('') | trim) in ['', 'FILE_NOT_FOUND', 'KEY_NOT_FOUND']
-           else ('PASS' if ((((_member_policy_output.stdout | default('0') | trim | int) / 60) | int) >= (lockout_duration_minutes | int)) else 'FAIL')) }}
+      {{ 'ERROR' if ((_policy_parse_result.rc | default(-1)) != 0) or ((_policy_parse_result.stdout | default('') | trim) == '') else
+         'PASS' if ((_policy_parse_result.stdout | default('') | trim | int) >= (lockout_duration_minutes | int)) else
+         'FAIL' }}
   when: is_member | bool
 
-- name: "Req step-06 - Set cis_result and inactive branch statuses"
+- name: "Req step-06 - Set final audit result in cis_result"
   ansible.builtin.set_fact:
-    status_02: "{{ 'SKIP' if not (is_dc | bool) else ('SKIP' if (_step02_output.stdout | default('') | trim) == 'AD_MODULE_NOT_AVAILABLE' else ('ERROR' if (_step02_output.rc | default(-1)) != 0 or (_step02_output.stdout | default('') | trim) == '' else 'PASS')) }}"
-    status_03: "{{ 'SKIP' if not (is_member | bool) else ('ERROR' if (_member_policy_output.rc | default(-1)) != 0 or (_member_policy_output.stdout | default('') | trim) in ['', 'FILE_NOT_FOUND', 'KEY_NOT_FOUND'] else 'PASS') }}"
-    cis_result: "{{ 'ERROR' if (role_detection_error | default(false) | bool) else (status_04 if (is_dc | bool) else (status_05 if (is_member | bool) else 'SKIP')) }}"
-    _cis_status: "{{ 'ERROR' if (role_detection_error | default(false) | bool) else (status_04 if (is_dc | bool) else (status_05 if (is_member | bool) else 'SKIP')) }}"
+    cis_result: >-
+      {{ 'ERROR' if (role_detection_error | bool) else
+         'PASS' if (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'PASS') else
+         'FAIL' if (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'FAIL') else
+         'ERROR' if (is_dc | bool) and ((status_04 | default('SKIP') | trim) == 'ERROR') else
+         'PASS' if (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'PASS') else
+         'FAIL' if (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'FAIL') else
+         'ERROR' if (is_member | bool) and ((status_05 | default('SKIP') | trim) == 'ERROR') else
+         'ERROR' }}
 
 - name: "Req step-07 - Generate audit report"
-  debug:
+  ansible.builtin.debug:
     msg:
     - "AUDIT REPORT — CIS 1.2.1"
     - "Reference: CIS Benchmark checkpoint 1.2.1"
-    - ""
     - "REQUIREMENT 01 - {{ req_01 }}:"
-    - "  Task: Detect Windows server role"
+    - "  Task: Req step-01 - Detect Windows server role using DomainRole property"
     - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
     - "  Exit code: {{ _step01_output.rc | default(-1) }}"
-    - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
     - "  Status: {{ status_01 | default('ERROR') | trim }}"
-    - "  Details: DomainRole detection completed with result {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
     - ""
     - "REQUIREMENT 02 - {{ req_02 }}:"
-    - "  Task: Read AD default domain password policy lockout duration"
-    - "  Command: Get-ADDefaultDomainPasswordPolicy / LockoutDuration"
+    - "  Task: Req step-02 - Read AD default domain password policy lockout duration"
+    - "  Command: Get-ADDefaultDomainPasswordPolicy"
     - "  Exit code: {{ _step02_output.rc | default(-1) }}"
-    - "  Data: {{ _step02_output.stdout | default('') | trim }}"
-    - "  Status: {{ status_02 | default('ERROR') | trim }}"
-    - "  Details: AD module unavailable or policy read status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('SKIP') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
     - ""
     - "REQUIREMENT 03 - {{ req_03 }}:"
-    - "  Task: Export and parse local security policy lockout duration"
+    - "  Task: Req step-03 - Export and parse local security policy"
     - "  Command: secedit /export /cfg <temp_path> /areas SECURITYPOLICY /quiet"
-    - "  Exit code: {{ _member_policy_output.rc | default(-1) }}"
-    - "  Data: {{ _member_policy_output.stdout | default('') | trim }}"
-    - "  Status: {{ status_03 | default('ERROR') | trim }}"
-    - "  Details: Member local policy read status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Exit code: {{ _policy_parse_result.rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('SKIP') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
     - ""
     - "REQUIREMENT 04 - {{ req_04 }}:"
-    - "  Task: Evaluate Domain Controller account lockout duration"
-    - "  Command: Compare LockoutDuration to {{ lockout_duration_minutes }} minutes"
+    - "  Task: Req step-04 - Evaluate Domain Controller account lockout duration"
+    - "  Command: Get-ADDefaultDomainPasswordPolicy | Select LockoutDuration"
     - "  Exit code: {{ _step02_output.rc | default(-1) }}"
-    - "  Data: {{ _step02_output.stdout | default('') | trim }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
     - "  Status: {{ status_04 | default('SKIP') | trim }}"
-    - "  Details: DC compliance evaluation status: {{ status_04 | default('SKIP') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
     - ""
     - "REQUIREMENT 05 - {{ req_05 }}:"
-    - "  Task: Evaluate Member Server account lockout duration"
-    - "  Command: Compare parsed LockoutDuration to {{ lockout_duration_minutes }} minutes"
-    - "  Exit code: {{ _member_policy_output.rc | default(-1) }}"
-    - "  Data: {{ _member_policy_output.stdout | default('') | trim }}"
+    - "  Task: Req step-05 - Evaluate Member Server account lockout duration"
+    - "  Command: secedit /export /cfg <temp_path> /areas SECURITYPOLICY /quiet + parse LockoutDuration"
+    - "  Exit code: {{ _policy_parse_result.rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
     - "  Status: {{ status_05 | default('SKIP') | trim }}"
-    - "  Details: Member compliance evaluation status: {{ status_05 | default('SKIP') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
     - ""
     - "REQUIREMENT 06 - {{ req_06 }}:"
-    - "  Task: Store final audit result in cis_result"
+    - "  Task: Req step-06 - Set final audit result in cis_result"
     - "  Command: set_fact cis_result"
     - "  Exit code: 0"
     - "  Data: {{ cis_result | default('ERROR') | trim }}"
     - "  Status: {{ cis_result | default('ERROR') | trim }}"
-    - "  Details: Overall audit result derived from active branch verify status"
+    - "  Details: Overall compliance status derived from active branch evaluation"
     - ""
     - "========================================================"
     - "OVERALL COMPLIANCE:"
