@@ -1,0 +1,129 @@
+---
+- name: "Audit CIS checkpoint 2.3.13.1: Ensure 'Shutdown: Allow system to be shut down without having to log on' is set to 'Disabled'"
+  hosts: all
+  gather_facts: false
+  vars:
+    req_01: "Detect the Windows server role using the DomainRole property from Win32_ComputerSystem. DomainRole 4 or 5 = Domain Controller; DomainRole 1-3 = Member Server."
+    req_02: |-
+      If Domain Controller: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' name='ShutdownWithoutLogon'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.
+    req_03: |-
+      If Member Server: Use ansible.windows.win_reg_stat to read the GP registry key: path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' name='ShutdownWithoutLogon'. The module returns structured data — result.exists (bool) and result.value (integer for REG_DWORD). Do NOT use win_shell or Get-ItemProperty — win_reg_stat is the correct read-only module for registry keys. changed_when: false; failed_when: false.
+    req_04: "If Domain Controller: Evaluate whether 'Ensure 'Shutdown: Allow system to be shut down without having to log on' is set to 'Disabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 0 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict."
+    req_05: "If Member Server: Evaluate whether 'Ensure 'Shutdown: Allow system to be shut down without having to log on' is set to 'Disabled'' is set correctly. Check the registry data collected by the previous step — the result has structured fields, NOT stdout text: PASS if .exists == true AND .value == 0 (REG_DWORD integer). FAIL if .exists == false (key absent / NOT_CONFIGURED) OR .value != 0. ERROR if the registry read step failed unexpectedly. Do NOT check .stdout or .rc — the result is a structured dict."
+    req_06: "Store the final audit result in an Ansible fact named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from _cis_status. Also assemble 'raw_audit_data' as a JSON object containing the raw outputs from the role detection step (_step01_output) and the applicable win_reg_stat step (_step02_output for DC / _step03_output for member) plus the computed _cis_status, so downstream consumers have full audit evidence."
+
+  tasks:
+    - name: "Req step-01 - Detect Windows server role using DomainRole property from Win32_ComputerSystem"
+      ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+      register: _step01_output
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-01 - Set is_dc and is_member facts based on detected DomainRole value"
+      ansible.builtin.set_fact:
+        is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
+        is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
+        role_detection_error: "{{ ((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+
+    - name: "Req step-02 - Read ShutdownWithoutLogon registry value on Domain Controller using win_reg_stat"
+      ansible.windows.win_reg_stat:
+        path: |-
+          HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: 'ShutdownWithoutLogon'
+      register: _step02_output
+      when: is_dc | bool
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-03 - Read ShutdownWithoutLogon registry value on Member Server using win_reg_stat"
+      ansible.windows.win_reg_stat:
+        path: |-
+          HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: 'ShutdownWithoutLogon'
+      register: _step03_output
+      when: is_member | bool
+      changed_when: false
+      failed_when: false
+
+    - name: "Req step-04 - Evaluate ShutdownWithoutLogon compliance on Domain Controller using structured registry data"
+      ansible.builtin.set_fact:
+        _cis_status: >-
+          {{ 'ERROR' if ('exists' not in (_step02_output | default({}))) else
+             'PASS' if ((_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 0)) else
+             'FAIL' }}
+      when: is_dc | bool
+
+    - name: "Req step-05 - Evaluate ShutdownWithoutLogon compliance on Member Server using structured registry data"
+      ansible.builtin.set_fact:
+        _cis_status: >-
+          {{ 'ERROR' if ('exists' not in (_step03_output | default({}))) else
+             'PASS' if ((_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 0)) else
+             'FAIL' }}
+      when: is_member | bool
+
+    - name: "Req step-06 - Store final audit result and raw audit data"
+      ansible.builtin.set_fact:
+        cis_result: "{{ 'ERROR' if (role_detection_error | bool) else (_cis_status | default('ERROR') | trim) }}"
+        raw_audit_data:
+          role_detection: "{{ _step01_output | default({}) | to_json }}"
+          registry_read: "{{ (_step02_output | default({})) if (is_dc | bool) else (_step03_output | default({})) }}"
+          cis_status: "{{ _cis_status | default('') | trim }}"
+
+    - name: "Req report - Generate audit report"
+      ansible.builtin.debug:
+        msg:
+          - "AUDIT REPORT — CIS 2.3.13.1"
+          - "Reference: CIS Benchmark checkpoint 2.3.13.1"
+          - ""
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: Req step-01 - Detect Windows server role using DomainRole property from Win32_ComputerSystem"
+          - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
+          - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+          - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+          - "  Status: {{ 'PASS' if not (role_detection_error | bool) else 'ERROR' }}"
+          - "  Details: Detected DomainRole value {{ _step01_output.stdout | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: Req step-02 - Read ShutdownWithoutLogon registry value on Domain Controller using win_reg_stat"
+          - "  Command: ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' name='ShutdownWithoutLogon'"
+          - "  Exit code: {{ _step02_output.rc | default('N/A') }}"
+          - "  Data: {{ _step02_output | default({}) | to_json }}"
+          - "  Status: {{ 'SKIP' if not (is_dc | bool) else ('PASS' if ('exists' in (_step02_output | default({}))) else 'ERROR') }}"
+          - "  Details: Domain Controller registry read"
+          - ""
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: Req step-03 - Read ShutdownWithoutLogon registry value on Member Server using win_reg_stat"
+          - "  Command: ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' name='ShutdownWithoutLogon'"
+          - "  Exit code: {{ _step03_output.rc | default('N/A') }}"
+          - "  Data: {{ _step03_output | default({}) | to_json }}"
+          - "  Status: {{ 'SKIP' if not (is_member | bool) else ('PASS' if ('exists' in (_step03_output | default({}))) else 'ERROR') }}"
+          - "  Details: Member Server registry read"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: Req step-04 - Evaluate ShutdownWithoutLogon compliance on Domain Controller using structured registry data"
+          - "  Command: ansible.builtin.set_fact"
+          - "  Exit code: N/A"
+          - "  Data: {{ _cis_status | default('') }}"
+          - "  Status: {{ 'SKIP' if not (is_dc | bool) else (_cis_status | default('ERROR') | trim) }}"
+          - "  Details: Evaluation based on exists/value structured fields"
+          - ""
+          - "REQUIREMENT 05 - {{ req_05 }}:"
+          - "  Task: Req step-05 - Evaluate ShutdownWithoutLogon compliance on Member Server using structured registry data"
+          - "  Command: ansible.builtin.set_fact"
+          - "  Exit code: N/A"
+          - "  Data: {{ _cis_status | default('') }}"
+          - "  Status: {{ 'SKIP' if not (is_member | bool) else (_cis_status | default('ERROR') | trim) }}"
+          - "  Details: Evaluation based on exists/value structured fields"
+          - ""
+          - "REQUIREMENT 06 - {{ req_06 }}:"
+          - "  Task: Req step-06 - Store final audit result and raw audit data"
+          - "  Command: ansible.builtin.set_fact"
+          - "  Exit code: N/A"
+          - "  Data: cis_result={{ cis_result | default('ERROR') }} raw_audit_data={{ raw_audit_data | default({}) | to_json }}"
+          - "  Status: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: Overall compliance status stored in cis_result"
+          - ""
+          - "========================================================"
+          - "OVERALL COMPLIANCE:"
+          - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "========================================================"
