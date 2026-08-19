@@ -1,0 +1,118 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_2_3_13_1.yml
+
+- name: "Req step-01 - Detect Windows server role using DomainRole property from Win32_ComputerSystem"
+  ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+  register: _step01_output
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-01 - Set is_dc and is_member facts based on detected DomainRole value"
+  ansible.builtin.set_fact:
+    is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4','5'] }}"
+    is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1','2','3'] }}"
+    role_detection_error: "{{ ((_step01_output.rc | default(-1)) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1','2','3','4','5']) }}"
+
+- name: "Req step-02 - Read ShutdownWithoutLogon registry value on Domain Controller using win_reg_stat"
+  ansible.windows.win_reg_stat:
+    path: |-
+      HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+    name: 'ShutdownWithoutLogon'
+  register: _step02_output
+  when: is_dc | bool
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-03 - Read ShutdownWithoutLogon registry value on Member Server using win_reg_stat"
+  ansible.windows.win_reg_stat:
+    path: |-
+      HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+    name: 'ShutdownWithoutLogon'
+  register: _step03_output
+  when: is_member | bool
+  changed_when: false
+  failed_when: false
+
+- name: "Req step-04 - Evaluate ShutdownWithoutLogon compliance on Domain Controller using structured registry data"
+  ansible.builtin.set_fact:
+    _cis_status: >-
+      {{ 'ERROR' if ('exists' not in (_step02_output | default({}))) else
+         'PASS' if ((_step02_output.exists | default(false) | bool) and ((_step02_output.value | default(-1) | int) == 0)) else
+         'FAIL' }}
+  when: is_dc | bool
+
+- name: "Req step-05 - Evaluate ShutdownWithoutLogon compliance on Member Server using structured registry data"
+  ansible.builtin.set_fact:
+    _cis_status: >-
+      {{ 'ERROR' if ('exists' not in (_step03_output | default({}))) else
+         'PASS' if ((_step03_output.exists | default(false) | bool) and ((_step03_output.value | default(-1) | int) == 0)) else
+         'FAIL' }}
+  when: is_member | bool
+
+- name: "Req step-06 - Store final audit result and raw audit data"
+  ansible.builtin.set_fact:
+    cis_result: "{{ 'ERROR' if (role_detection_error | bool) else (_cis_status | default('ERROR') | trim) }}"
+    raw_audit_data:
+      role_detection: "{{ _step01_output | default({}) | to_json }}"
+      registry_read: "{{ (_step02_output | default({})) if (is_dc | bool) else (_step03_output | default({})) }}"
+      cis_status: "{{ _cis_status | default('') | trim }}"
+
+- name: "Req report - Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 2.3.13.1"
+    - "Reference: CIS Benchmark checkpoint 2.3.13.1"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: Req step-01 - Detect Windows server role using DomainRole property from Win32_ComputerSystem"
+    - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
+    - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+    - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+    - "  Status: {{ 'PASS' if not (role_detection_error | bool) else 'ERROR' }}"
+    - "  Details: Detected DomainRole value {{ _step01_output.stdout | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: Req step-02 - Read ShutdownWithoutLogon registry value on Domain Controller using win_reg_stat"
+    - "  Command: ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' name='ShutdownWithoutLogon'"
+    - "  Exit code: {{ _step02_output.rc | default('N/A') }}"
+    - "  Data: {{ _step02_output | default({}) | to_json }}"
+    - "  Status: {{ 'SKIP' if not (is_dc | bool) else ('PASS' if ('exists' in (_step02_output | default({}))) else 'ERROR') }}"
+    - "  Details: Domain Controller registry read"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: Req step-03 - Read ShutdownWithoutLogon registry value on Member Server using win_reg_stat"
+    - "  Command: ansible.windows.win_reg_stat path='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' name='ShutdownWithoutLogon'"
+    - "  Exit code: {{ _step03_output.rc | default('N/A') }}"
+    - "  Data: {{ _step03_output | default({}) | to_json }}"
+    - "  Status: {{ 'SKIP' if not (is_member | bool) else ('PASS' if ('exists' in (_step03_output | default({}))) else 'ERROR') }}"
+    - "  Details: Member Server registry read"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: Req step-04 - Evaluate ShutdownWithoutLogon compliance on Domain Controller using structured registry data"
+    - "  Command: ansible.builtin.set_fact"
+    - "  Exit code: N/A"
+    - "  Data: {{ _cis_status | default('') }}"
+    - "  Status: {{ 'SKIP' if not (is_dc | bool) else (_cis_status | default('ERROR') | trim) }}"
+    - "  Details: Evaluation based on exists/value structured fields"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: Req step-05 - Evaluate ShutdownWithoutLogon compliance on Member Server using structured registry data"
+    - "  Command: ansible.builtin.set_fact"
+    - "  Exit code: N/A"
+    - "  Data: {{ _cis_status | default('') }}"
+    - "  Status: {{ 'SKIP' if not (is_member | bool) else (_cis_status | default('ERROR') | trim) }}"
+    - "  Details: Evaluation based on exists/value structured fields"
+    - ""
+    - "REQUIREMENT 06 - {{ req_06 }}:"
+    - "  Task: Req step-06 - Store final audit result and raw audit data"
+    - "  Command: ansible.builtin.set_fact"
+    - "  Exit code: N/A"
+    - "  Data: cis_result={{ cis_result | default('ERROR') }} raw_audit_data={{ raw_audit_data | default({}) | to_json }}"
+    - "  Status: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: Overall compliance status stored in cis_result"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "========================================================"
