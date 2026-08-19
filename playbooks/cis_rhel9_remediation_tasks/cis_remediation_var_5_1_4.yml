@@ -1,13 +1,20 @@
 playbook_name: "cis_5_1_4_sshd_ciphers"
-checkpoint_id: "cis_5_1_4"
-state_guard_dir: "/usr/local/bin/cis/.cis_state_guard/{{ checkpoint_id }}"
-state_guard_flag: "{{ state_guard_dir }}/checkpoint.flag"
-persistent_remediation: true
-req_01: "Apply prerequisite check for system-wide crypto policy package using command: `rpm -q crypto-policies-scripts`. Expected result: package is installed and version is displayed."
-req_02: |
-  Apply creation of a crypto policy module to disable weak SSH ciphers using command: `printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the SSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod`. Expected result: file /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod is created with the specified content.
-req_03: "Apply update of system-wide cryptographic policy using command: `update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS`. Expected result: command completes successfully and system crypto policy is updated."
-req_04: "Apply reload of OpenSSH server to make cryptographic settings effective using command: `systemctl reload-or-restart sshd`. Expected result: sshd service reloads or restarts without errors."
-req_05: "Verify that the sshd Ciphers configuration is compliant using command: `sshd -T | grep -i ciphers`. Expected result: output shows only allowed ciphers (aes256-gcm@openssh.com, aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr) and does not include weak ciphers like 3des-cbc, aes128-cbc, aes192-cbc, aes256-cbc, or chacha20-poly1305."
-req_06: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-req_09: "Check if sshd is installed, skip all remediation if not installed."
+backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
+weak_ciphers: "3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305"
+sshd_config_path: "/etc/ssh/sshd_config"
+sshd_config_d_dir: "/etc/ssh/sshd_config.d"
+sshd_config_d_file: "50-redhat.conf"
+crypto_policy_modules_dir: "/etc/crypto-policies/policies/modules"
+crypto_policy_name: "NO-SSHWEAKCIPHERS.pmod"
+crypto_policy_set: "DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS"
+use_system_wide_crypto_policy: "true"
+rollback_remediation: false
+req_01: "Apply system-wide crypto policy defaults by ensuring /etc/ssh/sshd_config includes the line `Include /etc/ssh/sshd_config.d/*.conf` before any Ciphers lines. Expected result: default includes present."
+req_02: "Ensure /etc/ssh/sshd_config.d/50-redhat.conf exists and contains the line `Include /etc/crypto-policies/back-ends/opensshserver.config`. Expected result: file present with include line."
+req_03: |-
+  Create or edit a .pmod file in /etc/crypto-policies/policies/modules/ adding `cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305` using command: `printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the SSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod`. Expected result: file created with line.
+req_04: "Apply the updated crypto policy using command: `update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS`. Expected result: policy updated."
+req_05: "Reload the OpenSSH server using command: `systemctl reload-or-restart sshd`. Expected result: service reloaded."
+req_06: "If not using system-wide-crypto-policy, edit /etc/ssh/sshd_config to add/modify the Ciphers line with `Ciphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305@openssh.com` above any Include entries. Expected result: weak ciphers disabled."
+req_07: "Verify the applied ciphers by running `sshd -T | grep ciphers` and confirming only strong ciphers (aes256-gcm@openssh.com, aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr) are listed. Expected result: output shows only approved ciphers."
+req_08: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
