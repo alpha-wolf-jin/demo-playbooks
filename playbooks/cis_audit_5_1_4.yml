@@ -1,252 +1,73 @@
 ---
-- name: "Audit CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured"
+- name: "Audit CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured and do not include any weak ciphers from the configurable weak cipher list."
   hosts: all
   become: yes
+  become_user: root
   gather_facts: false
   vars:
-    req_01: "Check if OpenSSH server is installed using command: `sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null`. Expected result: command returns version or package information indicating sshd is present."
-    req_02: |
-      Check sshd configured ciphers for weak algorithms using command: `sshd -T | grep -Pi -- '^ciphers\\h+\\\"?([^#\\n\\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\\.liu\\.se|chacha20-poly1305@openssh\\.com)\\b'`. Expected result: no output (no weak ciphers listed).
-    req_03: "If the previous command returns a line containing chacha20-poly1305@openssh.com, check if system is patched against CVE-2023-48795 using command: `sshd -T | grep -i 'chacha20-poly1305@openssh.com' && (grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795')`. Expected result: patch information or updated version is found."
-    req_04: |
-      Check that none of the specific weak ciphers (3des-cbc, aes128-cbc, aes192-cbc, aes256-cbc) are present in the sshd configuration using command: `sshd -T | grep -E '^ciphers\\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'`. Expected result: no output.
-    req_05: "Summarize overall compliance status: PASS if all previous checks pass (no weak ciphers returned, and if chacha20-poly1305 present, patched), SKIP if sshd is not installed, FAIL if any weak cipher is configured or chacha20-poly1305 is present without patch. Expected result: one of PASS, SKIP, or FAIL based on the checks."
-    req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    weak_ciphers: "3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc"
+    req_01: "Check whether OpenSSH server is installed by locating the sshd binary. If not found, the audit will be skipped"
+    req_02: "Run the audit command using the configurable weak cipher list to detect any weak ciphers in the effective sshd configuration"
+    req_03: "Determine compliance status: if sshd is not installed, set cis_result=SKIP and weak_ciphers_found=none. If weak ciphers were found (non-empty _weak_ciphers_output), set cis_result=FAIL and weak_ciphers_found to the detected list. Otherwise set cis_result=PASS and weak_ciphers_found=none."
 
   tasks:
-    - name: "Initialize data variables"
-      ansible.builtin.set_fact:
-        data_01: "Not collected"
-        status_01: "SKIP"
-        details_01: "Not evaluated"
-        task_01_name: "Not executed"
-        task_01_cmd: "N/A"
-        task_01_rc: -1
-        data_02: "Not collected"
-        status_02: "SKIP"
-        details_02: "Not evaluated"
-        task_02_name: "Not executed"
-        task_02_cmd: "N/A"
-        task_02_rc: -1
-        data_03: "Not collected"
-        status_03: "SKIP"
-        details_03: "Not evaluated"
-        task_03_name: "Not executed"
-        task_03_cmd: "N/A"
-        task_03_rc: -1
-        data_04: "Not collected"
-        status_04: "SKIP"
-        details_04: "Not evaluated"
-        task_04_name: "Not executed"
-        task_04_cmd: "N/A"
-        task_04_rc: -1
-        data_05: "Not collected"
-        status_05: "SKIP"
-        details_05: "Not evaluated"
-        task_05_name: "Not executed"
-        task_05_cmd: "N/A"
-        task_05_rc: -1
-        data_06: "Not collected"
-        status_06: "SKIP"
-        details_06: "Not evaluated"
-        task_06_name: "Not executed"
-        task_06_cmd: "N/A"
-        task_06_rc: -1
-
     - name: "Req step-01 - Check if OpenSSH server is installed"
-      ansible.builtin.shell: set -o pipefail && sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null
+      ansible.builtin.shell: command -v sshd
       args:
         executable: /bin/bash
-      register: _step01_output
-      failed_when: false
+      register: _sshd_installed
       changed_when: false
+      failed_when: false
 
-    - name: "Req step-01 - Set sshd installation status"
-      ansible.builtin.set_fact:
-        sshd_installed: "{{ _step01_output.rc == 0 }}"
-        status_01: "{{ 'PASS' if _step01_output.rc == 0 else 'SKIP' }}"
-        data_01: "{{ _step01_output.stdout | default('') | trim }}"
-        details_01: "{{ 'sshd package found' if _step01_output.rc == 0 else 'sshd not installed' }}"
-        task_01_name: "Check sshd installation"
-        task_01_cmd: "sshd -V 2>&1 || dpkg -l openssh-server 2>/dev/null || rpm -q openssh-server 2>/dev/null"
-        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-
-    - name: "Req step-02 - Check sshd configured ciphers for weak algorithms"
+    - name: "Req step-02 - Detect weak ciphers in sshd effective configuration"
       ansible.builtin.shell: |
-        set -o pipefail && sshd -T | grep -Pi -- '^ciphers\h+\"?([^#\n\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se|chacha20-poly1305@openssh\.com)\b'
+        set -o pipefail
+        sshd -T | grep -i '^ciphers' | grep -oPi '\b({{ weak_ciphers | replace(',', '|') }})\b' | sort -u
       args:
         executable: /bin/bash
-      register: _step02_output
-      failed_when: false
+      register: _weak_ciphers_output
       changed_when: false
-      when: sshd_installed | bool
-
-    - name: "Req step-02 - Store weak ciphers check result"
-      ansible.builtin.set_fact:
-        status_02: "{{ 'PASS' if _step02_output.stdout | default('') | trim == '' else 'FAIL' }}"
-        data_02: "{{ _step02_output.stdout | default('') | trim }}"
-        details_02: "{{ 'No weak ciphers found' if _step02_output.stdout | default('') | trim == '' else 'Weak ciphers detected: ' + _step02_output.stdout }}"
-        task_02_name: "Check weak ciphers"
-        task_02_cmd: >-
-          sshd -T | grep -Pi -- '^ciphers\h+\"?([^#\n\r]+,)?((3des|blowfish|cast128|aes(128|192|256))-cbc|arcfour(128|256)?|rijndael-cbc@lysator\.liu\.se|chacha20-poly1305@openssh\.com)\b'
-        task_02_rc: "{{ _step02_output.rc | default(-1) }}"
-      when: sshd_installed | bool
-
-    - name: "Req step-03 - Check chacha20-poly1305 CVE-2023-48795"
-      ansible.builtin.shell: |
-        set -o pipefail && sshd -T | grep -i 'chacha20-poly1305@openssh.com' && ( grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795' )
-      args:
-        executable: /bin/bash
-      register: _step03_output
       failed_when: false
-      changed_when: false
-      when:
-        - sshd_installed | bool
-        - "'chacha20-poly1305' in (_step02_output.stdout | default(''))"
+      when: ((_sshd_installed.rc | default(-1)) == 0)
 
-    - name: "Req step-03 - Store CVE check result"
+    - name: "Req step-03 - Determine compliance status"
       ansible.builtin.set_fact:
-        status_03: >-
-          {%- if not (sshd_installed | bool) -%}SKIP
-          {%- elif not ('chacha20-poly1305' in (_step02_output.stdout | default(''))) -%}PASS
-          {%- elif _step03_output.rc | default(1) == 0 -%}PASS
-          {%- else -%}FAIL
-          {%- endif -%}
-        data_03: "{{ _step03_output.stdout | default('') | trim if (sshd_installed | bool and 'chacha20-poly1305' in (_step02_output.stdout | default(''))) else ('chacha20 not present' if sshd_installed | bool else 'N/A') }}"
-        details_03: >-
-          {%- if not (sshd_installed | bool) -%}SSH not installed, skipped
-          {%- elif not ('chacha20-poly1305' in (_step02_output.stdout | default(''))) -%}chacha20 not present, no CVE check needed
-          {%- elif _step03_output.rc | default(1) == 0 -%}CVE-2023-48795 patch found
-          {%- else -%}chacha20 present but CVE-2023-48795 patch not found
-          {%- endif -%}
-        task_03_name: "Check CVE-2023-48795"
-        task_03_cmd: >-
-          sshd -T | grep -i 'chacha20-poly1305@openssh.com' && ( grep -i 'CVE-2023-48795' /usr/share/doc/openssh-server/changelog* 2>/dev/null || dpkg -l openssh-server 2>/dev/null | grep -E '^ii' || rpm -q --changelog openssh-server 2>/dev/null | grep -i 'CVE-2023-48795' )
-        task_03_rc: "{{ _step03_output.rc | default(-1) if (sshd_installed | bool and 'chacha20-poly1305' in (_step02_output.stdout | default(''))) else -1 }}"
-      when: sshd_installed | bool
+        status_01: "{{ ((_sshd_installed.rc | default(-1)) == 0) | ternary('PASS', 'SKIP') }}"
+        status_02: "{{ ((_sshd_installed.rc | default(-1)) != 0) | ternary('SKIP', ((_weak_ciphers_output.stdout | default('') | trim) == '') | ternary('PASS', 'FAIL')) }}"
+        status_03: "{{ ((_sshd_installed.rc | default(-1)) != 0) | ternary('SKIP', 'PASS') }}"
+        weak_ciphers_found: "{{ ((_sshd_installed.rc | default(-1)) != 0) | ternary('none', ((_weak_ciphers_output.stdout | default('') | trim) == '') | ternary('none', _weak_ciphers_output.stdout | default('') | trim)) }}"
+        cis_result: "{{ ((_sshd_installed.rc | default(-1)) != 0) | ternary('SKIP', ((_weak_ciphers_output.stdout | default('') | trim) == '') | ternary('PASS', 'FAIL')) }}"
 
-    - name: "Req step-04 - Check for weak CBC ciphers"
-      ansible.builtin.shell: |
-        set -o pipefail && sshd -T | grep -E '^ciphers\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
-      args:
-        executable: /bin/bash
-      register: _step04_output
-      failed_when: false
-      changed_when: false
-      when: sshd_installed | bool
-
-    - name: "Req step-04 - Store CBC cipher check result"
-      ansible.builtin.set_fact:
-        status_04: >-
-          {%- if not (sshd_installed | bool) -%}SKIP
-          {%- elif _step04_output.stdout | default('') | trim == '' -%}PASS
-          {%- else -%}FAIL
-          {%- endif -%}
-        data_04: "{{ _step04_output.stdout | default('') | trim if sshd_installed | bool else 'N/A' }}"
-        details_04: >-
-          {%- if not (sshd_installed | bool) -%}SSH not installed, skipped
-          {%- elif _step04_output.stdout | default('') | trim == '' -%}No weak CBC ciphers found
-          {%- else -%}Weak CBC ciphers detected: {{ _step04_output.stdout }}
-          {%- endif -%}
-        task_04_name: "Check weak CBC ciphers"
-        task_04_cmd: >-
-          sshd -T | grep -E '^ciphers\s+' | grep -E '(3des-cbc|aes128-cbc|aes192-cbc|aes256-cbc)'
-        task_04_rc: "{{ _step04_output.rc | default(-1) if sshd_installed | bool else -1 }}"
-      when: sshd_installed | bool
-
-    - name: "Req step-05 - Determine overall compliance status"
-      ansible.builtin.set_fact:
-        status_05: >-
-          {%- if not (sshd_installed | bool) -%}SKIP
-          {%- elif (status_02 | trim == 'FAIL') or (status_03 | trim == 'FAIL') or (status_04 | trim == 'FAIL') -%}FAIL
-          {%- else -%}PASS
-          {%- endif -%}
-        _cis_status: >-
-          {%- if not (sshd_installed | bool) -%}SKIP
-          {%- elif (status_02 | trim == 'FAIL') or (status_03 | trim == 'FAIL') or (status_04 | trim == 'FAIL') -%}FAIL
-          {%- else -%}PASS
-          {%- endif -%}
-
-    - name: "Req step-05 - Store overall compliance details"
-      ansible.builtin.set_fact:
-        data_05: "{{ status_05 }}"
-        details_05: >-
-          {%- if status_05 | trim == 'SKIP' -%}SSH server not installed
-          {%- elif status_05 | trim == 'FAIL' -%}One or more checks failed
-          {%- else -%}All checks passed
-          {%- endif -%}
-        task_05_name: "Overall compliance"
-        task_05_cmd: "N/A"
-        task_05_rc: 0
-
-    - name: "Req step-06 - Store final audit result in cis_result"
-      ansible.builtin.set_fact:
-        cis_result: "{{ status_05 | default('ERROR') | trim }}"
-
-    - name: "Req step-06 - Store final audit result metadata"
-      ansible.builtin.set_fact:
-        data_06: "{{ cis_result }}"
-        details_06: "{{ details_05 }}"
-        task_06_name: "Store cis_result"
-        task_06_cmd: "N/A"
-        task_06_rc: 0
-        status_06: "{{ cis_result }}"
-
-    - name: "Req step-07 - Generate audit report"
+    - name: "Generate audit report"
       ansible.builtin.debug:
         msg:
           - "AUDIT REPORT — CIS 5.1.4"
           - "Reference: CIS Benchmark checkpoint 5.1.4"
           - ""
           - "REQUIREMENT 01 - {{ req_01 }}:"
-          - "  Task: {{ task_01_name | default('Not recorded') }}"
-          - "  Command: {{ task_01_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_01_rc | default(-1) }}"
-          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Task: Req step-01 - Check if OpenSSH server is installed"
+          - "  Command: command -v sshd"
+          - "  Exit code: {{ _sshd_installed.rc | default(-1) }}"
+          - "  Data: {{ _sshd_installed.stdout | default('') | trim }}"
           - "  Status: {{ status_01 | default('ERROR') | trim }}"
-          - "  Details: {{ details_01 | default('') | trim }}"
+          - "  Details: {{ (status_01 | default('ERROR') | trim == 'PASS') | ternary('sshd binary found', 'sshd not installed - audit skipped') }}"
           - ""
           - "REQUIREMENT 02 - {{ req_02 }}:"
-          - "  Task: {{ task_02_name | default('Not recorded') }}"
-          - "  Command: {{ task_02_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_02_rc | default(-1) }}"
-          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Task: Req step-02 - Detect weak ciphers in sshd effective configuration"
+          - "  Command: sshd -T | grep -i '^ciphers' | grep -oPi '\\b({{ weak_ciphers | replace(',', '|') }})\\b' | sort -u"
+          - "  Exit code: {{ (_weak_ciphers_output.rc | default(-1)) if _weak_ciphers_output is defined else -1 }}"
+          - "  Data: {{ (_weak_ciphers_output.stdout | default('') | trim) if _weak_ciphers_output is defined else '' }}"
           - "  Status: {{ status_02 | default('ERROR') | trim }}"
-          - "  Details: {{ details_02 | default('') | trim }}"
+          - "  Details: {{ (status_02 | default('ERROR') | trim == 'SKIP') | ternary('skipped - sshd not installed', ((status_02 | default('ERROR') | trim == 'FAIL') | ternary('weak ciphers detected', 'no weak ciphers detected'))) }}"
           - ""
           - "REQUIREMENT 03 - {{ req_03 }}:"
-          - "  Task: {{ task_03_name | default('Not recorded') }}"
-          - "  Command: {{ task_03_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_03_rc | default(-1) }}"
-          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Task: Req step-03 - Determine compliance status"
+          - "  Command: N/A (set_fact)"
+          - "  Exit code: N/A"
+          - "  Data: {{ weak_ciphers_found }}"
           - "  Status: {{ status_03 | default('ERROR') | trim }}"
-          - "  Details: {{ details_03 | default('') | trim }}"
+          - "  Details: Compliance status determined as {{ cis_result | default('ERROR') | trim }}"
           - ""
-          - "REQUIREMENT 04 - {{ req_04 }}:"
-          - "  Task: {{ task_04_name | default('Not recorded') }}"
-          - "  Command: {{ task_04_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_04_rc | default(-1) }}"
-          - "  Data: {{ data_04 | default('') | trim }}"
-          - "  Status: {{ status_04 | default('ERROR') | trim }}"
-          - "  Details: {{ details_04 | default('') | trim }}"
-          - ""
-          - "REQUIREMENT 05 - {{ req_05 }}:"
-          - "  Task: {{ task_05_name | default('Not recorded') }}"
-          - "  Command: {{ task_05_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_05_rc | default(-1) }}"
-          - "  Data: {{ data_05 | default('') | trim }}"
-          - "  Status: {{ status_05 | default('ERROR') | trim }}"
-          - "  Details: {{ details_05 | default('') | trim }}"
-          - ""
-          - "REQUIREMENT 06 - {{ req_06 }}:"
-          - "  Task: {{ task_06_name | default('Not recorded') }}"
-          - "  Command: {{ task_06_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_06_rc | default(-1) }}"
-          - "  Data: {{ data_06 | default('') | trim }}"
-          - "  Status: {{ status_06 | default('ERROR') | trim }}"
-          - "  Details: {{ details_06 | default('') | trim }}"
-          - ""
-          - "========================================================"
+          - "Weak Ciphers Found: {{ weak_ciphers_found }}."
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
-          - "========================================================"
