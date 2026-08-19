@@ -1,16 +1,16 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "1.1.2.1.2",
-  "title": "Ensure nodev option set on /tmp partition",
+  "checkpoint_id": "5.1.4",
+  "title": "Ensure sshd Ciphers are configured",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "ssh",
-  "connection_risk": false,
+  "connection_risk": true,
   "profile_applicability": "•  Level 1 - Server\n•  Level 1 - Workstation",
   "branching": null,
-  "objective": "Audit CIS checkpoint 1.1.2.1.2: Ensure nodev option set on /tmp partition",
+  "objective": "Audit CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured and do not include any weak ciphers from the configurable weak cipher list.",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -35,20 +35,12 @@
         "description": "SSH user with sudo access"
       },
       {
-        "name": "partition",
+        "name": "weak_ciphers",
         "type": "string",
         "required": false,
-        "default": "/tmp",
+        "default": "3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc",
         "unit": null,
-        "description": "Filesystem partition to check for mount options"
-      },
-      {
-        "name": "fs_option",
-        "type": "string",
-        "required": true,
-        "default": "nodev",
-        "unit": null,
-        "description": "Filesystem mount option to check on the target partition (e.g. nodev, nosuid, noexec)"
+        "description": "Comma-separated list of weak SSH ciphers to audit for; default follows CIS Benchmark 5.1.4."
       }
     ]
   },
@@ -64,147 +56,118 @@
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
       },
       {
-        "name": "raw_mount_details",
+        "name": "weak_ciphers_found",
         "type": "string",
         "nullable": true,
         "required_by_sop": false,
-        "description": "Raw output from findmnt for the target partition"
+        "description": "Comma-separated list of weak ciphers detected, or 'none' if no weak ciphers found"
       }
     ]
   },
-  "audit_script": "",
+  "audit_script": "sshd -T | grep -i '^ciphers' | grep -oPi '\\b({{ weak_ciphers | replace(',', '|') }})\\b' | sort -u",
   "steps": [
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Check if partition is a separate mount point",
-      "function": "1. Check if the target partition ({{ partition }}) is a separate partition using command: `findmnt -kn {{ partition }}`. Expected result: output exists.",
+      "name": "Check if sshd is installed",
+      "function": "1. Check whether OpenSSH server is installed by locating the sshd binary. If not found, the audit will be skipped.",
       "module": "ansible.builtin.shell",
-      "register": "_step01_output",
       "input": {
         "source": "playbook_input.parameters",
-        "fields": [
-          "partition"
-        ]
+        "fields": []
       },
       "parameters": {
-        "cmd": "findmnt -kn {{ partition }}",
-        "failed_when": false
+        "cmd": "command -v sshd"
       },
       "stores": [
-        "_step01_output"
+        "_sshd_installed"
       ],
       "on_success": "step-02",
-      "on_fail": "step-07"
+      "on_fail": "step-03"
     },
     {
       "id": "step-02",
       "type": "collect",
-      "name": "Check if the fs_option is set on the partition",
-      "function": "2. Check if the {{ fs_option }} option is set on {{ partition }} using command: `findmnt -kn {{ partition }} | grep -v {{ fs_option }}`. Expected result: no output returned.",
+      "name": "Check for weak sshd ciphers",
+      "function": "2. Run the audit command using the configurable weak cipher list to detect any weak ciphers in the effective sshd configuration.",
       "module": "ansible.builtin.shell",
-      "register": "_step02_output",
       "input": {
-        "source": "step-01",
+        "source": "playbook_input.parameters",
         "fields": [
-          "_step01_output"
+          "weak_ciphers"
         ]
       },
       "parameters": {
-        "cmd": "findmnt -kn {{ partition }} | grep -v {{ fs_option }}",
-        "failed_when": false
+        "cmd": "sshd -T | grep -i '^ciphers' | grep -oPi '\\b({{ weak_ciphers | replace(',', '|') }})\\b' | sort -u"
       },
       "stores": [
-        "_step02_output"
+        "_weak_ciphers_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-07"
+      "on_fail": "step-06"
     },
     {
       "id": "step-03",
       "type": "transform",
-      "name": "Summarize compliance: PASS if all checks pass, SKIP if partition is not separate, FAIL if fs_option is missing",
-      "function": "3. Summarize compliance: PASS if all checks pass, SKIP if {{ partition }} is not a separate partition, FAIL if {{ fs_option }} is missing.",
+      "name": "Evaluate audit result",
+      "function": "3. Determine compliance status: if sshd is not installed, set cis_result=SKIP and weak_ciphers_found=none. If weak ciphers were found (non-empty _weak_ciphers_output), set cis_result=FAIL and weak_ciphers_found to the detected list. Otherwise set cis_result=PASS and weak_ciphers_found=none.",
       "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-02",
         "fields": [
-          "_step02_output"
+          "_sshd_installed",
+          "_weak_ciphers_output"
         ]
       },
-      "parameters": {
-        "_cis_status": "{{ 'SKIP' if (_step01_output.stdout | default('') | trim) == '' else ('PASS' if (_step02_output.stdout | default('') | trim) == '' else 'FAIL') }}"
-      },
       "computations": {
-        "_cis_status": "SKIP if _step01_output.stdout is empty; else PASS if _step02_output.stdout is empty; else FAIL"
+        "cis_result": "SKIP if sshd is not installed; PASS if no weak ciphers found; FAIL otherwise",
+        "weak_ciphers_found": "none if no weak ciphers or sshd absent; otherwise the detected weak cipher names joined by commas"
       },
       "stores": [
-        "_cis_status"
+        "cis_result",
+        "weak_ciphers_found"
       ],
-      "on_success": "step-04",
-      "on_fail": "step-07"
+      "on_success": "step-04"
     },
     {
       "id": "step-04",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact",
-      "function": "4. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "emit",
+      "name": "Generate audit report",
+      "function": "4. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 5.1.4\nReference: CIS Benchmark checkpoint 5.1.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nInclude Weak Ciphers Found: {{ weak_ciphers_found }}.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "module": "ansible.builtin.debug",
       "input": {
         "source": "step-03",
         "fields": [
-          "_cis_status"
+          "cis_result",
+          "weak_ciphers_found"
         ]
       },
-      "parameters": {
-        "cis_result": "{{ _cis_status }}"
-      },
-      "stores": [
-        "cis_result"
-      ],
-      "on_success": "step-05",
-      "on_fail": "step-07"
+      "on_success": "step-05"
     },
     {
       "id": "step-05",
       "type": "emit",
-      "name": "Create a task named 'Generate audit report' using debug msg",
-      "function": "5. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.2.1.2\nReference: CIS Benchmark checkpoint 1.1.2.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
-      "module": "ansible.builtin.debug",
-      "input": {
-        "source": "step-04",
-        "fields": [
-          "cis_result"
-        ]
+      "name": "Emit compliance result",
+      "function": "5. Output the overall compliance status and weak ciphers found to the caller.",
+      "output_fields": {
+        "cis_result": "{{ cis_result }}",
+        "weak_ciphers_found": "{{ weak_ciphers_found }}"
       },
-      "on_success": "step-06",
-      "on_fail": "step-07"
+      "on_success": "end"
     },
     {
       "id": "step-06",
-      "type": "emit",
-      "name": "Emit compliance result",
-      "function": "Output the overall compliance status to the caller.",
-      "output_fields": {
-        "cis_result": "{{ cis_result }}",
-        "raw_mount_details": "{{ _step01_output }}"
-      },
-      "on_success": "end",
-      "on_fail": "step-07"
-    },
-    {
-      "id": "step-07",
       "type": "abort",
       "name": "Handle task failure",
-      "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.2.1.2 audit failed",
+      "function": "6. Reached via rescue block or on_fail on unexpected task failure.",
+      "error_message": "ERROR: CIS 5.1.4 audit failed",
       "on_success": "end"
     }
   ],
   "phases": [
     {
       "name": "Data Collection",
-      "description": "Execute read-only commands on the target host.",
+      "description": "Execute read-only commands to check sshd installation and detect weak ciphers using the configurable weak cipher list.",
       "steps": [
         "step-01",
         "step-02"
@@ -214,44 +177,45 @@
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-03",
-        "step-04"
+        "step-03"
       ]
     },
     {
       "name": "Reporting",
-      "description": "Emit the compliance result to the caller.",
+      "description": "Emit the audit report and compliance result to the caller.",
       "steps": [
-        "step-05",
-        "step-06"
+        "step-04",
+        "step-05"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-07"
+        "step-06"
       ]
     }
   ],
   "compliance_constraints": [
     "Use failed_when: false on all audit tasks (except set_fact, debug) so all checks complete and report status",
     "If the audit targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, report SKIP for all checks.",
-    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.)."
+    "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.).",
+    "Any unexpected task failure is routed to step-06 (abort)."
   ],
   "error_handling": {
-    "no_silent_exit": true
+    "no_silent_exit": true,
+    "rescue_step": "step-06"
   },
-  "reference_procedure": "- IF - a separate partition exists for /tmp, verify that the nodev option is set.\nRun the following command to verify that the nodev mount option is set.\nExample:\n# findmnt -kn /tmp | grep -v nodev\n\nNothing should be returned",
+  "reference_procedure": "Run the following command to verify none of the \"weak\" ciphers are being used:\n# sshd -T | grep -Pi --\n'^ciphers\\h+\\\"?([^#\\n\\r]+,)?((3des|blowfish|cast128|aes(128|192|256))- cbc|arcfour(128|256)?|rijndael-cbc@lysator\\.liu\\.se|chacha20- poly1305@openssh\\.com)\\b'\n- IF - a line is returned, review the list of ciphers. If the line includes chacha20- poly1305@openssh.com, review CVE-2023-48795 and verify the system has been patched. No ciphers in the list below should be returned as they're considered \"weak\":\n3des-cbc\naes128-cbc\naes192-cbc\naes256-cbc",
   "example_output": "",
-  "filename": "cis_audit_1_1_2_1_2.yml",
+  "filename": "cis_audit_5_1_4.yml",
   "output_dir": "./cis_rhel9_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-19T19:11:48",
-    "revision": 3,
-    "approved_at": "2026-08-19T19:21:16",
+    "drafted_at": "2026-08-19T21:33:22",
+    "revision": 2,
+    "approved_at": "2026-08-19T21:41:55",
     "saved_by": null
   }
 }
