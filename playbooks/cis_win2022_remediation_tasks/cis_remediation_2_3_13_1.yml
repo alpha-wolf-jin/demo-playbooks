@@ -1,0 +1,187 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_2_3_13_1.yml
+
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir }}"
+    state: directory
+  tags: [snapshot]
+
+- block:
+  - name: "Req step-01 - Detect Windows server role using DomainRole property from Win32_ComputerSystem"
+    ansible.windows.win_shell: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    register: _step01_output
+    changed_when: false
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-01 - Set is_dc and is_member flags based on detected server role"
+    ansible.builtin.set_fact:
+      is_dc: "{{ (_step01_output.stdout | default('') | trim) in ['4', '5'] }}"
+      is_member: "{{ (_step01_output.stdout | default('') | trim) in ['1', '2', '3'] }}"
+      role_detection_error: "{{ (_step01_output.rc | default(-1) != 0) or ((_step01_output.stdout | default('') | trim) not in ['1', '2', '3', '4', '5']) }}"
+    tags: [execute]
+
+  - name: "Req step-02 - Set ShutdownWithoutLogon registry value to 0 on Domain Controller"
+    ansible.windows.win_regedit:
+      path: "{{ reg_path }}"
+      name: "{{ reg_name }}"
+      data: 0
+      type: dword
+    register: _step02_output
+    when: is_dc | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-03 - Set ShutdownWithoutLogon registry value to 0 on Member Server"
+    ansible.windows.win_regedit:
+      path: "{{ reg_path }}"
+      name: "{{ reg_name }}"
+      data: 0
+      type: dword
+    register: _step03_output
+    when: is_member | bool
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-04 - Verify ShutdownWithoutLogon registry value on Domain Controller"
+    ansible.windows.win_reg_stat:
+      path: "{{ reg_path }}"
+      name: "{{ reg_name }}"
+    register: _step04_output
+    when: is_dc | bool
+    changed_when: false
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-05 - Verify ShutdownWithoutLogon registry value on Member Server"
+    ansible.windows.win_reg_stat:
+      path: "{{ reg_path }}"
+      name: "{{ reg_name }}"
+    register: _step05_output
+    when: is_member | bool
+    changed_when: false
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req step-06 - Store requirement statuses"
+    ansible.builtin.set_fact:
+      status_01: "{{ 'PASS' if not (role_detection_error | bool) else 'ERROR' }}"
+      status_02: "{{ 'PASS' if (is_dc | bool) else 'SKIP' }}"
+      status_03: "{{ 'PASS' if (is_member | bool) else 'SKIP' }}"
+      status_04: >-
+        {{ 'SKIP' if not (is_dc | bool) else
+           'ERROR' if ('exists' not in (_step04_output | default({}))) else
+           'PASS' if ((_step04_output.exists | default(false) | bool) and ((_step04_output.value | default(-1) | int) == 0)) else
+           'FAIL' }}
+      status_05: >-
+        {{ 'SKIP' if not (is_member | bool) else
+           'ERROR' if ('exists' not in (_step05_output | default({}))) else
+           'PASS' if ((_step05_output.exists | default(false) | bool) and ((_step05_output.value | default(-1) | int) == 0)) else
+           'FAIL' }}
+      details_01: "{{ 'Server role detected: DomainRole ' ~ (_step01_output.stdout | default('') | trim) if not (role_detection_error | bool) else 'Role detection failed' }}"
+      details_02: "{{ 'Registry value set to 0 on Domain Controller' if (is_dc | bool) else 'Not applicable - Member Server' }}"
+      details_03: "{{ 'Registry value set to 0 on Member Server' if (is_member | bool) else 'Not applicable - Domain Controller' }}"
+      details_04: >-
+        {{ 'Not applicable - Member Server' if not (is_dc | bool) else
+           'Verification error: registry read returned no structured data' if ('exists' not in (_step04_output | default({}))) else
+           'Compliant: registry value exists and equals 0' if ((_step04_output.exists | default(false) | bool) and ((_step04_output.value | default(-1) | int) == 0)) else
+           'Non-compliant: registry value missing or not equal to 0' }}
+      details_05: >-
+        {{ 'Not applicable - Domain Controller' if not (is_member | bool) else
+           'Verification error: registry read returned no structured data' if ('exists' not in (_step05_output | default({}))) else
+           'Compliant: registry value exists and equals 0' if ((_step05_output.exists | default(false) | bool) and ((_step05_output.value | default(-1) | int) == 0)) else
+           'Non-compliant: registry value missing or not equal to 0' }}
+    tags: [execute]
+
+  - name: "Req step-06 - Store final remediation result in cis_result"
+    ansible.builtin.set_fact:
+      status_06: "{{ 'PASS' }}"
+      status_07: "{{ 'PASS' }}"
+      details_06: "Final remediation result stored in cis_result"
+      details_07: "Remediation report generated"
+      cis_result: >-
+        {{ 'ERROR' if (role_detection_error | bool) else
+           (status_04 | default('ERROR')) if (is_dc | bool) else
+           (status_05 | default('ERROR')) if (is_member | bool) else
+           'ERROR' }}
+      audit_raw_output: >-
+        {{ (_step04_output | to_json) if (is_dc | bool) else
+           (_step05_output | to_json) if (is_member | bool) else
+           '{}' }}
+    tags: [execute]
+
+  - name: "Req step-07 - Generate remediation report"
+    ansible.builtin.debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 2.3.13.1"
+      - "Reference: CIS Benchmark checkpoint 2.3.13.1"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: Detect Windows server role via Win32_ComputerSystem DomainRole"
+      - "  Command: (Get-CimInstance Win32_ComputerSystem).DomainRole"
+      - "  Exit code: {{ _step01_output.rc | default(-1) }}"
+      - "  Data: {{ _step01_output.stdout | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: Set ShutdownWithoutLogon registry value on Domain Controller"
+      - "  Command: win_regedit path=HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System name=ShutdownWithoutLogon data=0 type=dword"
+      - "  Exit code: {{ _step02_output.rc | default('N/A') }}"
+      - "  Data: 0"
+      - "  Status: {{ status_02 | default('SKIP') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: Set ShutdownWithoutLogon registry value on Member Server"
+      - "  Command: win_regedit path=HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System name=ShutdownWithoutLogon data=0 type=dword"
+      - "  Exit code: {{ _step03_output.rc | default('N/A') }}"
+      - "  Data: 0"
+      - "  Status: {{ status_03 | default('SKIP') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 04 - {{ req_04 }}:"
+      - "  Task: Verify ShutdownWithoutLogon registry value on Domain Controller"
+      - "  Command: win_reg_stat path=HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System name=ShutdownWithoutLogon"
+      - "  Exit code: {{ _step04_output.rc | default('N/A') }}"
+      - "  Data: {{ _step04_output.value | default('N/A') }}"
+      - "  Status: {{ status_04 | default('SKIP') | trim }}"
+      - "  Details: {{ details_04 | default('Not applicable') | trim }}"
+      - ""
+      - "REQUIREMENT 05 - {{ req_05 }}:"
+      - "  Task: Verify ShutdownWithoutLogon registry value on Member Server"
+      - "  Command: win_reg_stat path=HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System name=ShutdownWithoutLogon"
+      - "  Exit code: {{ _step05_output.rc | default('N/A') }}"
+      - "  Data: {{ _step05_output.value | default('N/A') }}"
+      - "  Status: {{ status_05 | default('SKIP') | trim }}"
+      - "  Details: {{ details_05 | default('Not applicable') | trim }}"
+      - ""
+      - "REQUIREMENT 06 - {{ req_06 }}:"
+      - "  Task: Store final remediation result in cis_result"
+      - "  Command: set_fact cis_result audit_raw_output"
+      - "  Exit code: 0"
+      - "  Data: {{ cis_result | default('ERROR') | trim }}"
+      - "  Status: {{ status_06 | default('PASS') | trim }}"
+      - "  Details: {{ details_06 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 07 - {{ req_07 }}:"
+      - "  Task: Generate remediation report"
+      - "  Command: debug msg"
+      - "  Exit code: 0"
+      - "  Data: Report generated"
+      - "  Status: {{ status_07 | default('PASS') | trim }}"
+      - "  Details: {{ details_07 | default('') | trim }}"
+      - ""
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir }}"
+      state: absent
+    failed_when: false
+    tags: [restore]
