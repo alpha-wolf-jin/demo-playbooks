@@ -1,0 +1,602 @@
+{
+  "tool_name": "rhel_patch_validate_and_report",
+  "version": "1.0",
+  "title": "RHEL Patch with Pre/Post Checks and Report",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Validates memory, filesystem free space, and running services before updating all packages and rebooting a RHEL server, then validates again and emits a structured report.",
+  "aap_template": "rhel_patch_validate_and_report++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution.",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "The RHEL server hostname or IP address to patch and validate."
+      },
+      {
+        "name": "min_free_mem_mb",
+        "type": "integer",
+        "required": false,
+        "default": 2048,
+        "unit": "MB",
+        "description": "Minimum required free memory in megabytes before and after patching. Recommended default is 2048 (2 GB)."
+      },
+      {
+        "name": "min_free_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": 5,
+        "unit": "GB",
+        "description": "Minimum required free disk space in gigabytes for each non-excluded filesystem before and after patching."
+      },
+      {
+        "name": "fs_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "/boot,/iso",
+        "unit": null,
+        "description": "Comma-separated list of mount points to exclude from filesystem free space checks."
+      },
+      {
+        "name": "fs_type_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "devtmpfs,tmpfs,cgroup2,iso9660",
+        "unit": null,
+        "description": "Comma-separated list of filesystem types to exclude from filesystem free space checks."
+      },
+      {
+        "name": "reboot_timeout_seconds",
+        "type": "integer",
+        "required": false,
+        "default": 120,
+        "unit": "seconds",
+        "description": "Maximum time to wait for the target server to come back online after reboot."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Emits pre/post free memory, pre/post low-space filesystem lists, running services before and after, service mismatch lists, update/reboot statuses, per-check statuses, and overall status.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "pre_memory_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Pre-update memory check status: OK or FAIL."
+      },
+      {
+        "name": "pre_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Pre-update filesystem free space check status: OK or FAIL."
+      },
+      {
+        "name": "post_memory_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Post-update memory check status: OK or FAIL."
+      },
+      {
+        "name": "post_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Post-update filesystem free space check status: OK or FAIL."
+      },
+      {
+        "name": "service_comparison_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Service list comparison status: MATCH or MISMATCH."
+      },
+      {
+        "name": "update_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Package update status: OK or FAIL."
+      },
+      {
+        "name": "reboot_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Reboot status: OK or FAIL."
+      },
+      {
+        "name": "pre_free_memory_mb",
+        "type": "integer",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Free memory in MB before the update."
+      },
+      {
+        "name": "post_free_memory_mb",
+        "type": "integer",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Free memory in MB after the reboot."
+      },
+      {
+        "name": "pre_disk_issues",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comma-separated list of pre-update filesystems below the free space threshold; empty string if none."
+      },
+      {
+        "name": "post_disk_issues",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comma-separated list of post-update filesystems below the free space threshold; empty string if none."
+      },
+      {
+        "name": "pre_running_services",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comma-separated list of running services before the update."
+      },
+      {
+        "name": "post_running_services",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comma-separated list of running services after the reboot."
+      },
+      {
+        "name": "service_mismatch_stopped",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comma-separated list of services that stopped after reboot; empty string if none."
+      },
+      {
+        "name": "service_mismatch_started",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comma-separated list of new services started after reboot; empty string if none."
+      },
+      {
+        "name": "overall_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Overall status: SUCCESS, COMPLETED_WITH_ISSUES, or FAILED."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather pre-update system facts",
+      "function": "Collect system facts, including memory and mounted filesystem information, from the target RHEL server before applying updates.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_pre_facts"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Parse pre-update free memory",
+      "function": "Extract total free memory in MB from the pre-update facts and determine whether it meets the minimum threshold.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_pre_facts"
+        ]
+      },
+      "computations": {
+        "_pre_free_memory_mb": "Extract free system memory in MB from _pre_facts as an integer.",
+        "_pre_memory_status": "Set to 'OK' if the pre-update free memory in MB is greater than or equal to min_free_mem_mb, otherwise 'FAIL'."
+      },
+      "stores": [
+        "_pre_free_memory_mb",
+        "_pre_memory_status"
+      ],
+      "on_success": "step-03",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Check pre-update free memory",
+      "function": "Stop the playbook before updating if the pre-update free memory is below the configured minimum threshold.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_pre_free_memory_mb",
+          "_pre_memory_status"
+        ]
+      },
+      "condition": "Pre-update memory check status is FAIL.",
+      "on_pass": "step-18",
+      "on_fail": "step-04"
+    },
+    {
+      "id": "step-04",
+      "type": "transform",
+      "name": "Identify pre-update low-space filesystems",
+      "function": "Evaluate mounted filesystems before update, excluding configured mount points and filesystem types, and list those below the minimum free space threshold.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_pre_facts"
+        ]
+      },
+      "computations": {
+        "_pre_disk_issues": "From _pre_facts, list mount points not in fs_exclude_list, whose filesystem type is not in fs_type_exclude_list, and whose available space in gigabytes is below min_free_disk_gb. Return a comma-separated string of mount_point (free_gb GB) entries, or an empty string if none.",
+        "_pre_disk_status": "Set to 'FAIL' if _pre_disk_issues is non-empty, otherwise 'OK'."
+      },
+      "stores": [
+        "_pre_disk_issues",
+        "_pre_disk_status"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-05",
+      "type": "decide",
+      "name": "Check pre-update filesystem free space",
+      "function": "Stop the playbook before updating if any non-excluded filesystem has insufficient free space.",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_pre_disk_issues",
+          "_pre_disk_status"
+        ]
+      },
+      "condition": "Pre-update disk status is FAIL.",
+      "on_pass": "step-18",
+      "on_fail": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "collect",
+      "name": "Gather pre-update running services",
+      "function": "Collect systemd service facts from the target RHEL server before applying updates.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_pre_service_facts"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-07",
+      "type": "transform",
+      "name": "Extract pre-update running service names",
+      "function": "Create a sorted list of services that are currently running on the target RHEL server before the update.",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_pre_service_facts"
+        ]
+      },
+      "computations": {
+        "_pre_running_services": "From _pre_service_facts, produce a comma-separated sorted list of service names whose state is running."
+      },
+      "stores": [
+        "_pre_running_services"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-08",
+      "type": "action",
+      "name": "Update all installed packages",
+      "function": "Update all installed packages on the target RHEL server using the native package manager.",
+      "module": "ansible.builtin.dnf",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_update_result"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Reboot the server and wait for it to come back",
+      "function": "Reboot the target RHEL server and wait for it to return online using the idempotent reboot module.",
+      "module": "ansible.builtin.reboot",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server",
+          "reboot_timeout_seconds"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_reboot_result"
+      ],
+      "on_success": "step-10",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-10",
+      "type": "collect",
+      "name": "Gather post-update system facts",
+      "function": "Collect system facts, including memory and mounted filesystem information, from the target RHEL server after the reboot.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_post_facts"
+      ],
+      "on_success": "step-11",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-11",
+      "type": "transform",
+      "name": "Parse post-update free memory",
+      "function": "Extract total free memory in MB after the reboot and determine whether it meets the configured minimum threshold.",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_post_facts"
+        ]
+      },
+      "computations": {
+        "_post_free_memory_mb": "Extract free system memory in MB from _post_facts as an integer.",
+        "_post_memory_status": "Set to 'OK' if the post-update free memory in MB is greater than or equal to min_free_mem_mb, otherwise 'FAIL'."
+      },
+      "stores": [
+        "_post_free_memory_mb",
+        "_post_memory_status"
+      ],
+      "on_success": "step-12",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-12",
+      "type": "transform",
+      "name": "Identify post-update low-space filesystems",
+      "function": "Evaluate mounted filesystems after reboot, excluding configured mount points and filesystem types, and list those below the minimum free space threshold.",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_post_facts"
+        ]
+      },
+      "computations": {
+        "_post_disk_issues": "From _post_facts, list mount points not in fs_exclude_list, whose filesystem type is not in fs_type_exclude_list, and whose available space in gigabytes is below min_free_disk_gb. Return a comma-separated string of mount_point (free_gb GB) entries, or an empty string if none.",
+        "_post_disk_status": "Set to 'FAIL' if _post_disk_issues is non-empty, otherwise 'OK'."
+      },
+      "stores": [
+        "_post_disk_issues",
+        "_post_disk_status"
+      ],
+      "on_success": "step-13",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-13",
+      "type": "collect",
+      "name": "Gather post-update running services",
+      "function": "Collect systemd service facts from the target RHEL server after the reboot.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_post_service_facts"
+      ],
+      "on_success": "step-14",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-14",
+      "type": "transform",
+      "name": "Extract post-update running service names",
+      "function": "Create a sorted list of services that are currently running on the target RHEL server after the reboot.",
+      "input": {
+        "source": "step-13",
+        "fields": [
+          "_post_service_facts"
+        ]
+      },
+      "computations": {
+        "_post_running_services": "From _post_service_facts, produce a comma-separated sorted list of service names whose state is running."
+      },
+      "stores": [
+        "_post_running_services"
+      ],
+      "on_success": "step-15",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-15",
+      "type": "transform",
+      "name": "Compare pre/post services and derive statuses",
+      "function": "Compare pre- and post-update running service lists to identify stopped services, started services, and the overall service comparison status.",
+      "input": {
+        "source": "step-14",
+        "fields": [
+          "_post_running_services"
+        ]
+      },
+      "computations": {
+        "_service_mismatch_stopped": "List the service names present in _pre_running_services but absent from _post_running_services, as a comma-separated sorted list; empty string if none.",
+        "_service_mismatch_started": "List the service names present in _post_running_services but absent from _pre_running_services, as a comma-separated sorted list; empty string if none.",
+        "_service_comparison_status": "Set to 'MATCH' if both mismatch lists are empty, otherwise 'MISMATCH'."
+      },
+      "stores": [
+        "_service_mismatch_stopped",
+        "_service_mismatch_started",
+        "_service_comparison_status"
+      ],
+      "on_success": "step-16",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-16",
+      "type": "transform",
+      "name": "Compose final report statuses",
+      "function": "Calculate update status, reboot status, and overall status from the stored update/reboot results and post-check statuses.",
+      "input": {
+        "source": "step-15",
+        "fields": [
+          "_service_comparison_status"
+        ]
+      },
+      "computations": {
+        "_update_status": "Set to 'OK' if the package update result indicates no failure, otherwise 'FAIL'.",
+        "_reboot_status": "Set to 'OK' if the reboot result indicates no failure, otherwise 'FAIL'.",
+        "_overall_status": "Set to 'SUCCESS' if post_memory_status is 'OK', post_disk_status is 'OK', and service_comparison_status is 'MATCH'; otherwise set to 'COMPLETED_WITH_ISSUES' because pre-checks, update, and reboot have already succeeded to reach this point."
+      },
+      "stores": [
+        "_update_status",
+        "_reboot_status",
+        "_overall_status"
+      ],
+      "on_success": "step-17",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-17",
+      "type": "emit",
+      "name": "Emit final report",
+      "function": "Print the Required Output Format <result> block with pre/post memory, disk, service, update, reboot, and overall status fields.",
+      "output_fields": {
+        "pre_memory_status": "{{ _pre_memory_status }}",
+        "pre_disk_status": "{{ _pre_disk_status }}",
+        "post_memory_status": "{{ _post_memory_status }}",
+        "post_disk_status": "{{ _post_disk_status }}",
+        "service_comparison_status": "{{ _service_comparison_status }}",
+        "update_status": "{{ _update_status }}",
+        "reboot_status": "{{ _reboot_status }}",
+        "pre_free_memory_mb": "{{ _pre_free_memory_mb }}",
+        "post_free_memory_mb": "{{ _post_free_memory_mb }}",
+        "pre_disk_issues": "{{ _pre_disk_issues }}",
+        "post_disk_issues": "{{ _post_disk_issues }}",
+        "pre_running_services": "{{ _pre_running_services }}",
+        "post_running_services": "{{ _post_running_services }}",
+        "service_mismatch_stopped": "{{ _service_mismatch_stopped }}",
+        "service_mismatch_started": "{{ _service_mismatch_started }}",
+        "overall_status": "{{ _overall_status }}"
+      },
+      "on_success": "end",
+      "on_fail": "step-18"
+    },
+    {
+      "id": "step-18",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure or a failed pre-check; prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: rhel_patch_validate_and_report failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-18",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 900,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Collect pre-update facts and running services, and validate memory and filesystem free space before changing the system.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06",
+        "step-07"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Update all installed packages and reboot the target RHEL server.",
+      "steps": [
+        "step-08",
+        "step-09"
+      ]
+    },
+    {
+      "name": "Post-checks",
+      "description": "Collect post-update facts and running services, compare them to pre-update state, and compute final report statuses.",
+      "steps": [
+        "step-10",
+        "step-11",
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-15",
+        "step-16"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final report to standard output.",
+      "steps": [
+        "step-17"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails or a pre-check fails; reports the error and halts execution.",
+      "steps": [
+        "step-18"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "3a585c42e9bf880aff2cced915c4316711057ecab8bc07816be6035e8cff873b",
+    "saved_at": "2026-08-21T05:02:58+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
