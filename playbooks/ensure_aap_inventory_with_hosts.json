@@ -4,7 +4,7 @@
   "title": "Ensure AAP Inventory with Hosts",
   "role": "action",
   "effect": "persistent",
-  "description": "Ensures an organization, inventory, and a list of hosts exist in AAP, creating missing resources and reporting per-host add results.",
+  "description": "Ensures an AAP organization and inventory exist, then adds all specified hosts to the inventory, reporting per-host success/failure.",
   "aap_template": "ensure_aap_inventory_with_hosts++Default",
   "organization": "Default",
   "execution_target": "controller",
@@ -22,7 +22,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The IP address or hostname of the AAP controller."
+        "description": "The IP address or hostname of the AAP controller gateway."
       },
       {
         "name": "aap_user",
@@ -30,7 +30,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The username for authenticating to the AAP controller."
+        "description": "Username for authenticating to the AAP controller API."
       },
       {
         "name": "aap_password",
@@ -38,7 +38,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The password for authenticating to the AAP controller."
+        "description": "Password for authenticating to the AAP controller API."
       },
       {
         "name": "organization_name",
@@ -46,7 +46,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The name of the organization to ensure exists."
+        "description": "The name of the AAP organization to ensure exists."
       },
       {
         "name": "inventory_name",
@@ -54,7 +54,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The name of the inventory to ensure exists within the organization."
+        "description": "The name of the AAP inventory to ensure exists within the organization."
       },
       {
         "name": "hosts_list",
@@ -75,14 +75,14 @@
         "type": "string",
         "nullable": false,
         "required_by_sop": true,
-        "description": "The name of the organization."
+        "description": "The name of the AAP organization."
       },
       {
         "name": "inventory_name",
         "type": "string",
         "nullable": false,
         "required_by_sop": true,
-        "description": "The name of the inventory."
+        "description": "The name of the AAP inventory."
       },
       {
         "name": "added_hosts",
@@ -117,7 +117,7 @@
         "_existing_org"
       ],
       "on_success": "step-02",
-      "on_fail": "step-10"
+      "on_fail": "step-08"
     },
     {
       "id": "step-02",
@@ -151,7 +151,7 @@
         "_created_org_id"
       ],
       "on_success": "step-04",
-      "on_fail": "step-10"
+      "on_fail": "step-08"
     },
     {
       "id": "step-04",
@@ -187,33 +187,18 @@
         "_created_inventory_id"
       ],
       "on_success": "step-06",
-      "on_fail": "step-10"
+      "on_fail": "step-08"
     },
     {
       "id": "step-06",
-      "type": "decide",
-      "name": "Does the host already exist in the inventory?",
-      "function": "Branch on whether the host lookup found a matching host in the inventory.",
-      "input": {
-        "source": "playbook_input.parameters",
-        "fields": [
-          "inventory_name",
-          "hosts_list"
-        ]
-      },
-      "condition": "The host lookup returned at least one result.",
-      "on_pass": "step-08",
-      "on_fail": "step-07"
-    },
-    {
-      "id": "step-07",
       "type": "action",
-      "name": "Add missing hosts to the inventory",
-      "function": "Add each host from hosts_list that is not already present in the inventory, recording per-host success or failure.",
+      "name": "Add hosts to the inventory",
+      "function": "Loop through the comma-separated hosts_list and add each host to the inventory using the idempotent ansible.controller.host module, recording per-host success and failure.",
       "module": "ansible.controller.host",
       "input": {
         "source": "playbook_input.parameters",
         "fields": [
+          "organization_name",
           "inventory_name",
           "hosts_list"
         ]
@@ -222,46 +207,24 @@
       "stores": [
         "_host_results"
       ],
-      "on_success": "step-08",
-      "on_fail": "step-10"
+      "on_success": "step-07",
+      "on_fail": "step-08"
     },
     {
-      "id": "step-08",
-      "type": "transform",
-      "name": "Summarize host add results",
-      "function": "Derive lists of successfully added hosts and failed hosts from the per-host results collected in step-07.",
-      "input": {
-        "source": "step-07",
-        "fields": [
-          "_host_results"
-        ]
-      },
-      "computations": {
-        "_added_hosts": "Collect the host names from _host_results where the add operation succeeded.",
-        "_failed_hosts": "Collect the host names from _host_results where the add operation failed."
-      },
-      "stores": [
-        "_added_hosts",
-        "_failed_hosts"
-      ],
-      "on_success": "step-09",
-      "on_fail": "step-10"
-    },
-    {
-      "id": "step-09",
+      "id": "step-07",
       "type": "emit",
       "name": "Emit result block",
       "function": "Print the Required Output Format <result> block on success.",
       "output_fields": {
         "organization_name": "{{ organization_name }}",
         "inventory_name": "{{ inventory_name }}",
-        "added_hosts": "{{ _added_hosts }}",
-        "failed_hosts": "{{ _failed_hosts }}"
+        "added_hosts": "{{ _host_results | selectattr('failed', 'equalto', false) | map(attribute='item') | list }}",
+        "failed_hosts": "{{ _host_results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
       },
       "on_success": "end"
     },
     {
-      "id": "step-10",
+      "id": "step-08",
       "type": "abort",
       "name": "Emit error and fail",
       "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
@@ -270,49 +233,47 @@
     }
   ],
   "error_handling": {
-    "abort_step_id": "step-10",
+    "abort_step_id": "step-08",
     "no_silent_exit": true
   },
   "timeout_seconds": 300,
   "phases": [
     {
       "name": "Pre-checks",
-      "description": "Look up the organization, inventory, and hosts to determine what needs to be created.",
+      "description": "Look up the organization and inventory to determine what needs to be created.",
       "steps": [
         "step-01",
         "step-02",
-        "step-04",
-        "step-06"
+        "step-04"
       ]
     },
     {
       "name": "Main action",
-      "description": "Create the organization, inventory, and add missing hosts as needed.",
+      "description": "Create the organization and inventory if missing, then add all hosts to the inventory.",
       "steps": [
         "step-03",
         "step-05",
-        "step-07"
+        "step-06"
       ]
     },
     {
       "name": "Reporting",
-      "description": "Summarize host add results and emit the structured final result to the caller.",
+      "description": "Emit the structured final result to the caller.",
       "steps": [
-        "step-08",
-        "step-09"
+        "step-07"
       ]
     },
     {
       "name": "Error handling",
       "description": "Reached when any step fails; records failure and halts execution.",
       "steps": [
-        "step-10"
+        "step-08"
       ]
     }
   ],
   "meta": {
-    "content_sha256": "36f82ba5ab72489be73e68371fc54e8fa0cf27f664edeb0df1008fea9a1069f8",
-    "saved_at": "2026-08-30T10:39:09+00:00",
+    "content_sha256": "a5600046dad1eed7bc87b90d54aa2b6b202e3ebe872de0fada5404747a5d0d42",
+    "saved_at": "2026-08-30T14:48:37+00:00",
     "saved_by": "admin",
     "revision": 1
   }
