@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
-  "benchmark": "rhel9",
-  "checkpoint_id": "1.1.2.1.3",
-  "title": "Ensure nosuid option set on /tmp partition",
+  "benchmark": "win2022",
+  "checkpoint_id": "1.2.4",
+  "title": "Ensure 'Reset account lockout counter after' is set to '15 or more minute(s)'",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
-  "transport": "ssh",
-  "connection_risk": false,
-  "objective": "Audit CIS checkpoint 1.1.2.1.3: Ensure nosuid option set on /tmp partition",
+  "transport": "winrm",
+  "connection_risk": true,
+  "objective": "Audit CIS checkpoint 1.2.4: Ensure 'Reset account lockout counter after' is set to '15 or more minute(s)'",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -52,67 +52,102 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Run the audit procedure for Ensure nosuid option set on /tmp partition: - IF - a separate partition exists for /tmp…",
-      "function": "1. Run the audit procedure for Ensure nosuid option set on /tmp partition: - IF - a separate partition exists for /tmp, verify that the nosuid option is set.\nRun the following command to verify that the nosuid mount option is set.\nExample:\n# findmnt -kn /tmp | grep -v nosuid\n\nNothing should be returned. Expected result: Output shows compliance status",
+      "name": "Check if the Account Lockout Policy is applied via the Default Domain Policy GPO",
+      "function": "1. Check if the Account Lockout Policy is applied via the Default Domain Policy GPO using command: `Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String -Pattern 'LockoutDuration|LockoutObservationWindow|LockoutThreshold'`. Expected result: The Default Domain Policy GPO contains the Account Lockout Policy settings (LockoutDuration, LockoutObservationWindow, LockoutThreshold).",
       "module": "ansible.builtin.shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-06"
+      "on_fail": "step-08"
     },
     {
       "id": "step-02",
-      "type": "transform",
-      "name": "VERIFY: Summarise compliance status for Ensure nosuid option set on /tmp partition",
-      "function": "2. VERIFY: Summarise compliance status for Ensure nosuid option set on /tmp partition. Expected result: PASS if compliant, SKIP if prerequisite not met (e.g., partition/package does not exist), FAIL if misconfigured",
+      "type": "collect",
+      "name": "Check the 'Reset account lockout counter after' value",
+      "function": "2. Check the 'Reset account lockout counter after' value using command: `Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String -Pattern 'LockoutObservationWindow'`. Expected result: LockoutObservationWindow value is set to 15 or more minutes (900 or more seconds).",
+      "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
         "fields": [
           "_step01_output"
         ]
       },
-      "computations": {
-        "_cis_status": "PASS if audit output contains '** PASS **', FAIL if '** FAIL **', SKIP otherwise"
-      },
       "stores": [
-        "_cis_status"
+        "_step02_output"
       ],
-      "on_success": "step-03"
+      "on_success": "step-03",
+      "on_fail": "step-08"
     },
     {
       "id": "step-03",
-      "type": "transform",
-      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "3. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
+      "type": "collect",
+      "name": "Check that the 'Reset account lockout counter after' value is less than or equal to the 'Account lockout duration' value",
+      "function": "3. Check that the 'Reset account lockout counter after' value is less than or equal to the 'Account lockout duration' value using command: `Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String -Pattern 'LockoutDuration|LockoutObservationWindow'`. Expected result: LockoutObservationWindow (reset counter) value is less than or equal to LockoutDuration value.",
+      "module": "ansible.builtin.shell",
       "input": {
         "source": "step-02",
         "fields": [
-          "_cis_status"
+          "_step02_output"
+        ]
+      },
+      "stores": [
+        "_step03_output"
+      ],
+      "on_success": "step-04",
+      "on_fail": "step-08"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Check the overall compliance status",
+      "function": "4. Check the overall compliance status. Expected result: PASS if the Account Lockout Policy is applied via Default Domain Policy GPO and 'Reset account lockout counter after' is set to 15 or more minutes and is less than or equal to the Account lockout duration; SKIP if the Account Lockout Policy is not applied via the Default Domain Policy GPO; FAIL if the policy is applied but 'Reset account lockout counter after' is set to less than 15 minutes or exceeds the Account lockout duration.",
+      "module": "ansible.builtin.shell",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_step03_output"
+        ]
+      },
+      "stores": [
+        "_step04_output"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-08"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
+      "function": "5. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_step04_output"
         ]
       },
       "stores": [
         "cis_result"
       ],
-      "on_success": "step-04"
+      "on_success": "step-06"
     },
     {
-      "id": "step-04",
+      "id": "step-06",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "4. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.2.1.3\nReference: CIS Benchmark checkpoint 1.1.2.1.3\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "6. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.2.4\nReference: CIS Benchmark checkpoint 1.2.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-03",
+        "source": "step-05",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-05"
+      "on_success": "step-07"
     },
     {
-      "id": "step-05",
+      "id": "step-07",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -122,43 +157,51 @@
       "on_success": "end"
     },
     {
-      "id": "step-06",
+      "id": "step-08",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.2.1.3 audit failed",
+      "error_message": "ERROR: CIS 1.2.4 audit failed",
       "on_success": "end"
     }
   ],
   "phases": [
     {
+      "name": "Execution",
+      "description": "Apply remediation changes on the target host.",
+      "steps": [
+        "step-04"
+      ]
+    },
+    {
       "name": "Data Collection",
       "description": "Execute read-only commands on the target host.",
       "steps": [
-        "step-01"
+        "step-01",
+        "step-02",
+        "step-03"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-02",
-        "step-03"
+        "step-05"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-04",
-        "step-05"
+        "step-06",
+        "step-07"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-06"
+        "step-08"
       ]
     }
   ],
@@ -170,16 +213,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "reference_procedure": "- IF - a separate partition exists for /tmp, verify that the nosuid option is set.\nRun the following command to verify that the nosuid mount option is set.\nExample:\n# findmnt -kn /tmp | grep -v nosuid\n\nNothing should be returned",
+  "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed.",
   "example_output": "",
-  "filename": "cis_audit_1_1_2_1_3.yml",
-  "output_dir": "./cis_rhel9_audit_playbooks",
+  "filename": "cis_audit_1_2_4.yml",
+  "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
-    "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
-    "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-09-13T20:43:19",
+    "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
+    "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
+    "drafted_at": "2026-09-13T23:37:10",
     "revision": 1,
-    "approved_at": "2026-09-13T20:45:15",
+    "approved_at": "2026-09-13T23:38:37",
     "saved_by": null
   }
 }
