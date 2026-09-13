@@ -2,188 +2,181 @@
 - name: Initialize meta data variables
   include_vars: cis_audit_var_1_1_1.yml
 
-- name: "Initialize data variables"
-  set_fact:
-    data_01: "Not collected yet"
+- name: "Initialize audit variables"
+  ansible.builtin.set_fact:
+    is_dc: false
+    is_member: false
+    _cis_status: "ERROR"
+    data_01: "Not collected"
     status_01: "ERROR"
     details_01: "Not evaluated"
-    data_02: "Not collected yet"
+    task_01_name: "Not executed"
+    task_01_cmd: "N/A"
+    task_01_rc: -1
+    data_02: "Not collected"
     status_02: "ERROR"
     details_02: "Not evaluated"
-    data_03: "Not collected yet"
+    task_02_name: "Not executed"
+    task_02_cmd: "N/A"
+    task_02_rc: -1
+    data_03: "Not collected"
     status_03: "ERROR"
     details_03: "Not evaluated"
-    data_04: "Not collected yet"
+    task_03_name: "Not executed"
+    task_03_cmd: "N/A"
+    task_03_rc: -1
+    data_04: "Not collected"
     status_04: "ERROR"
     details_04: "Not evaluated"
-    data_05: "Not collected yet"
+    task_04_name: "Not executed"
+    task_04_cmd: "N/A"
+    task_04_rc: -1
+    data_05: "Not collected"
     status_05: "ERROR"
     details_05: "Not evaluated"
-    data_06: "Not collected yet"
-    status_06: "ERROR"
-    details_06: "Not evaluated"
-    data_07: "Not collected yet"
-    status_07: "ERROR"
-    details_07: "Not evaluated"
+    task_05_name: "Not executed"
+    task_05_cmd: "N/A"
+    task_05_rc: -1
+    cis_result: "ERROR"
 
-# Requirement 01
-- name: "Req 01 - Check if Group Policy Management is available"
+- name: "Req step-01 - Detect Windows server role using DomainRole from Win32_ComputerSystem"
   ansible.windows.win_shell: |
-    Get-Command Get-GPO -ErrorAction SilentlyContinue
-  register: result_01
+    (Get-CimInstance Win32_ComputerSystem).DomainRole
+  register: _step01_output
   failed_when: false
   changed_when: false
 
-- name: "Store requirement 01 details"
-  set_fact:
-    task_01_name: "Check Group Policy Management availability"
-    task_01_cmd: "Get-Command Get-GPO -ErrorAction SilentlyContinue"
-    task_01_rc: "{{ result_01.rc | default(-1) }}"
-    data_01: "{{ result_01.stdout | default('') | trim }}"
-    status_01: "{{ ('PASS' if (result_01.rc | default(-1)) == 0 and (result_01.stdout | default('') | trim) != '' else 'FAIL') | trim }}"
+- name: "Req step-01 - Set role flags based on detected DomainRole"
+  ansible.builtin.set_fact:
+    is_dc: "{{ (_step01_output.stdout | default('') | trim | int(-1)) in [4, 5] }}"
+    is_member: "{{ (_step01_output.stdout | default('') | trim | int(-1)) in [1, 2, 3] }}"
+    task_01_name: "Detect Windows server role using DomainRole from Win32_ComputerSystem"
+    task_01_cmd: "(Get-CimInstance Win32_ComputerSystem).DomainRole"
+    task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+    data_01: "DomainRole={{ _step01_output.stdout | default('') | trim }}"
+    status_01: >-
+      {{ 'PASS' if (_step01_output.stdout | default('') | trim) in ['1','2','3','4','5'] else 'ERROR' }}
+    details_01: >-
+      {{ 'DomainRole=' + (_step01_output.stdout | default('') | trim) + ' - ' + ('Domain Controller' if (_step01_output.stdout | default('') | trim) in ['4','5'] else ('Member Server' if (_step01_output.stdout | default('') | trim) in ['1','2','3'] else 'Unknown')) }}
 
-- name: "Set requirement 01 rationale"
-  set_fact:
-    details_01: "{{ ('PASS: GPO cmdlet found' if status_01 | trim == 'PASS' else 'FAIL: GPO cmdlet not found') | trim }}"
-
-# Requirement 02
-- name: "Req 02 - Check password history length"
+- name: "Req step-02 - If Domain Controller: Read Enforce password history via Get-ADDefaultDomainPasswordPolicy"
   ansible.windows.win_shell: |
-    Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength
-  register: result_02
+    try {
+      $p = Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop
+      Write-Output $p.PasswordHistoryCount
+    } catch {
+      Write-Output "ERROR: $($_.Exception.Message)"
+      exit 1
+    }
+  register: _step02_output
+  when: is_dc | bool
   failed_when: false
   changed_when: false
 
-- name: "Store requirement 02 details"
-  set_fact:
-    task_02_name: "Check AD default domain password history"
-    task_02_cmd: "Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty HistoryLength"
-    task_02_rc: "{{ result_02.rc | default(-1) }}"
-    data_02: "{{ result_02.stdout | default('') | trim }}"
-    status_02: "{{ ('PASS' if (result_02.rc | default(-1)) == 0 and (result_02.stdout | default('0') | trim | int >= (password_history_min | int)) else 'FAIL') | trim }}"
+- name: "Req step-02 - Store Domain Controller password history read result"
+  ansible.builtin.set_fact:
+    task_02_name: "Read Enforce password history via Get-ADDefaultDomainPasswordPolicy"
+    task_02_cmd: "Get-ADDefaultDomainPasswordPolicy"
+    task_02_rc: "{{ _step02_output.rc | default(-1) }}"
+    data_02: "{{ (_step02_output.stdout | default('N/A', true) | trim) if (is_dc | bool) else 'N/A (not a Domain Controller)' }}"
+    status_02: >-
+      {{ 'SKIP' if not (is_dc | bool) else
+         ('ERROR' if (_step02_output.rc | default(-1)) != 0 or ((_step02_output.stdout | default('', true) | trim) == '') else 'PASS') }}
+    details_02: >-
+      {{ 'Not a Domain Controller' if not (is_dc | bool) else
+         ('Read failed' if (_step02_output.rc | default(-1)) != 0 else 'PasswordHistoryCount=' + (_step02_output.stdout | default('', true) | trim)) }}
 
-- name: "Set requirement 02 rationale"
-  set_fact:
-    details_02: "{{ ('PASS: HistoryLength >= ' ~ password_history_min if status_02 | trim == 'PASS' else 'FAIL: HistoryLength < ' ~ password_history_min ~ ' or command failed') | trim }}"
-
-# Requirement 03
-- name: "Req 03 - Check Default Domain Policy GPO status"
-  ansible.windows.win_shell: |
-    Get-GPO -Name "Default Domain Policy" | Select-Object -ExpandProperty GpoStatus
-  register: result_03
+- name: "Req step-03 - If Member Server: Read Enforce password history via community.windows.win_security_policy"
+  community.windows.win_security_policy:
+    section: "System Access"
+    key: "PasswordHistorySize"
+    value: "{{ password_history_min }}"
+  check_mode: true
+  register: _step03_output
+  when: is_member | bool
   failed_when: false
   changed_when: false
 
-- name: "Store requirement 03 details"
-  set_fact:
-    task_03_name: "Check Default Domain Policy GPO enabled"
-    task_03_cmd: |
-      Get-GPO -Name \"Default Domain Policy\" | Select-Object -ExpandProperty GpoStatus
-    task_03_rc: "{{ result_03.rc | default(-1) }}"
-    data_03: "{{ result_03.stdout | default('') | trim }}"
-    status_03: "{{ ('PASS' if (result_03.rc | default(-1)) == 0 and (result_03.stdout | default('') | trim) in ['Enabled', 'AllSettingsEnabled'] else 'FAIL') | trim }}"
-
-- name: "Set requirement 03 rationale"
-  set_fact:
-    details_03: "{{ ('PASS: GPO status is ' + (data_03 | trim) if status_03 | trim == 'PASS' else 'FAIL: GPO status not Enabled or AllSettingsEnabled') | trim }}"
-
-# Requirement 04
-- name: "Req 04 - Check Enforce password history setting in GPO report"
+- name: "Req step-03 - Read actual PasswordHistorySize value via secedit export"
   ansible.windows.win_shell: |
-    Get-GPO -Name "Default Domain Policy" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5
-  register: result_04
+    $cfg = Join-Path $env:TEMP 'cis_secpol_1_1_1.cfg'
+    secedit /export /cfg $cfg /areas SECURITYPOLICY 2>&1 | Out-Null
+    if (Test-Path -LiteralPath $cfg) {
+      $m = Select-String -Path $cfg -Pattern '^\s*PasswordHistorySize\s*=\s*\d+'
+      if ($m) {
+        $val = [regex]::Match($m.Line, '\d+').Value
+        Write-Output $val
+      } else {
+        Write-Output 'NOT_FOUND'
+      }
+      Remove-Item -LiteralPath $cfg -ErrorAction SilentlyContinue
+    } else {
+      Write-Output 'EXPORT_FAILED'
+    }
+  register: result_03b
+  when: is_member | bool
   failed_when: false
   changed_when: false
 
-- name: "Store requirement 04 details (data & status)"
-  set_fact:
-    task_04_name: "Check Enforce password history setting in GPO report"
-    task_04_cmd: |
-      Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml | Select-String -Pattern 'Enforce password history' -Context 0,5
-    task_04_rc: "{{ result_04.rc | default(-1) }}"
-    data_04: "{{ result_04.stdout | default('') | trim }}"
+- name: "Req step-03 - Store Member Server password history read result"
+  ansible.builtin.set_fact:
+    task_03_name: "Read Enforce password history via community.windows.win_security_policy and secedit export"
+    task_03_cmd: "community.windows.win_security_policy (section=System Access, key=PasswordHistorySize) + secedit /export /areas SECURITYPOLICY"
+    task_03_rc: "{{ 0 if ((is_member | bool) and ((result_03b.stdout | default('', true) | trim) not in ['', 'NOT_FOUND', 'EXPORT_FAILED'])) else -1 }}"
+    data_03: "{{ (result_03b.stdout | default('N/A', true) | trim) if (is_member | bool) else 'N/A (not a Member Server)' }}"
+    status_03: >-
+      {{ 'SKIP' if not (is_member | bool) else
+         ('ERROR' if ((result_03b.stdout | default('', true) | trim) in ['', 'NOT_FOUND', 'EXPORT_FAILED']) else 'PASS') }}
+    details_03: >-
+      {{ 'Not a Member Server' if not (is_member | bool) else
+         ('Read failed or key absent' if ((result_03b.stdout | default('', true) | trim) in ['', 'NOT_FOUND', 'EXPORT_FAILED']) else 'PasswordHistorySize=' + (result_03b.stdout | default('', true) | trim)) }}
+
+- name: "Req step-04 - If Domain Controller: Evaluate Enforce password history compliance and set _cis_status"
+  ansible.builtin.set_fact:
+    _cis_status: >-
+      {{ 'SKIP' if not (is_dc | bool) else
+         ('ERROR' if (_step02_output.rc | default(-1)) != 0 or ((_step02_output.stdout | default('', true) | trim) == '') else
+          ('PASS' if ((_step02_output.stdout | default('', true) | trim) | int(-1)) >= (password_history_min | int) else 'FAIL')) }}
+    task_04_name: "Evaluate Enforce password history on Domain Controller"
+    task_04_cmd: "N/A (evaluation of Get-ADDefaultDomainPasswordPolicy output)"
+    task_04_rc: 0
+    data_04: "{{ (_step02_output.stdout | default('N/A', true) | trim) if (is_dc | bool) else 'N/A (not a Domain Controller)' }}"
     status_04: >-
-      {%- set output = result_04.stdout | default('') | trim -%}
-      {%- set rc = result_04.rc | default(-1) -%}
-      {%- if rc == 0 and output != '' -%}
-        {%- set match_list = output | regex_findall('<SettingNumber>(\\d+)</SettingNumber>') -%}
-        {%- if match_list -%}
-          {%- set value = match_list[0] | int -%}
-          {%- if value >= (password_history_min | int) -%}
-            PASS
-          {%- else -%}
-            FAIL
-          {%- endif -%}
-        {%- else -%}
-          FAIL
-        {%- endif -%}
-      {%- else -%}
-        FAIL
-      {%- endif -%}
-
-- name: "Set requirement 04 rationale"
-  set_fact:
+      {{ 'SKIP' if not (is_dc | bool) else
+         ('ERROR' if (_step02_output.rc | default(-1)) != 0 or ((_step02_output.stdout | default('', true) | trim) == '') else
+          ('PASS' if ((_step02_output.stdout | default('', true) | trim) | int(-1)) >= (password_history_min | int) else 'FAIL')) }}
     details_04: >-
-      {%- if status_04 | trim == 'PASS' -%}
-        PASS: Enforce password history value >= {{ password_history_min }}
-      {%- else -%}
-        FAIL: Setting not found or value < {{ password_history_min }}
-      {%- endif -%}
+      {{ 'Not a Domain Controller' if not (is_dc | bool) else
+         ('Read failed or no value returned' if (_step02_output.rc | default(-1)) != 0 or ((_step02_output.stdout | default('', true) | trim) == '') else
+          ('PasswordHistoryCount=' + (_step02_output.stdout | default('', true) | trim) + ' >= ' + password_history_min + ' - password history requirement met') if ((_step02_output.stdout | default('', true) | trim) | int(-1)) >= (password_history_min | int) else
+          ('PasswordHistoryCount=' + (_step02_output.stdout | default('', true) | trim) + ' < ' + password_history_min + ' - password history requirement NOT met')) }}
 
-# Requirement 05
-- name: "Req 05 - Check Minimum password age"
-  ansible.windows.win_shell: |
-    Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge
-  register: result_05
-  failed_when: false
-  changed_when: false
+- name: "Req step-05 - If Member Server: Evaluate Enforce password history compliance and set _cis_status"
+  ansible.builtin.set_fact:
+    _cis_status: >-
+      {{ _cis_status if not (is_member | bool) else
+         ('ERROR' if ((result_03b.stdout | default('', true) | trim) in ['', 'NOT_FOUND', 'EXPORT_FAILED']) else
+          ('PASS' if ((result_03b.stdout | default('', true) | trim) | int(-1)) >= (password_history_min | int) else 'FAIL')) }}
+    task_05_name: "Evaluate Enforce password history on Member Server"
+    task_05_cmd: "N/A (evaluation of secedit PasswordHistorySize)"
+    task_05_rc: 0
+    data_05: "{{ (result_03b.stdout | default('N/A', true) | trim) if (is_member | bool) else 'N/A (not a Member Server)' }}"
+    status_05: >-
+      {{ 'SKIP' if not (is_member | bool) else
+         ('ERROR' if ((result_03b.stdout | default('', true) | trim) in ['', 'NOT_FOUND', 'EXPORT_FAILED']) else
+          ('PASS' if ((result_03b.stdout | default('', true) | trim) | int(-1)) >= (password_history_min | int) else 'FAIL')) }}
+    details_05: >-
+      {{ 'Not a Member Server' if not (is_member | bool) else
+         ('Read failed or no value returned' if ((result_03b.stdout | default('', true) | trim) in ['', 'NOT_FOUND', 'EXPORT_FAILED']) else
+          ('PasswordHistorySize=' + (result_03b.stdout | default('', true) | trim) + ' >= ' + password_history_min + ' - password history requirement met') if ((result_03b.stdout | default('', true) | trim) | int(-1)) >= (password_history_min | int) else
+          ('PasswordHistorySize=' + (result_03b.stdout | default('', true) | trim) + ' < ' + password_history_min + ' - password history requirement NOT met')) }}
 
-- name: "Store requirement 05 details"
-  set_fact:
-    task_05_name: "Check Minimum password age"
-    task_05_cmd: "Get-ADDefaultDomainPasswordPolicy | Select-Object -ExpandProperty MinPasswordAge"
-    task_05_rc: "{{ result_05.rc | default(-1) }}"
-    data_05: "{{ result_05.stdout | default('') | trim }}"
-    status_05: "{{ ('PASS' if (result_05.rc | default(-1)) == 0 and (result_05.stdout | default('0') | trim | int > 0) else 'FAIL') | trim }}"
+- name: "Req step-06 - Store final audit result in cis_result"
+  ansible.builtin.set_fact:
+    cis_result: "{{ _cis_status | default('ERROR') | trim }}"
 
-- name: "Set requirement 05 rationale"
-  set_fact:
-    details_05: "{{ ('PASS: MinPasswordAge > 0' if status_05 | trim == 'PASS' else 'FAIL: MinPasswordAge <= 0 or command failed') | trim }}"
-
-# Requirement 06 – overall compliance evaluation
-- name: "Req 06 - Determine overall compliance status"
-  set_fact:
-    status_06: >-
-      {%- if status_01 | trim == 'FAIL' -%}
-        SKIP
-      {%- elif status_02 | trim == 'PASS' and status_03 | trim == 'PASS' and status_04 | trim == 'PASS' and status_05 | trim == 'PASS' -%}
-        PASS
-      {%- else -%}
-        FAIL
-      {%- endif -%}
-
-- name: "Store requirement 06 details"
-  set_fact:
-    task_06_name: "Overall compliance evaluation"
-    task_06_cmd: "N/A"
-    task_06_rc: -1
-    data_06: "N/A"
-    details_06: "{{ 'Overall compliance: ' + status_06 }}"
-
-# Requirement 07 – store cis_result
-- name: "Req 07 - Store final audit result in cis_result"
-  set_fact:
-    cis_result: "{{ status_06 | default('ERROR') | trim }}"
-    task_07_name: "Store cis_result"
-    task_07_cmd: "N/A"
-    task_07_rc: -1
-    status_07: "{{ status_06 | default('ERROR') | trim }}"
-    data_07: "N/A"
-    details_07: "cis_result set to {{ cis_result }}"
-
-# Final report
-- name: "Generate audit report"
-  debug:
+- name: "Req step-07 - Generate audit report"
+  ansible.builtin.debug:
     msg:
     - "AUDIT REPORT — CIS 1.1.1"
     - "Reference: CIS Benchmark checkpoint 1.1.1"
@@ -229,23 +222,15 @@
     - "  Details: {{ details_05 | default('') | trim }}"
     - ""
     - "REQUIREMENT 06 - {{ req_06 }}:"
-    - "  Task: {{ task_06_name | default('Not recorded') }}"
-    - "  Command: {{ task_06_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_06_rc | default(-1) }}"
-    - "  Data: {{ data_06 | default('') | trim }}"
-    - "  Status: {{ status_06 | default('ERROR') | trim }}"
-    - "  Details: {{ details_06 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 07 - {{ req_07 }}:"
-    - "  Task: {{ task_07_name | default('Not recorded') }}"
-    - "  Command: {{ task_07_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_07_rc | default(-1) }}"
-    - "  Data: {{ data_07 | default('') | trim }}"
-    - "  Status: {{ status_07 | default('ERROR') | trim }}"
-    - "  Details: {{ details_07 | default('') | trim }}"
+    - "  Task: Store final audit result in cis_result"
+    - "  Command: set_fact cis_result"
+    - "  Exit code: 0"
+    - "  Data: {{ cis_result | default('ERROR') | trim }}"
+    - "  Status: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: Derived from _cis_status (active branch evaluation status)."
     - ""
     - "========================================================"
     - "OVERALL COMPLIANCE:"
     - "  Result: {{ cis_result | default('ERROR') | trim }}"
-    - "  Details: {{ details_07 | default('Not evaluated') | trim }}"
+    - "  Details: Role={{ 'Domain Controller' if (is_dc | bool) else ('Member Server' if (is_member | bool) else 'Unknown') }}; minimum required password history = {{ password_history_min }}"
     - "========================================================"
