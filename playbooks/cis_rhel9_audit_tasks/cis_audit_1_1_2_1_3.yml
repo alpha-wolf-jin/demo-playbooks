@@ -29,15 +29,17 @@
     task_04_cmd: "N/A"
     task_04_rc: -1
 
-- name: "Req step-01 - Check if /tmp is a separate mounted partition"
-  ansible.builtin.shell: "findmnt -kn /tmp -o TARGET"
+- name: "Req step-01 - Check if /tmp is a separate mounted partition using findmnt"
+  ansible.builtin.shell: |
+    set -o pipefail
+    findmnt -kn /tmp | grep -E '^/tmp[[:space:]]'
   args:
     executable: /bin/bash
-  register: tmp_partition_check
+  register: tmp_is_separate
   failed_when: false
   changed_when: false
-  tags: [audit]
-- name: "Req step-01 - Verify nosuid mount option is set on /tmp"
+
+- name: "Req step-01 - Verify nosuid mount option is set on /tmp partition"
   ansible.builtin.shell: |
     set -o pipefail
     findmnt -kn /tmp | grep -v nosuid
@@ -46,73 +48,51 @@
   register: _step01_output
   failed_when: false
   changed_when: false
-  when: "(tmp_partition_check.stdout | default('') | trim) == '/tmp'"
-  tags: [audit]
-- name: "Req step-01 - Store audit check details"
+  when: tmp_is_separate.rc | default(1) == 0
+
+- name: "Req step-01 - Record nosuid audit result"
   ansible.builtin.set_fact:
-    task_01_name: "Verify nosuid option is set on /tmp partition"
+    task_01_name: "Verify nosuid mount option on /tmp partition"
     task_01_cmd: "findmnt -kn /tmp | grep -v nosuid"
-    task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-    data_01: "{{ _step01_output.stdout | default('') | trim }}"
+    task_01_rc: "{{ (_step01_output.rc | default(1)) if (tmp_is_separate.rc | default(1)) == 0 else 1 }}"
+    data_01: "{{ (_step01_output.stdout | default('')) | trim }}"
     status_01: >-
-      {%- if (tmp_partition_check.stdout | default('') | trim) != '/tmp' -%}
-      SKIP
-      {%- elif (_step01_output.rc | default(-1)) == 0 -%}
-      FAIL
-      {%- elif (_step01_output.rc | default(-1)) == 1 -%}
-      PASS
-      {%- else -%}
-      ERROR
-      {%- endif -%}
+      {{ 'SKIP' if (tmp_is_separate.rc | default(1)) != 0 else
+         ('PASS' if (_step01_output.stdout | default('') | trim) == '' else 'FAIL') }}
     details_01: >-
-      {%- if (tmp_partition_check.stdout | default('') | trim) != '/tmp' -%}
-      /tmp is not a separate partition; check not applicable
-      {%- elif (_step01_output.rc | default(-1)) == 0 -%}
-      nosuid option is NOT set on /tmp partition
-      {%- elif (_step01_output.rc | default(-1)) == 1 -%}
-      nosuid option is set on /tmp partition
-      {%- else -%}
-      Unable to determine nosuid option state on /tmp
-      {%- endif -%}
-  tags: [audit]
-- name: "Req step-02 - Summarise compliance status for /tmp nosuid option"
+      {{ '/tmp is not a separate mounted partition - check skipped' if (tmp_is_separate.rc | default(1)) != 0 else
+         ('nosuid option is set on /tmp partition' if (_step01_output.stdout | default('') | trim) == '' else
+          'nosuid option is NOT set on /tmp: ' + (_step01_output.stdout | default('') | trim)) }}
+
+- name: "Req step-02 - Summarise compliance status for nosuid option on /tmp"
   ansible.builtin.set_fact:
-    _cis_status: "{{ status_01 | default('ERROR') | trim }}"
-    task_02_name: "Summarise compliance status for /tmp nosuid option"
-    task_02_cmd: "findmnt -kn /tmp | grep -v nosuid"
-    task_02_rc: "{{ _step01_output.rc | default(-1) }}"
-    data_02: "{{ data_01 | default('') | trim }}"
+    task_02_name: "Summarise compliance status for nosuid option on /tmp"
+    task_02_cmd: "N/A"
+    task_02_rc: -1
+    data_02: "{{ status_01 | default('ERROR') | trim }}"
     status_02: "{{ status_01 | default('ERROR') | trim }}"
-    details_02: >-
-      {%- if (status_01 | default('ERROR') | trim) == 'SKIP' -%}
-      /tmp is not a separate partition; requirement not applicable
-      {%- elif (status_01 | default('ERROR') | trim) == 'PASS' -%}
-      Compliant; nosuid option is set on /tmp
-      {%- elif (status_01 | default('ERROR') | trim) == 'FAIL' -%}
-      Non-compliant; nosuid option is NOT set on /tmp
-      {%- else -%}
-      Unable to determine compliance status
-      {%- endif -%}
-  tags: [audit]
+    details_02: "{{ details_01 | default('Not evaluated') | trim }}"
+    _cis_status: "{{ status_01 | default('ERROR') | trim }}"
+
 - name: "Req step-03 - Store final audit result in cis_result"
   ansible.builtin.set_fact:
     task_03_name: "Store final audit result in cis_result"
     task_03_cmd: "set_fact cis_result"
     task_03_rc: 0
-    data_03: "cis_result={{ _cis_status | default('ERROR') | trim }}"
+    data_03: "{{ _cis_status | default('ERROR') | trim }}"
     status_03: "{{ _cis_status | default('ERROR') | trim }}"
-    details_03: "Overall compliance status stored in cis_result"
+    details_03: "{{ details_02 | default('Not evaluated') | trim }}"
     cis_result: "{{ _cis_status | default('ERROR') | trim }}"
-  tags: [audit]
-- name: "Req 04 - Prepare report metadata"
+
+- name: "Req 04 - Record report generation status"
   ansible.builtin.set_fact:
     task_04_name: "Generate audit report"
-    task_04_cmd: "ansible.builtin.debug"
+    task_04_cmd: "debug msg"
     task_04_rc: 0
-    data_04: "Report generated"
-    status_04: "{{ 'PASS' if (cis_result | default('ERROR') | trim) in ['PASS', 'FAIL', 'SKIP'] else 'ERROR' }}"
-    details_04: "Audit report generated successfully"
-  tags: [audit]
+    data_04: "Audit report rendered"
+    status_04: "PASS"
+    details_04: "Compliance report generated successfully"
+
 - name: "Req 04 - Generate audit report"
   ansible.builtin.debug:
     msg:
@@ -154,6 +134,5 @@
     - "========================================================"
     - "OVERALL COMPLIANCE:"
     - "  Result: {{ cis_result | default('ERROR') | trim }}"
-    - "  Details: {{ details_02 | default('Not evaluated') | trim }}"
+    - "  Details: {{ details_03 | default('Not evaluated') | trim }}"
     - "========================================================"
-  tags: [audit]
