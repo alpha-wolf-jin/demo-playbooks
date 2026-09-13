@@ -1,15 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "rhel9",
-  "checkpoint_id": "5.1.4",
-  "title": "Ensure sshd Ciphers are configured",
+  "checkpoint_id": "1.1.2.1.3",
+  "title": "Ensure nosuid option set on /tmp partition",
   "playbook_type": "remediation",
   "role": "action",
   "effect": "persistent",
   "transport": "ssh",
-  "connection_risk": true,
-  "branching": null,
-  "objective": "Remediate CIS checkpoint 5.1.4: Ensure sshd Ciphers are configured",
+  "connection_risk": false,
+  "objective": "Remediate CIS checkpoint 1.1.2.1.3: Ensure nosuid option set on /tmp partition",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -32,70 +31,6 @@
         "default": null,
         "unit": null,
         "description": "SSH user with sudo access"
-      },
-      {
-        "name": "weak_ciphers",
-        "type": "string",
-        "required": false,
-        "default": "3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305",
-        "unit": null,
-        "description": "Comma-separated list of weak SSH ciphers to disable (CIS Benchmark 5.1.4). Default follows the CIS recommended list."
-      },
-      {
-        "name": "sshd_config_path",
-        "type": "string",
-        "required": false,
-        "default": "/etc/ssh/sshd_config",
-        "unit": null,
-        "description": "Path to the OpenSSH server configuration file"
-      },
-      {
-        "name": "sshd_config_d_dir",
-        "type": "string",
-        "required": false,
-        "default": "/etc/ssh/sshd_config.d",
-        "unit": null,
-        "description": "Directory containing drop-in OpenSSH configuration files"
-      },
-      {
-        "name": "sshd_config_d_file",
-        "type": "string",
-        "required": false,
-        "default": "50-redhat.conf",
-        "unit": null,
-        "description": "Filename within sshd_config_d_dir that includes the crypto-policy back-end"
-      },
-      {
-        "name": "crypto_policy_modules_dir",
-        "type": "string",
-        "required": false,
-        "default": "/etc/crypto-policies/policies/modules",
-        "unit": null,
-        "description": "Directory where crypto-policy subpolicy modules (*.pmod) are stored"
-      },
-      {
-        "name": "crypto_policy_name",
-        "type": "string",
-        "required": false,
-        "default": "NO-SSHWEAKCIPHERS.pmod",
-        "unit": null,
-        "description": "Filename of the crypto-policy module that disables weak SSH ciphers"
-      },
-      {
-        "name": "crypto_policy_set",
-        "type": "string",
-        "required": false,
-        "default": "DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS",
-        "unit": null,
-        "description": "System-wide crypto policy and subpolicies to apply"
-      },
-      {
-        "name": "use_system_wide_crypto_policy",
-        "type": "boolean",
-        "required": false,
-        "default": true,
-        "unit": null,
-        "description": "Whether to use the system-wide crypto policy (steps 3-4) or manual sshd_config Ciphers (step 6). When true, the crypto policy is applied and step 6 is skipped. When false, steps 3-4 are skipped and step 6 adds the Ciphers line directly."
       }
     ]
   },
@@ -109,173 +44,75 @@
         "nullable": false,
         "required_by_sop": true,
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
-      },
-      {
-        "name": "raw_audit_output",
-        "type": "string",
-        "nullable": true,
-        "required_by_sop": false,
-        "description": "Raw output from the verification command (sshd -T)"
       }
     ]
   },
+  "audit_script": "",
   "steps": [
     {
       "id": "step-01",
       "type": "action",
-      "name": "Apply system-wide crypto policy defaults by ensuring /etc/ssh/sshd_config includes the line `Include…",
-      "function": "1. Apply system-wide crypto policy defaults by ensuring /etc/ssh/sshd_config includes the line `Include /etc/ssh/sshd_config.d/*.conf` before any Ciphers lines. Expected result: default includes present.",
+      "name": "Apply remediation for: Ensure nosuid option set on /tmp partition",
+      "function": "1. Apply remediation for: Ensure nosuid option set on /tmp partition. Expected result: System is compliant",
       "module": "ansible.builtin.shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-11"
+      "on_fail": "step-06"
     },
     {
       "id": "step-02",
-      "type": "action",
-      "name": "Ensure /etc/ssh/sshd_config.d/50-redhat.conf exists and contains the line `Include…",
-      "function": "2. Ensure /etc/ssh/sshd_config.d/50-redhat.conf exists and contains the line `Include /etc/crypto-policies/back-ends/opensshserver.config`. Expected result: file present with include line.",
-      "module": "ansible.builtin.shell",
+      "type": "transform",
+      "name": "VERIFY: Confirm Ensure nosuid option set on /tmp partition is properly configured",
+      "function": "2. VERIFY: Confirm Ensure nosuid option set on /tmp partition is properly configured. Expected result: Compliant",
       "input": {
         "source": "step-01",
         "fields": [
           "_step01_output"
         ]
       },
+      "computations": {
+        "_cis_status": "PASS if audit output contains '** PASS **', FAIL if '** FAIL **', SKIP otherwise"
+      },
       "stores": [
-        "_step02_output"
+        "_cis_status"
       ],
-      "on_success": "step-03",
-      "on_fail": "step-11"
+      "on_success": "step-03"
     },
     {
       "id": "step-03",
-      "type": "action",
-      "name": "Create or edit a .pmod file in /etc/crypto-policies/policies/modules/ adding `cipher@SSH = -3DES-CBC -AES-128-CBC…",
-      "function": "3. Create or edit a .pmod file in /etc/crypto-policies/policies/modules/ adding `cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305` using command: `printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the SSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod`. Expected result: file created with line.",
-      "module": "ansible.builtin.shell",
-      "when": "use_system_wide_crypto_policy",
+      "type": "transform",
+      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
+      "function": "3. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "module": "ansible.builtin.set_fact",
       "input": {
         "source": "step-02",
         "fields": [
-          "_step02_output"
-        ]
-      },
-      "stores": [
-        "_step03_output"
-      ],
-      "on_success": "step-04",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-04",
-      "type": "action",
-      "name": "Apply the updated crypto policy",
-      "function": "4. Apply the updated crypto policy using command: `update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS`. Expected result: policy updated.",
-      "module": "ansible.builtin.shell",
-      "when": "use_system_wide_crypto_policy",
-      "input": {
-        "source": "step-03",
-        "fields": [
-          "_step03_output"
-        ]
-      },
-      "stores": [
-        "_step04_output"
-      ],
-      "on_success": "step-06",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-05",
-      "type": "action",
-      "name": "Reload the OpenSSH server",
-      "function": "5. Reload the OpenSSH server using command: `systemctl reload-or-restart sshd`. Expected result: service reloaded.",
-      "module": "ansible.builtin.systemd",
-      "input": {
-        "source": "step-06",
-        "fields": [
-          "_step06_output"
-        ]
-      },
-      "stores": [
-        "_step05_output"
-      ],
-      "on_success": "step-07",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-06",
-      "type": "action",
-      "name": "If not using system-wide-crypto-policy, edit /etc/ssh/sshd_config to add/modify the Ciphers line with `Ciphers…",
-      "function": "6. If not using system-wide-crypto-policy, edit /etc/ssh/sshd_config to add/modify the Ciphers line with `Ciphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305@openssh.com` above any Include entries. Expected result: weak ciphers disabled.",
-      "module": "ansible.builtin.shell",
-      "when": "not use_system_wide_crypto_policy",
-      "input": {
-        "source": "step-04",
-        "fields": [
-          "_step04_output"
-        ]
-      },
-      "stores": [
-        "_step06_output"
-      ],
-      "on_success": "step-05",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-07",
-      "type": "collect",
-      "name": "Verify the applied ciphers by running `sshd -T | grep ciphers` and confirming only strong ciphers…",
-      "function": "7. Verify the applied ciphers by running `sshd -T | grep ciphers` and confirming only strong ciphers (aes256-gcm@openssh.com, aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr) are listed. Expected result: output shows only approved ciphers.",
-      "module": "ansible.builtin.shell",
-      "input": {
-        "source": "step-05",
-        "fields": [
-          "_step05_output"
-        ]
-      },
-      "stores": [
-        "_step07_output"
-      ],
-      "on_success": "step-08",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-08",
-      "type": "transform",
-      "name": "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall…",
-      "function": "8. Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
-      "module": "ansible.builtin.set_fact",
-      "input": {
-        "source": "step-07",
-        "fields": [
-          "_step07_output"
+          "_cis_status"
         ]
       },
       "stores": [
         "cis_result"
       ],
-      "on_success": "step-09"
+      "on_success": "step-04"
     },
     {
-      "id": "step-09",
+      "id": "step-04",
       "type": "emit",
       "name": "Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:",
-      "function": "9. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 5.1.4\nReference: CIS Benchmark checkpoint 5.1.4\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
+      "function": "4. Create a task named 'Generate remediation report' using debug msg with EXACTLY this format:\nREMEDIATION REPORT — CIS 1.1.2.1.3\nReference: CIS Benchmark checkpoint 1.1.2.1.3\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL REMEDIATION: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-08",
+        "source": "step-03",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-10"
+      "on_success": "step-05"
     },
     {
-      "id": "step-10",
+      "id": "step-05",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -285,11 +122,11 @@
       "on_success": "end"
     },
     {
-      "id": "step-11",
+      "id": "step-06",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 5.1.4 audit failed",
+      "error_message": "ERROR: CIS 1.1.2.1.3 audit failed",
       "on_success": "end"
     }
   ],
@@ -298,41 +135,30 @@
       "name": "Execution",
       "description": "Apply remediation changes on the target host.",
       "steps": [
-        "step-01",
-        "step-02",
-        "step-03",
-        "step-04",
-        "step-05",
-        "step-06"
-      ]
-    },
-    {
-      "name": "Data Collection",
-      "description": "Execute read-only commands on the target host.",
-      "steps": [
-        "step-07"
+        "step-01"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-08"
+        "step-02",
+        "step-03"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-09",
-        "step-10"
+        "step-04",
+        "step-05"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-11"
+        "step-06"
       ]
     }
   ],
@@ -343,18 +169,16 @@
   "error_handling": {
     "no_silent_exit": true
   },
-  "filename": "cis_remediation_5_1_4.yml",
+  "reference_procedure": "- IF - a separate partition exists for /tmp.\nEdit the /etc/fstab file and add nosuid to the fourth field (mounting options) for the /tmp partition.\nExample:\n<device> /tmp    <fstype>     defaults,rw,nosuid,nodev,noexec,relatime  0 0\nRun the following command to remount /tmp with the configured options:\n# mount -o remount /tmp",
+  "example_output": "",
+  "filename": "cis_remediation_1_1_2_1_3.yml",
   "output_dir": "./cis_rhel9_remediation_playbooks",
-  "reference_procedure": "Note:\n• First occurrence of an option takes precedence.\n• Though ciphers may be configured through the Ciphers option in the /etc/ssh/sshd_config file, it is recommended that the ciphers available to openSSH server are configured through system-wide-crypto-policy\n• If the recommendations in the subsection \"Configure system wide crypto policy\"\nhave been followed, this Audit should be in a passing state. Please review that section before following this Remediation Procedure\n• By default, system-wide-crypto-policy is applied to the openSSH server. If the following defaults don't exist due to modifications or upgrade from a earlier release, the system-wide-crypto-policy may not be included by the openSSH server. It is recommended that these defaults be restored, created, or the line\nInclude /etc/crypto-policies/back-ends/opensshserver.config be added before any lines containing the Cipher argument.\n• Defaults:\no The file /etc/ssh/sshd_config includes the line: Include\n/etc/ssh/sshd_config.d/*.conf. This line must appear before any lines containing the Cipher argument o This directory /etc/ssh/sshd_config.d/ includes a file\n/etc/ssh/sshd_config.d/50-redhat.conf\no The file /etc/ssh/sshd_config.d/50-redhat.conf includes the line\nInclude /etc/crypto-policies/back-ends/opensshserver.config\no The file /etc/crypto-policies/back-ends/opensshserver.config is generated by system-wide-crypto-policy\n- IF - CVE-2023-48795 has been addressed, and it meets local site policy, chacha20- poly1305 may be removed from the list of excluded ciphers.\nCreate or edit a file in /etc/crypto-policies/policies/modules/ ending in .pmod and add or modify the the following line:\ncipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\nExample:\n# printf '%s\\n' \"# This is a subpolicy to disable weak ciphers\" \"# for the\nSSH protocol (libssh and OpenSSH)\" \"cipher@SSH = -3DES-CBC -AES-128-CBC -AES-192-CBC -AES-256-CBC -CHACHA20-POLY1305\" >> /etc/crypto-policies/policies/modules/NO-SSHWEAKCIPHERS.pmod\nRun the following command to update the system-wide cryptographic policy\n# update-crypto-policies --set\n<CRYPTO_POLICY>:<CRYPTO_SUBPOLICY1>:<CRYPTO_SUBPOLICY2>:<CRYPTO_SUBPOLICY3>\nExample:\n# update-crypto-policies --set DEFAULT:NO-SHA1:NO-WEAKMAC:NO-SSHCBC:NO-SSHCHACHA20:NO-SSHWEAKCIPHERS\nRun the following command to reload the openSSH server to make your cryptographic settings effective:\n# systemctl reload-or-restart sshd\n- OR - If system-wide-crypto-policy is not being used to configure available ciphers\n(This is not recommended)\nEdit the /etc/ssh/sshd_config file and add/modify the Ciphers line to contain a comma separated list of the site unapproved (weak) Ciphers preceded with a - above any\nInclude entries:\nExample:\nCiphers -3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,chacha20-poly1305@openssh.com",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Red_Hat_Enterprise_Linux_9_Benchmark_v2.0.0.json",
     "source_json_sha256": "5fc8962bbedb4e6686d11ac3fd74acc4bceb309518870e5eded880c3232d973f",
-    "drafted_at": "2026-08-19T23:02:53",
-    "revision": 11,
-    "approved_at": "2026-08-19T23:05:40",
+    "drafted_at": "2026-09-13T21:51:51",
+    "revision": 1,
+    "approved_at": "2026-09-13T21:52:20",
     "saved_by": null
-  },
-  "example_output": "",
-  "audit_script": "",
-  "profile_applicability": "•  Level 1 - Server\n•  Level 1 - Workstation"
+  }
 }
