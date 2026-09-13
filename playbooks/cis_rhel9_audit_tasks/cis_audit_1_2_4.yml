@@ -1,0 +1,240 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_1_2_4.yml
+
+- name: "Initialize data variables"
+  ansible.builtin.set_fact:
+    data_01: "Not collected yet"
+    status_01: "ERROR"
+    details_01: "Not evaluated"
+    task_01_name: "Not executed"
+    task_01_cmd: "N/A"
+    task_01_rc: -1
+    data_02: "Not collected yet"
+    status_02: "ERROR"
+    details_02: "Not evaluated"
+    task_02_name: "Not executed"
+    task_02_cmd: "N/A"
+    task_02_rc: -1
+    data_03: "Not collected yet"
+    status_03: "ERROR"
+    details_03: "Not evaluated"
+    task_03_name: "Not executed"
+    task_03_cmd: "N/A"
+    task_03_rc: -1
+    data_04: "Not collected yet"
+    status_04: "ERROR"
+    details_04: "Not evaluated"
+    task_04_name: "Not executed"
+    task_04_cmd: "N/A"
+    task_04_rc: -1
+    data_05: "Not collected yet"
+    status_05: "ERROR"
+    details_05: "Not evaluated"
+    task_05_name: "Not executed"
+    task_05_cmd: "N/A"
+    task_05_rc: -1
+
+- name: "Precheck - Detect Domain Controller and GroupPolicy module availability"
+  ansible.windows.win_shell: |
+    {% raw %}
+    $isDC = $false
+    try {
+      $role = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).DomainRole
+      if ($role -ge 4) { $isDC = $true }
+    } catch {}
+    if (-not $isDC) {
+      Write-Output 'NOT_DC'
+      exit 0
+    }
+    if (Get-Command Get-GPO -ErrorAction SilentlyContinue) {
+      Write-Output 'READY'
+    } else {
+      Write-Output 'NO_GPO'
+    }
+    {% endraw %}
+  register: precheck
+  failed_when: false
+  changed_when: false
+
+- name: "Set precheck flag"
+  ansible.builtin.set_fact:
+    is_ready: "{{ (precheck.stdout | default('') | trim) == 'READY' }}"
+
+- name: "Req 1 - Check Account Lockout Policy settings applied via Default Domain Policy GPO"
+  ansible.windows.win_shell: |
+    {% raw %}
+    try {
+      $report = Get-GPO -Name 'Default Domain Policy' -ErrorAction Stop | Get-GPOReport -ReportType Xml
+      $hasDuration = $report -match 'LockoutDuration'
+      $hasWindow = $report -match 'LockoutObservationWindow'
+      $hasThreshold = $report -match 'LockoutThreshold'
+      if ($hasDuration -and $hasWindow -and $hasThreshold) {
+        Write-Output 'RESULT=PASS'
+      } else {
+        Write-Output 'RESULT=FAIL'
+      }
+      Write-Output "LockoutDuration=$hasDuration"
+      Write-Output "LockoutObservationWindow=$hasWindow"
+      Write-Output "LockoutThreshold=$hasThreshold"
+    } catch {
+      Write-Output 'RESULT=ERROR'
+      Write-Output "MSG=$($_.Exception.Message)"
+    }
+    {% endraw %}
+  register: result_01
+  failed_when: false
+  changed_when: false
+  when: is_ready | bool
+
+- name: "Store requirement 01 details"
+  ansible.builtin.set_fact:
+    task_01_name: "Check Account Lockout Policy settings applied via Default Domain Policy GPO"
+    task_01_cmd: "Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String -Pattern 'LockoutDuration|LockoutObservationWindow|LockoutThreshold'"
+    task_01_rc: "{{ result_01.rc | default(-1) }}"
+    data_01: "{{ result_01.stdout | default('') | trim }}"
+    status_01: "{{ ('SKIP' if not (is_ready | bool) else 'PASS' if 'RESULT=PASS' in (result_01.stdout | default('')) else 'ERROR' if 'RESULT=ERROR' in (result_01.stdout | default('')) else 'FAIL') | trim }}"
+    details_01: "{{ ('Host is not a Domain Controller or GroupPolicy module not available' if not (is_ready | bool) else 'Account Lockout Policy settings (LockoutDuration, LockoutObservationWindow, LockoutThreshold) present in Default Domain Policy GPO' if 'RESULT=PASS' in (result_01.stdout | default('')) else 'Failed to retrieve GPO report' if 'RESULT=ERROR' in (result_01.stdout | default('')) else 'Account Lockout Policy settings missing from Default Domain Policy GPO') | trim }}"
+
+- name: "Req 2 - Check LockoutObservationWindow value in Default Domain Policy GPO"
+  ansible.windows.win_shell: |
+    {% raw %}
+    try {
+      $report = Get-GPO -Name 'Default Domain Policy' -ErrorAction Stop | Get-GPOReport -ReportType Xml
+      $m = [regex]::Match($report, 'LockoutObservationWindow[^0-9]{0,200}?(\d+)')
+      if (-not $m.Success) {
+        Write-Output 'RESULT=FAIL OBS_VALUE=NOT_FOUND'
+      } else {
+        $obs = [int]$m.Groups[1].Value
+        if ($obs -ge 900) {
+          Write-Output "RESULT=PASS OBS_VALUE=$obs"
+        } else {
+          Write-Output "RESULT=FAIL OBS_VALUE=$obs"
+        }
+      }
+    } catch {
+      Write-Output 'RESULT=ERROR'
+      Write-Output "MSG=$($_.Exception.Message)"
+    }
+    {% endraw %}
+  register: result_02
+  failed_when: false
+  changed_when: false
+  when: is_ready | bool
+
+- name: "Store requirement 02 details"
+  ansible.builtin.set_fact:
+    task_02_name: "Check LockoutObservationWindow value in Default Domain Policy GPO"
+    task_02_cmd: "Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String -Pattern 'LockoutObservationWindow'"
+    task_02_rc: "{{ result_02.rc | default(-1) }}"
+    data_02: "{{ result_02.stdout | default('') | trim }}"
+    status_02: "{{ ('SKIP' if not (is_ready | bool) else 'ERROR' if 'RESULT=ERROR' in (result_02.stdout | default('')) else 'PASS' if 'RESULT=PASS' in (result_02.stdout | default('')) else 'FAIL') | trim }}"
+    details_02: "{{ ('Host is not a Domain Controller or GroupPolicy module not available' if not (is_ready | bool) else 'Failed to retrieve GPO report' if 'RESULT=ERROR' in (result_02.stdout | default('')) else 'LockoutObservationWindow is set to 900 or more seconds' if 'RESULT=PASS' in (result_02.stdout | default('')) else 'LockoutObservationWindow is set to less than 900 seconds or not found in GPO report') | trim }}"
+
+- name: "Req 3 - Compare LockoutObservationWindow with LockoutDuration"
+  ansible.windows.win_shell: |
+    {% raw %}
+    try {
+      $report = Get-GPO -Name 'Default Domain Policy' -ErrorAction Stop | Get-GPOReport -ReportType Xml
+      $om = [regex]::Match($report, 'LockoutObservationWindow[^0-9]{0,200}?(\d+)')
+      $dm = [regex]::Match($report, 'LockoutDuration[^0-9]{0,200}?(\d+)')
+      if (-not $om.Success -or -not $dm.Success) {
+        Write-Output 'RESULT=FAIL REASON=MISSING'
+      } else {
+        $obs = [int]$om.Groups[1].Value
+        $dur = [int]$dm.Groups[1].Value
+        if ($obs -le $dur) {
+          Write-Output "RESULT=PASS OBS=$obs DUR=$dur"
+        } else {
+          Write-Output "RESULT=FAIL OBS=$obs DUR=$dur"
+        }
+      }
+    } catch {
+      Write-Output 'RESULT=ERROR'
+      Write-Output "MSG=$($_.Exception.Message)"
+    }
+    {% endraw %}
+  register: result_03
+  failed_when: false
+  changed_when: false
+  when: is_ready | bool
+
+- name: "Store requirement 03 details"
+  ansible.builtin.set_fact:
+    task_03_name: "Compare LockoutObservationWindow with LockoutDuration"
+    task_03_cmd: "Get-GPO -Name 'Default Domain Policy' | Get-GPOReport -ReportType Xml | Select-String -Pattern 'LockoutDuration|LockoutObservationWindow'"
+    task_03_rc: "{{ result_03.rc | default(-1) }}"
+    data_03: "{{ result_03.stdout | default('') | trim }}"
+    status_03: "{{ ('SKIP' if not (is_ready | bool) else 'ERROR' if 'RESULT=ERROR' in (result_03.stdout | default('')) else 'PASS' if 'RESULT=PASS' in (result_03.stdout | default('')) else 'FAIL') | trim }}"
+    details_03: "{{ ('Host is not a Domain Controller or GroupPolicy module not available' if not (is_ready | bool) else 'Failed to retrieve GPO report' if 'RESULT=ERROR' in (result_03.stdout | default('')) else 'LockoutObservationWindow is less than or equal to LockoutDuration' if 'RESULT=PASS' in (result_03.stdout | default('')) else 'LockoutObservationWindow exceeds LockoutDuration or values are missing') | trim }}"
+
+- name: "Req 4 - Evaluate overall compliance status"
+  ansible.builtin.set_fact:
+    task_04_name: "Evaluate overall compliance status"
+    task_04_cmd: "Derived from Req 1, Req 2, Req 3 results"
+    task_04_rc: 0
+    data_04: "status_01={{ status_01 | default('ERROR') | trim }}; status_02={{ status_02 | default('ERROR') | trim }}; status_03={{ status_03 | default('ERROR') | trim }}"
+    status_04: "{{ ('SKIP' if not (is_ready | bool) else 'SKIP' if (status_01 | default('ERROR') | trim) != 'PASS' else 'PASS' if ((status_02 | default('ERROR') | trim) == 'PASS' and (status_03 | default('ERROR') | trim) == 'PASS') else 'FAIL') | trim }}"
+    details_04: "{{ ('Host is not a Domain Controller or GroupPolicy module not available' if not (is_ready | bool) else 'Account Lockout Policy not applied via Default Domain Policy GPO' if (status_01 | default('ERROR') | trim) != 'PASS' else 'Account Lockout Policy is applied and Reset account lockout counter after is set to 15 or more minutes and does not exceed Account lockout duration' if ((status_02 | default('ERROR') | trim) == 'PASS' and (status_03 | default('ERROR') | trim) == 'PASS') else 'Account Lockout Policy is applied but Reset account lockout counter after violates the 15-minute minimum or exceeds Account lockout duration') | trim }}"
+
+- name: "Req 5 - Store final audit result in cis_result"
+  ansible.builtin.set_fact:
+    task_05_name: "Store final audit result in cis_result"
+    task_05_cmd: "set_fact cis_result from status_04"
+    task_05_rc: 0
+    data_05: "cis_result={{ status_04 | default('ERROR') | trim }}"
+    status_05: "{{ status_04 | default('ERROR') | trim }}"
+    details_05: "{{ ('cis_result set to ' ~ (status_04 | default('ERROR') | trim)) | trim }}"
+    cis_result: "{{ status_04 | default('ERROR') | trim }}"
+
+- name: "Generate audit report"
+  ansible.builtin.debug:
+    msg:
+    - "AUDIT REPORT — CIS 1.2.4"
+    - "Reference: CIS Benchmark checkpoint 1.2.4"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: {{ task_01_name | default('Not recorded') }}"
+    - "  Command: {{ task_01_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_01_rc | default(-1) }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: {{ task_02_name | default('Not recorded') }}"
+    - "  Command: {{ task_02_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_02_rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: {{ task_03_name | default('Not recorded') }}"
+    - "  Command: {{ task_03_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_03_rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: {{ task_04_name | default('Not recorded') }}"
+    - "  Command: {{ task_04_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_04_rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: {{ task_05_name | default('Not recorded') }}"
+    - "  Command: {{ task_05_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_05_rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
+    - "  Status: {{ status_05 | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
+    - "========================================================"
