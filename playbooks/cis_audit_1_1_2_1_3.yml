@@ -1,47 +1,53 @@
 ---
 - name: "Audit CIS checkpoint 1.1.2.1.3: Ensure nosuid option set on /tmp partition"
   hosts: all
-  become: true
+  become: yes
   become_user: root
   gather_facts: false
   vars:
-    req_1: "Run the audit procedure for Ensure nosuid option set on /tmp partition: - IF - a separate partition exists for /tmp, verify that the nosuid option is set. Run the following command to verify that the nosuid mount option is set. Example: # findmnt -kn /tmp | grep -v nosuid. Nothing should be returned. Expected result: Output shows compliance status"
-    req_2: "VERIFY: Summarise compliance status for Ensure nosuid option set on /tmp partition. Expected result: PASS if compliant, SKIP if prerequisite not met (e.g., partition/package does not exist), FAIL if misconfigured"
-    req_3: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    req_01: "Run the audit procedure for Ensure nosuid option set on /tmp partition: - IF - a separate partition exists for /tmp, verify that the nosuid option is set. Run findmnt -kn /tmp | grep -v nosuid. Nothing should be returned. Expected result: Output shows compliance status"
+    req_02: "VERIFY: Summarise compliance status for Ensure nosuid option set on /tmp partition. Expected result: PASS if compliant, SKIP if prerequisite not met (e.g., partition/package does not exist), FAIL if misconfigured"
+    req_03: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
+    req_04: "Create a task named 'Generate audit report' using debug msg with EXACTLY the required format: AUDIT REPORT — CIS 1.1.2.1.3, Reference: CIS Benchmark checkpoint 1.1.2.1.3, REQUIREMENT NN sections with Task, Command, Exit code, Data, Status, Details fields, ending with OVERALL COMPLIANCE containing Result: cis_result"
 
   tasks:
     - name: "Initialize data variables"
       ansible.builtin.set_fact:
-        task_1_name: "Not executed"
-        task_1_cmd: "N/A"
-        task_1_rc: -1
-        data_1: "Not collected yet"
-        status_1: "ERROR"
-        details_1: "Not evaluated"
-        task_2_name: "Not executed"
-        task_2_cmd: "N/A"
-        task_2_rc: -1
-        data_2: "Not collected yet"
-        status_2: "ERROR"
-        details_2: "Not evaluated"
-        task_3_name: "Not executed"
-        task_3_cmd: "N/A"
-        task_3_rc: -1
-        data_3: "Not collected yet"
-        status_3: "ERROR"
-        details_3: "Not evaluated"
+        data_01: "Not collected yet"
+        status_01: "ERROR"
+        details_01: "Not evaluated"
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        data_02: "Not collected yet"
+        status_02: "ERROR"
+        details_02: "Not evaluated"
+        task_02_name: "Not executed"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        data_03: "Not collected yet"
+        status_03: "ERROR"
+        details_03: "Not evaluated"
+        task_03_name: "Not executed"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
+        data_04: "Not collected yet"
+        status_04: "ERROR"
+        details_04: "Not evaluated"
+        task_04_name: "Not executed"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
 
     - name: "Req step-01 - Check if /tmp is a separate mounted partition"
-      ansible.builtin.command: findmnt -kn /tmp
-      register: _step01_mount
+      ansible.builtin.shell: "findmnt -kn /tmp -o TARGET"
+      args:
+        executable: /bin/bash
+      register: tmp_partition_check
       failed_when: false
       changed_when: false
+      tags: [audit]
 
-    - name: "Req step-01 - Determine /tmp separate partition flag"
-      ansible.builtin.set_fact:
-        _step01_separate: "{{ ((_step01_mount.stdout | default('') | trim).split() | length) > 1 and (((_step01_mount.stdout | default('') | trim).split()[0]) | default('')) == '/tmp' }}"
-
-    - name: "Req step-01 - Run the audit procedure using findmnt and grep for nosuid"
+    - name: "Req step-01 - Verify nosuid mount option is set on /tmp"
       ansible.builtin.shell: |
         set -o pipefail
         findmnt -kn /tmp | grep -v nosuid
@@ -50,69 +56,119 @@
       register: _step01_output
       failed_when: false
       changed_when: false
-      when: _step01_separate | bool
+      when: "(tmp_partition_check.stdout | default('') | trim) == '/tmp'"
+      tags: [audit]
 
-    - name: "Req step-01 - Store nosuid option audit details"
+    - name: "Req step-01 - Store audit check details"
       ansible.builtin.set_fact:
-        task_1_name: "Check nosuid option on /tmp partition using findmnt and grep"
-        task_1_cmd: "findmnt -kn /tmp | grep -v nosuid"
-        task_1_rc: "{{ _step01_output.rc | default(-1) }}"
-        data_1: "{{ _step01_output.stdout | default('') | trim }}"
-        status_1: "{{ ('SKIP' if not (_step01_separate | bool) else ('PASS' if (_step01_output.stdout | default('') | trim) == '' else 'FAIL')) | trim }}"
-        details_1: "{{ ('No separate /tmp partition exists - prerequisite not met' if not (_step01_separate | bool) else ('nosuid option is set on /tmp partition' if (_step01_output.stdout | default('') | trim) == '' else 'nosuid option is NOT set on /tmp partition: ' + (_step01_output.stdout | default('') | trim))) | trim }}"
+        task_01_name: "Verify nosuid option is set on /tmp partition"
+        task_01_cmd: "findmnt -kn /tmp | grep -v nosuid"
+        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
+        data_01: "{{ _step01_output.stdout | default('') | trim }}"
+        status_01: >-
+          {%- if (tmp_partition_check.stdout | default('') | trim) != '/tmp' -%}
+          SKIP
+          {%- elif (_step01_output.rc | default(-1)) == 0 -%}
+          FAIL
+          {%- elif (_step01_output.rc | default(-1)) == 1 -%}
+          PASS
+          {%- else -%}
+          ERROR
+          {%- endif -%}
+        details_01: >-
+          {%- if (tmp_partition_check.stdout | default('') | trim) != '/tmp' -%}
+          /tmp is not a separate partition; check not applicable
+          {%- elif (_step01_output.rc | default(-1)) == 0 -%}
+          nosuid option is NOT set on /tmp partition
+          {%- elif (_step01_output.rc | default(-1)) == 1 -%}
+          nosuid option is set on /tmp partition
+          {%- else -%}
+          Unable to determine nosuid option state on /tmp
+          {%- endif -%}
+      tags: [audit]
 
-    - name: "Req step-02 - VERIFY: Summarise compliance status for Ensure nosuid option set on /tmp partition"
+    - name: "Req step-02 - Summarise compliance status for /tmp nosuid option"
       ansible.builtin.set_fact:
-        _cis_status: "{{ status_1 | default('ERROR') | trim }}"
-        task_2_name: "Summarise compliance status for nosuid option on /tmp partition"
-        task_2_cmd: "Derived from Req step-01 audit result (findmnt -kn /tmp | grep -v nosuid)"
-        task_2_rc: "{{ task_1_rc | default(-1) }}"
-        data_2: "{{ data_1 | default('') | trim }}"
-        status_2: "{{ status_1 | default('ERROR') | trim }}"
-        details_2: "{{ details_1 | default('Not evaluated') | trim }}"
+        _cis_status: "{{ status_01 | default('ERROR') | trim }}"
+        task_02_name: "Summarise compliance status for /tmp nosuid option"
+        task_02_cmd: "findmnt -kn /tmp | grep -v nosuid"
+        task_02_rc: "{{ _step01_output.rc | default(-1) }}"
+        data_02: "{{ data_01 | default('') | trim }}"
+        status_02: "{{ status_01 | default('ERROR') | trim }}"
+        details_02: >-
+          {%- if (status_01 | default('ERROR') | trim) == 'SKIP' -%}
+          /tmp is not a separate partition; requirement not applicable
+          {%- elif (status_01 | default('ERROR') | trim) == 'PASS' -%}
+          Compliant; nosuid option is set on /tmp
+          {%- elif (status_01 | default('ERROR') | trim) == 'FAIL' -%}
+          Non-compliant; nosuid option is NOT set on /tmp
+          {%- else -%}
+          Unable to determine compliance status
+          {%- endif -%}
+      tags: [audit]
 
-    - name: "Req step-03 - Store the final audit result in a variable named cis_result using set_fact"
+    - name: "Req step-03 - Store final audit result in cis_result"
       ansible.builtin.set_fact:
+        task_03_name: "Store final audit result in cis_result"
+        task_03_cmd: "set_fact cis_result"
+        task_03_rc: 0
+        data_03: "cis_result={{ _cis_status | default('ERROR') | trim }}"
+        status_03: "{{ _cis_status | default('ERROR') | trim }}"
+        details_03: "Overall compliance status stored in cis_result"
         cis_result: "{{ _cis_status | default('ERROR') | trim }}"
-        task_3_name: "Store final audit result in cis_result"
-        task_3_cmd: "set_fact cis_result from _cis_status"
-        task_3_rc: 0
-        data_3: "{{ _cis_status | default('ERROR') | trim }}"
-        status_3: "{{ _cis_status | default('ERROR') | trim }}"
-        details_3: "Final compliance status stored in cis_result variable"
+      tags: [audit]
 
-    - name: "Req 4 - Generate audit report"
+    - name: "Req 04 - Prepare report metadata"
+      ansible.builtin.set_fact:
+        task_04_name: "Generate audit report"
+        task_04_cmd: "ansible.builtin.debug"
+        task_04_rc: 0
+        data_04: "Report generated"
+        status_04: "{{ 'PASS' if (cis_result | default('ERROR') | trim) in ['PASS', 'FAIL', 'SKIP'] else 'ERROR' }}"
+        details_04: "Audit report generated successfully"
+      tags: [audit]
+
+    - name: "Req 04 - Generate audit report"
       ansible.builtin.debug:
         msg:
           - "AUDIT REPORT — CIS 1.1.2.1.3"
           - "Reference: CIS Benchmark checkpoint 1.1.2.1.3"
           - ""
-          - "REQUIREMENT 01 - {{ req_1 }}:"
-          - "  Task: {{ task_1_name | default('Not recorded') }}"
-          - "  Command: {{ task_1_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_1_rc | default(-1) }}"
-          - "  Data: {{ data_1 | default('') | trim }}"
-          - "  Status: {{ status_1 | default('ERROR') | trim }}"
-          - "  Details: {{ details_1 | default('') | trim }}"
+          - "REQUIREMENT 01 - {{ req_01 }}:"
+          - "  Task: {{ task_01_name | default('Not recorded') }}"
+          - "  Command: {{ task_01_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_01_rc | default(-1) }}"
+          - "  Data: {{ data_01 | default('') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
+          - "  Details: {{ details_01 | default('') | trim }}"
           - ""
-          - "REQUIREMENT 02 - {{ req_2 }}:"
-          - "  Task: {{ task_2_name | default('Not recorded') }}"
-          - "  Command: {{ task_2_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_2_rc | default(-1) }}"
-          - "  Data: {{ data_2 | default('') | trim }}"
-          - "  Status: {{ status_2 | default('ERROR') | trim }}"
-          - "  Details: {{ details_2 | default('') | trim }}"
+          - "REQUIREMENT 02 - {{ req_02 }}:"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
+          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Details: {{ details_02 | default('') | trim }}"
           - ""
-          - "REQUIREMENT 03 - {{ req_3 }}:"
-          - "  Task: {{ task_3_name | default('Not recorded') }}"
-          - "  Command: {{ task_3_cmd | default('N/A') }}"
-          - "  Exit code: {{ task_3_rc | default(-1) }}"
-          - "  Data: {{ data_3 | default('') | trim }}"
-          - "  Status: {{ status_3 | default('ERROR') | trim }}"
-          - "  Details: {{ details_3 | default('') | trim }}"
+          - "REQUIREMENT 03 - {{ req_03 }}:"
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 04 - {{ req_04 }}:"
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
           - ""
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
-          - "  Details: {{ details_2 | default('Not evaluated') | trim }}"
+          - "  Details: {{ details_02 | default('Not evaluated') | trim }}"
           - "========================================================"
+      tags: [audit]
