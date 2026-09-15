@@ -1,0 +1,267 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_audit_var_2_2_18.yml
+
+- name: "Initialize data variables"
+  set_fact:
+    data_01: "Not collected yet"
+    status_01: "ERROR"
+    details_01: "Not evaluated"
+    data_02: "Not collected yet"
+    status_02: "ERROR"
+    details_02: "Not evaluated"
+    data_03: "Not collected yet"
+    status_03: "ERROR"
+    details_03: "Not evaluated"
+    data_04: "Not collected yet"
+    status_04: "ERROR"
+    details_04: "Not evaluated"
+    data_05: "Not collected yet"
+    status_05: "ERROR"
+    details_05: "Not evaluated"
+    data_06: "Not collected yet"
+    status_06: "ERROR"
+    details_06: "Not evaluated"
+    task_01_name: "Not executed"
+    task_01_cmd: "N/A"
+    task_01_rc: -1
+    task_02_name: "Not executed"
+    task_02_cmd: "N/A"
+    task_02_rc: -1
+    task_03_name: "Not executed"
+    task_03_cmd: "N/A"
+    task_03_rc: -1
+    task_04_name: "Not executed"
+    task_04_cmd: "N/A"
+    task_04_rc: -1
+    task_05_name: "Not executed"
+    task_05_cmd: "N/A"
+    task_05_rc: -1
+    task_06_name: "Not executed"
+    task_06_cmd: "N/A"
+    task_06_rc: -1
+
+- name: "Req 01 - Determine host role and Hyper-V installation state"
+  ansible.windows.win_shell: |
+    $cs = Get-CimInstance Win32_ComputerSystem
+    Write-Output ('DomainRole=' + $cs.DomainRole)
+    try {
+      $hv = (Get-WindowsFeature -Name Hyper-V -ErrorAction Stop).InstallState
+      Write-Output ('HyperV=' + $hv)
+    } catch {
+      Write-Output 'HyperV=Unknown'
+    }
+  register: result_01
+  failed_when: false
+  changed_when: false
+
+- name: "Store requirement 01 details"
+  set_fact:
+    task_01_name: "Determine host role and Hyper-V installation state"
+    task_01_cmd: "Get-CimInstance Win32_ComputerSystem; Get-WindowsFeature -Name Hyper-V"
+    task_01_rc: "{{ result_01.rc | default(-1) }}"
+    data_01: "{{ result_01.stdout | default('') | trim }}"
+    status_01: >-
+      {%- set out = result_01.stdout | default('') -%}
+      {%- if 'DomainRole=' in out -%}PASS{%- else -%}SKIP{%- endif -%}
+    details_01: "Host role and Hyper-V installation state determined"
+
+- name: "Req 02 - Export effective user rights and read SeCreateSymbolicLinkPrivilege"
+  ansible.windows.win_shell: |
+    $out = Join-Path $env:TEMP 'cis_2218_secpol.inf'
+    secedit /export /areas USER_RIGHTS /cfg $out | Out-Null
+    if (Test-Path $out) {
+      Select-String -Path $out -Pattern 'SeCreateSymbolicLinkPrivilege' | ForEach-Object { $_.Line.Trim() }
+      Remove-Item -Path $out -Force -ErrorAction SilentlyContinue
+    } else {
+      Write-Output 'EXPORT_FAILED'
+    }
+  register: result_02
+  failed_when: false
+  changed_when: false
+
+- name: "Store requirement 02 details"
+  set_fact:
+    task_02_name: "Export effective user rights and read SeCreateSymbolicLinkPrivilege"
+    task_02_cmd: |
+      secedit /export /areas USER_RIGHTS /cfg %TEMP%\\cis_2218_secpol.inf; Select-String -Pattern 'SeCreateSymbolicLinkPrivilege'
+    task_02_rc: "{{ result_02.rc | default(-1) }}"
+    data_02: "{{ result_02.stdout | default('') | trim }}"
+    status_02: >-
+      {%- set out = result_02.stdout | default('') -%}
+      {%- if 'EXPORT_FAILED' in out -%}SKIP
+      {%- elif 'SeCreateSymbolicLinkPrivilege' not in out -%}SKIP
+      {%- else -%}PASS
+      {%- endif -%}
+    details_02: "Effective user right assignment exported and read"
+
+- name: "Req 03 - Check registry policy value for CreateSymbolicLink"
+  ansible.windows.win_shell: |
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    $val = Get-ItemProperty -Path $path -Name 'CreateSymbolicLink' -ErrorAction SilentlyContinue
+    if ($null -eq $val -or $null -eq $val.CreateSymbolicLink) {
+      Write-Output 'NOT_PRESENT'
+    } else {
+      Write-Output ('CreateSymbolicLink=' + $val.CreateSymbolicLink)
+    }
+  register: result_03
+  failed_when: false
+  changed_when: false
+
+- name: "Store requirement 03 details"
+  set_fact:
+    task_03_name: "Check registry policy value for CreateSymbolicLink"
+    task_03_cmd: |
+      reg query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v CreateSymbolicLink
+    task_03_rc: "{{ result_03.rc | default(-1) }}"
+    data_03: "{{ result_03.stdout | default('') | trim }}"
+    status_03: >-
+      {%- set out = result_03.stdout | default('') -%}
+      {%- if 'NOT_PRESENT' in out -%}PASS
+      {%- elif 'CreateSymbolicLink=' in out -%}
+      {%- set sids = out | regex_findall('S-1-5-[0-9-]+') | unique | sort -%}
+      {%- if sids == ['S-1-5-32-544'] | sort or sids == ['S-1-5-32-544', 'S-1-5-83-0'] | sort -%}PASS
+      {%- else -%}FAIL
+      {%- endif -%}
+      {%- else -%}ERROR
+      {%- endif -%}
+    details_03: "Registry policy value for CreateSymbolicLink checked; absence is normal on a DC"
+
+- name: "Req 04 - Determine whether the right is delivered by a domain GPO"
+  ansible.windows.win_shell: |
+    try {
+      Import-Module GroupPolicy -ErrorAction Stop
+      $p = Join-Path $env:TEMP 'cis_2218_gpo.xml'
+      Get-GPOReport -All -ReportType Xml -Path $p | Out-Null
+      $m = Select-String -Path $p -Pattern 'SeCreateSymbolicLinkPrivilege'
+      if ($m) { $m | ForEach-Object { $_.Line.Trim() } } else { Write-Output 'NO_MATCH' }
+      Remove-Item -Path $p -Force -ErrorAction SilentlyContinue
+    } catch {
+      Write-Output 'MODULE_UNAVAILABLE'
+    }
+  register: result_04
+  failed_when: false
+  changed_when: false
+  when: "data_01 is defined and ('DomainRole=4' in (data_01 | default('')) or 'DomainRole=5' in (data_01 | default('')))"
+
+- name: "Store requirement 04 details"
+  set_fact:
+    task_04_name: "Determine whether the right is delivered by a domain GPO"
+    task_04_cmd: "Import-Module GroupPolicy; Get-GPOReport -All -ReportType Xml; Select-String -Pattern 'SeCreateSymbolicLinkPrivilege'"
+    task_04_rc: "{{ result_04.rc | default(-1) }}"
+    data_04: "{{ result_04.stdout | default('') | trim }}"
+    status_04: >-
+      {%- if (data_01 is not defined) or not ('DomainRole=4' in (data_01 | default('')) or 'DomainRole=5' in (data_01 | default(''))) -%}SKIP
+      {%- elif (result_04 is not defined) or (result_04.skipped | default(false)) -%}SKIP
+      {%- else -%}
+      {%- set out = result_04.stdout | default('') -%}
+      {%- if 'MODULE_UNAVAILABLE' in out -%}SKIP
+      {%- elif out == '' -%}SKIP
+      {%- elif 'NO_MATCH' in out -%}PASS
+      {%- else -%}
+      {%- set sids = out | regex_findall('S-1-5-[0-9-]+') | unique | sort -%}
+      {%- if sids == ['S-1-5-32-544'] | sort or sids == ['S-1-5-32-544', 'S-1-5-83-0'] | sort -%}PASS
+      {%- else -%}FAIL
+      {%- endif -%}
+      {%- endif -%}
+      {%- endif -%}
+    details_04: "Domain GPO source for the right determined; SKIP if not a DC or RSAT/GroupPolicy module unavailable"
+
+- name: "Req 05 - Summarize overall compliance status"
+  set_fact:
+    task_05_name: "Summarize overall compliance status"
+    task_05_cmd: "Evaluate collected data from requirements 01-04"
+    task_05_rc: 0
+    data_05: >-
+      {%- set out1 = data_01 | default('') -%}
+      {%- set out2 = data_02 | default('') -%}
+      DC={{ 'true' if ('DomainRole=4' in out1 or 'DomainRole=5' in out1) else 'false' }}
+      HyperV={{ 'Installed' if 'HyperV=Installed' in out1 else 'No' }}
+      Secedit={{ out2 }}
+    status_05: >-
+      {%- set out1 = data_01 | default('') -%}
+      {%- set out2 = data_02 | default('') -%}
+      {%- if 'DomainRole=' not in out1 -%}SKIP
+      {%- elif 'SeCreateSymbolicLinkPrivilege' not in out2 -%}SKIP
+      {%- elif (status_04 | default('PASS') | trim) == 'FAIL' -%}FAIL
+      {%- else -%}
+      {%- set sids = out2 | regex_findall('S-1-5-[0-9-]+') | unique | sort -%}
+      {%- set is_dc = ('DomainRole=4' in out1) or ('DomainRole=5' in out1) -%}
+      {%- set hv = 'HyperV=Installed' in out1 -%}
+      {%- if is_dc or (not hv) -%}
+      {{- 'PASS' if (sids == ['S-1-5-32-544'] | sort) else 'FAIL' -}}
+      {%- else -%}
+      {{- 'PASS' if (sids == ['S-1-5-32-544', 'S-1-5-83-0'] | sort) else 'FAIL' -}}
+      {%- endif -%}
+      {%- endif -%}
+    details_05: "PASS when SeCreateSymbolicLinkPrivilege is assigned exactly to Administrators, plus NT VIRTUAL MACHINE Virtual Machines only when Hyper-V is Installed; SKIP when prerequisites missing; FAIL otherwise"
+
+- name: "Req 06 - Store final audit result in cis_result variable"
+  set_fact:
+    cis_result: "{{ status_05 | default('ERROR') | trim }}"
+    task_06_name: "Store final audit result in cis_result variable"
+    task_06_cmd: "set_fact cis_result = status_05"
+    task_06_rc: 0
+    data_06: "cis_result={{ status_05 | default('ERROR') | trim }}"
+    status_06: "{{ status_05 | default('ERROR') | trim }}"
+    details_06: "Final audit result stored in cis_result"
+
+- name: "Generate audit report"
+  debug:
+    msg:
+    - "AUDIT REPORT — CIS 2.2.18"
+    - "Reference: CIS Benchmark checkpoint 2.2.18"
+    - ""
+    - "REQUIREMENT 01 - {{ req_01 }}:"
+    - "  Task: {{ task_01_name | default('Not recorded') }}"
+    - "  Command: {{ task_01_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_01_rc | default(-1) }}"
+    - "  Data: {{ data_01 | default('') | trim }}"
+    - "  Status: {{ status_01 | default('ERROR') | trim }}"
+    - "  Details: {{ details_01 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 02 - {{ req_02 }}:"
+    - "  Task: {{ task_02_name | default('Not recorded') }}"
+    - "  Command: {{ task_02_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_02_rc | default(-1) }}"
+    - "  Data: {{ data_02 | default('') | trim }}"
+    - "  Status: {{ status_02 | default('ERROR') | trim }}"
+    - "  Details: {{ details_02 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 03 - {{ req_03 }}:"
+    - "  Task: {{ task_03_name | default('Not recorded') }}"
+    - "  Command: {{ task_03_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_03_rc | default(-1) }}"
+    - "  Data: {{ data_03 | default('') | trim }}"
+    - "  Status: {{ status_03 | default('ERROR') | trim }}"
+    - "  Details: {{ details_03 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 04 - {{ req_04 }}:"
+    - "  Task: {{ task_04_name | default('Not recorded') }}"
+    - "  Command: {{ task_04_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_04_rc | default(-1) }}"
+    - "  Data: {{ data_04 | default('') | trim }}"
+    - "  Status: {{ status_04 | default('ERROR') | trim }}"
+    - "  Details: {{ details_04 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 05 - {{ req_05 }}:"
+    - "  Task: {{ task_05_name | default('Not recorded') }}"
+    - "  Command: {{ task_05_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_05_rc | default(-1) }}"
+    - "  Data: {{ data_05 | default('') | trim }}"
+    - "  Status: {{ status_05 | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('') | trim }}"
+    - ""
+    - "REQUIREMENT 06 - {{ req_06 }}:"
+    - "  Task: {{ task_06_name | default('Not recorded') }}"
+    - "  Command: {{ task_06_cmd | default('N/A') }}"
+    - "  Exit code: {{ task_06_rc | default(-1) }}"
+    - "  Data: {{ data_06 | default('') | trim }}"
+    - "  Status: {{ status_06 | default('ERROR') | trim }}"
+    - "  Details: {{ details_06 | default('') | trim }}"
+    - ""
+    - "========================================================"
+    - "OVERALL COMPLIANCE:"
+    - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
+    - "========================================================"
