@@ -4,124 +4,184 @@
 
 - name: "Snapshot - Create backup directory"
   ansible.windows.win_file:
-    path: "{{ backup_dir }}"
+    path: "{{ backup_dir | trim }}"
     state: directory
-  tags: [snapshot]
-- name: "Snapshot - Backup current SeNetworkLogonRight assignment"
-  ansible.windows.win_shell: |
-    $cfg = Join-Path $env:TEMP ("cis_snap_{0}.cfg" -f ([guid]::NewGuid().ToString('N')))
-    secedit /export /areas USER_RIGHTS /cfg $cfg | Out-Null
-    $line = Select-String -LiteralPath $cfg -Pattern '^\s*SeNetworkLogonRight\s*=' | Select-Object -First 1
-    if ($line) {
-      $val = (($line.Line -split '=', 2)[1]).Trim()
-    } else {
-      $val = "NO_USERS"
-    }
-    Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
-    Set-Content -LiteralPath "{{ backup_dir }}/senetworklogonright.txt" -Value $val -Encoding utf8
-    Write-Output $val
-  register: _snapshot_user_right
-  changed_when: false
   failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Export current user rights policy"
+  ansible.windows.win_shell: |
+    secedit /export /cfg "{{ policy_backup | trim }}" /areas USER_RIGHTS 2>&1 | Out-String
+    Write-Output "snapshot_rc=$LASTEXITCODE"
+  register: _snapshot_export
+  failed_when: false
+  changed_when: false
   tags: [snapshot]
 
 - block:
-  - name: "Req step-01 - Check domain controller role"
+  - name: "Check if host is a Domain Controller"
     ansible.windows.win_shell: |
-      $domainRole = (Get-CimInstance Win32_ComputerSystem).DomainRole
-      if ($domainRole -in 4,5) { 'DC' } else { 'NON_DC' }
+      $pt = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\ProductOptions' -ErrorAction SilentlyContinue).ProductType
+      Write-Output $pt
     register: _dc_check
+    failed_when: false
     changed_when: false
+    tags: [execute]
+
+  - name: "Set DC detection fact"
+    set_fact:
+      is_dc: "{{ (_dc_check.stdout | default('') | trim) == 'LanmanNT' }}"
+    tags: [execute]
+
+  - name: "Req 01 - Create security policy INF with SeNetworkLogonRight setting"
+    ansible.windows.win_copy:
+      dest: "{{ policy_inf | trim }}"
+      content: |
+        [Version]
+        signature="$CHICAGO$"
+        Revision=1
+        [Privilege Rights]
+        SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11,*S-1-5-9
+    when: is_dc | bool
+    register: result_01_create
     failed_when: false
     tags: [execute]
 
-  - name: "Req step-01 - Set 'Access this computer from the network' user right"
-    ansible.windows.win_user_right:
-      name: SeNetworkLogonRight
-      users:
-      - "Administrators"
-      - "Authenticated Users"
-      - "ENTERPRISE DOMAIN CONTROLLERS"
-      action: set
-    when: "(_dc_check.stdout | default('') | trim) == 'DC'"
-    register: _step01_output
+  - name: "Req 01 - Verify policy INF was created"
+    ansible.windows.win_stat:
+      path: "{{ policy_inf | trim }}"
+    when: is_dc | bool
+    register: _inf_stat
     failed_when: false
     tags: [execute]
 
-  - name: "Req step-02 - Verify 'Access this computer from the network' user right is set correctly"
+  - name: "Req 01 - Apply SeNetworkLogonRight via secedit configure"
     ansible.windows.win_shell: |
-      $ErrorActionPreference = 'Stop'
-      try {
-        $domainRole = (Get-CimInstance Win32_ComputerSystem).DomainRole
-        if ($domainRole -in 4,5) {
-          $tempCfg = Join-Path $env:TEMP ("cis_secpol_{0}.cfg" -f ([System.Guid]::NewGuid().ToString('N')))
-          try {
-            secedit /export /cfg $tempCfg /areas USER_RIGHTS | Out-Null
-            if (Test-Path -LiteralPath $tempCfg) {
-              $line = Select-String -LiteralPath $tempCfg -Pattern '^\s*SeNetworkLogonRight\s*=' | Select-Object -First 1
-              if ($line) {
-                $actual = (($line.Line -split '=', 2)[1]).Trim()
-                $expected = @('*S-1-5-32-544', '*S-1-5-11', '*S-1-5-9')
-                $actualSids = @($actual -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                $missing = @($expected | Where-Object { $_ -notin $actualSids })
-                $extra = @($actualSids | Where-Object { $_ -notin $expected })
-                if ($missing.Count -eq 0 -and $extra.Count -eq 0) {
-                  Write-Output '** PASS **'
-                  Write-Output "SeNetworkLogonRight = $actual"
-                } else {
-                  Write-Output '** FAIL **'
-                  Write-Output "Expected: $($expected -join ',')"
-                  Write-Output "Actual: $actual"
-                }
-              } else {
-                Write-Output '** ERROR **'
-                Write-Output 'SeNetworkLogonRight not found in secedit export'
-              }
-            } else {
-              Write-Output '** ERROR **'
-              Write-Output 'secedit export did not produce a configuration file'
-            }
-          } finally {
-            if (Test-Path -LiteralPath $tempCfg) { Remove-Item -LiteralPath $tempCfg -Force }
-          }
-        } else {
-          Write-Output '** SKIP **'
-          Write-Output 'Host is not a domain controller'
+      secedit /configure /db "$env:TEMP\cis_2_2_2.sdb" /cfg "{{ policy_inf | trim }}" /areas USER_RIGHTS /quiet 2>&1 | Out-String
+      $rc = $LASTEXITCODE
+      if ($rc -ne 0) {
+        $log = Join-Path $env:windir 'security\logs\scesrv.log'
+        if (Test-Path $log) {
+          Write-Output "----scesrv.log tail----"
+          Get-Content $log -Tail 30 | Out-String | Write-Output
         }
-      } catch {
-        Write-Output '** ERROR **'
-        Write-Output $_.Exception.Message
       }
-    register: _step02_output
-    changed_when: false
+      Write-Output "secedit_rc=$rc"
+    when:
+    - is_dc | bool
+    - (_inf_stat.stat is defined) and (_inf_stat.stat.exists | default(false))
+    register: result_01
     failed_when: false
+    changed_when: false
     tags: [execute]
 
-  - name: "Req step-03 - Store final remediation result, raw output, and requirement details"
-    ansible.builtin.set_fact:
-      task_01_name: "Check DC role and set user right via win_user_right"
-      task_01_cmd: "Get-CimInstance Win32_ComputerSystem | Select DomainRole; ansible.windows.win_user_right name=SeNetworkLogonRight action=set users='Administrators','Authenticated Users','ENTERPRISE DOMAIN CONTROLLERS'"
-      task_01_rc: "{{ 0 if not (_step01_output.failed | default(false)) else 1 }}"
-      data_01: "{{ _step01_output | default({}) | to_json | trim }}"
-      status_01: "{{ ('SKIP' if (_dc_check.stdout | default('') | trim) != 'DC' else ('PASS' if not (_step01_output.failed | default(false)) else 'FAIL')) | trim }}"
-      details_01: "{{ ('Host is not a domain controller; user right not modified' if (_dc_check.stdout | default('') | trim) != 'DC' else ('User right set successfully' if not (_step01_output.failed | default(false)) else 'Failed to set user right')) | trim }}"
-      task_02_name: "Verify user right via PowerShell secedit export"
-      task_02_cmd: "secedit /export /cfg temp.cfg /areas USER_RIGHTS; compare SeNetworkLogonRight expected SIDs"
-      task_02_rc: "{{ _step02_output.rc | default(-1) }}"
-      data_02: "{{ _step02_output.stdout | default('') | trim }}"
-      status_02: "{{ ('PASS' if '** PASS **' in (_step02_output.stdout | default('')) else ('FAIL' if '** FAIL **' in (_step02_output.stdout | default('')) else ('SKIP' if '** SKIP **' in (_step02_output.stdout | default('')) else 'ERROR'))) | trim }}"
-      details_02: "{{ _step02_output.stdout | default('') | trim }}"
-      cis_result: "{{ ('PASS' if '** PASS **' in (_step02_output.stdout | default('')) else ('FAIL' if '** FAIL **' in (_step02_output.stdout | default('')) else ('SKIP' if '** SKIP **' in (_step02_output.stdout | default('')) else 'ERROR'))) | trim }}"
-      raw_command_output: "{{ _step02_output.stdout | default('') | trim }}"
+  - name: "Req 01 - Parse secedit exit code from stdout"
+    set_fact:
+      secedit_rc_01: "{{ (result_01.stdout | default('') | trim).split('=') | last | trim }}"
+    when: is_dc | bool
     tags: [execute]
 
-  - name: "Req step-04 - Generate remediation report"
-    ansible.builtin.debug:
+  - name: "Req 01 - Store requirement 01 details"
+    set_fact:
+      task_01_name: "Apply SeNetworkLogonRight via secedit configure"
+      task_01_cmd: |
+        secedit /configure /db %TEMP%\\cis_2_2_2.sdb /cfg {{ policy_inf | trim }} /areas USER_RIGHTS /quiet
+      task_01_rc: "{{ secedit_rc_01 | default('-1', true) | trim }}"
+      data_01: "{{ (result_01.stdout | default('') | trim) if (_inf_stat.stat is defined and _inf_stat.stat.exists | default(false)) else 'INF_FILE_MISSING' }}"
+      status_01: >-
+        {%- if not (is_dc | bool) -%}
+        SKIP
+        {%- elif not ((_inf_stat.stat is defined) and (_inf_stat.stat.exists | default(false))) -%}
+        FAIL
+        {%- elif ((secedit_rc_01 | default('X', true) | trim) == '0') -%}
+        PASS
+        {%- else -%}
+        FAIL
+        {%- endif -%}
+      details_01: >-
+        {%- if not (is_dc | bool) -%}
+        Host is not a Domain Controller - skipped
+        {%- elif not ((_inf_stat.stat is defined) and (_inf_stat.stat.exists | default(false))) -%}
+        Policy INF file was not created at {{ policy_inf | trim }}
+        {%- elif ((secedit_rc_01 | default('X', true) | trim) == '0') -%}
+        User right applied successfully via secedit
+        {%- else -%}
+        Failed to apply user right via secedit - see data for scesrv.log diagnostics
+        {%- endif -%}
+    tags: [execute]
+
+  - name: "Req 02 - Verify SeNetworkLogonRight policy via secedit export"
+    ansible.windows.win_shell: |
+      {% raw %}
+      $cfg = Join-Path $env:TEMP 'secpol.cfg'
+      secedit /export /areas USER_RIGHTS /cfg $cfg | Out-Null
+      if (Test-Path $cfg) {
+        $lines = [System.IO.File]::ReadAllLines($cfg, [System.Text.Encoding]::Unicode)
+        $line = $lines | Where-Object { $_ -match 'SeNetworkLogonRight' } | Select-Object -First 1
+        if ($line) {
+          Write-Output $line.Trim()
+        } else {
+          Write-Output 'NOT_FOUND'
+        }
+        Remove-Item -Path $cfg -Force -ErrorAction SilentlyContinue
+      } else {
+        Write-Output 'EXPORT_FAILED'
+      }
+      {% endraw %}
+    when: is_dc | bool
+    register: result_02
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req 02 - Normalize SeNetworkLogonRight SID lists for order-insensitive comparison"
+    set_fact:
+      actual_sids_02: "{{ (result_02.stdout | default('')).split('=') | last | trim }}"
+      actual_sids_02_norm: >-
+        {{ ((result_02.stdout | default('')).split('=') | last | trim)
+           .split(',') | map('trim') | reject('equalto','') | sort | join(',') }}
+      expected_sids_norm: >-
+        {{ (expected_sids | trim)
+           .split(',') | map('trim') | reject('equalto','') | sort | join(',') }}
+    when: is_dc | bool
+    tags: [execute]
+
+  - name: "Req 02 - Store requirement 02 details"
+    set_fact:
+      task_02_name: "Verify SeNetworkLogonRight via secedit export"
+      task_02_cmd: |
+        secedit /export /areas USER_RIGHTS /cfg %temp%\\secpol.cfg && findstr /i \"SeNetworkLogonRight\" %temp%\\secpol.cfg
+      task_02_rc: "{{ result_02.rc | default(-1) }}"
+      data_02: "{{ result_02.stdout | default('') | trim }}"
+      status_02: >-
+        {%- if not (is_dc | bool) -%}
+        SKIP
+        {%- elif ((actual_sids_02_norm | default('', true) | trim) == (expected_sids_norm | default('', true) | trim)) -%}
+        PASS
+        {%- else -%}
+        FAIL
+        {%- endif -%}
+      details_02: >-
+        {%- if not (is_dc | bool) -%}
+        Host is not a Domain Controller - skipped
+        {%- elif ((actual_sids_02_norm | default('', true) | trim) == (expected_sids_norm | default('', true) | trim)) -%}
+        SeNetworkLogonRight correctly set to Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS (order-insensitive match)
+        {%- else -%}
+        SeNetworkLogonRight not correctly configured - actual: {{ actual_sids_02_norm | default('') | trim }}, expected: {{ expected_sids_norm | default('') | trim }}
+        {%- endif -%}
+    tags: [execute]
+
+  - name: "Req 03 - Store final remediation result in cis_result"
+    set_fact:
+      cis_result: "{{ status_02 | default('ERROR') | trim }}"
+    tags: [execute]
+
+  - name: "Generate remediation report"
+    debug:
       msg:
       - "REMEDIATION REPORT — CIS 2.2.2"
       - "Reference: CIS Benchmark checkpoint 2.2.2"
       - ""
-      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "REQUIREMENT 01 - {{ req_01 }}"
       - "  Task: {{ task_01_name | default('Not recorded') }}"
       - "  Command: {{ task_01_cmd | default('N/A') }}"
       - "  Exit code: {{ task_01_rc | default(-1) }}"
@@ -129,7 +189,7 @@
       - "  Status: {{ status_01 | default('ERROR') | trim }}"
       - "  Details: {{ details_01 | default('') | trim }}"
       - ""
-      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "REQUIREMENT 02 - {{ req_02 }}"
       - "  Task: {{ task_02_name | default('Not recorded') }}"
       - "  Command: {{ task_02_cmd | default('N/A') }}"
       - "  Exit code: {{ task_02_rc | default(-1) }}"
@@ -137,63 +197,41 @@
       - "  Status: {{ status_02 | default('ERROR') | trim }}"
       - "  Details: {{ details_02 | default('') | trim }}"
       - ""
-      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "REQUIREMENT 03 - {{ req_03 }}"
       - "  Task: Store final remediation result in cis_result"
-      - "  Command: set_fact"
+      - "  Command: set_fact cis_result"
       - "  Exit code: 0"
-      - "  Data: {{ raw_command_output | default('') | trim }}"
+      - "  Data: {{ cis_result | default('ERROR') | trim }}"
       - "  Status: {{ cis_result | default('ERROR') | trim }}"
-      - "  Details: Final remediation result stored"
+      - "  Details: cis_result derived from status_02"
       - ""
-      - "REQUIREMENT 04 - {{ req_04 }}:"
-      - "  Task: Generate remediation report"
-      - "  Command: debug"
-      - "  Exit code: 0"
-      - "  Data: {{ raw_command_output | default('') | trim }}"
-      - "  Status: PASS"
-      - "  Details: Remediation report generated"
-      - ""
+      - "========================================================"
       - "OVERALL REMEDIATION:"
       - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('Not evaluated') | trim }}"
+      - "========================================================"
     tags: [execute]
 
   always:
-  - name: "Restore - Check if user right snapshot exists"
+  - name: "Restore - Check if policy backup exists"
     ansible.windows.win_stat:
-      path: "{{ backup_dir }}/senetworklogonright.txt"
-    register: _restore_snapshot_stat
+      path: "{{ policy_backup | trim }}"
+    register: _restore_backup
     failed_when: false
     tags: [restore]
 
-  - name: "Restore - Read original user right assignment"
+  - name: "Restore - Restore original user rights policy"
     ansible.windows.win_shell: |
-      if (Test-Path -LiteralPath "{{ backup_dir }}/senetworklogonright.txt") {
-        $raw = Get-Content -LiteralPath "{{ backup_dir }}/senetworklogonright.txt" -Raw
-        Write-Output $raw.Trim()
-      } else {
-        Write-Output ""
-      }
-    register: _restore_user_right
+      secedit /configure /db "$env:TEMP\cis_2_2_2_restore.sdb" /cfg "{{ policy_backup | trim }}" /areas USER_RIGHTS /quiet 2>&1 | Out-String
+      Write-Output "restore_rc=$LASTEXITCODE"
+    when: (_restore_backup.stat is defined) and (_restore_backup.stat.exists | default(false))
+    failed_when: false
     changed_when: false
-    failed_when: false
-    when: "(_restore_snapshot_stat.stat | default({})).exists | default(false)"
-    tags: [restore]
-
-  - name: "Restore - Set user right to original assignment"
-    ansible.windows.win_user_right:
-      name: SeNetworkLogonRight
-      users: >-
-        {{ [] if (_restore_user_right.stdout | default('NO_USERS') | trim) in ['', 'NO_USERS'] else
-           (_restore_user_right.stdout | default('') | trim | replace('*', '') | split(',') | map('trim') | list) }}
-      action: set
-    when: "(_restore_snapshot_stat.stat | default({})).exists | default(false)"
-    failed_when: false
     tags: [restore]
 
   - name: "Restore - Remove backup directory"
     ansible.windows.win_file:
-      path: "{{ backup_dir }}"
+      path: "{{ backup_dir | trim }}"
       state: absent
-    when: "(_restore_snapshot_stat.stat | default({})).exists | default(false)"
     failed_when: false
     tags: [restore]
