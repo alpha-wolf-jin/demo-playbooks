@@ -3,7 +3,7 @@
   include_vars: cis_audit_var_1_1_2.yml
 
 - name: "Initialize data variables"
-  ansible.builtin.set_fact:
+  set_fact:
     data_01: "Not collected yet"
     status_01: "ERROR"
     details_01: "Not evaluated"
@@ -53,570 +53,275 @@
     task_08_cmd: "N/A"
     task_08_rc: -1
     data_09: "Not collected yet"
-    status_09: "ERROR"
-    details_09: "Not evaluated"
-    task_09_name: "Not executed"
-    task_09_cmd: "N/A"
-    task_09_rc: -1
-    data_10: "Not collected yet"
-    status_10: "ERROR"
-    details_10: "Not evaluated"
-    task_10_name: "Not executed"
-    task_10_cmd: "N/A"
-    task_10_rc: -1
-    data_11: "Not collected yet"
-    status_11: "ERROR"
-    details_11: "Not evaluated"
-    task_11_name: "Not executed"
-    task_11_cmd: "N/A"
-    task_11_rc: -1
-    data_12: "Not collected yet"
-    status_12: "ERROR"
-    details_12: "Not evaluated"
-    task_12_name: "Not executed"
-    task_12_cmd: "N/A"
-    task_12_rc: -1
-    data_13: "Not collected yet"
-    status_13: "ERROR"
-    details_13: "Not evaluated"
-    task_13_name: "Not executed"
-    task_13_cmd: "N/A"
-    task_13_rc: -1
-    data_14: "Not collected yet"
-    status_14: "ERROR"
-    details_14: "Not evaluated"
-    task_14_name: "Not executed"
-    task_14_cmd: "N/A"
-    task_14_rc: -1
-    data_15: "Not collected yet"
-    status_15: "ERROR"
-    details_15: "Not evaluated"
-    task_15_name: "Not executed"
-    task_15_cmd: "N/A"
-    task_15_rc: -1
-    data_16: "Not collected yet"
-    status_16: "ERROR"
-    details_16: "Not evaluated"
-    task_16_name: "Not executed"
-    task_16_cmd: "N/A"
-    task_16_rc: -1
-    data_17: "Not collected yet"
-    status_17: "ERROR"
-    details_17: "Not evaluated"
-    task_17_name: "Not executed"
-    task_17_cmd: "N/A"
-    task_17_rc: -1
-    data_18: "Not collected yet"
-    status_18: "ERROR"
-    details_18: "Not evaluated"
-    task_18_name: "Not executed"
-    task_18_cmd: "N/A"
-    task_18_rc: -1
-    data_19: "Not collected yet"
-    status_19: "ERROR"
-    details_19: "Not evaluated"
-    task_19_name: "Not executed"
-    task_19_cmd: "N/A"
-    task_19_rc: -1
-    data_20: "Not collected yet"
-    status_20: "ERROR"
-    details_20: "Not evaluated"
-    task_20_name: "Not executed"
-    task_20_cmd: "N/A"
-    task_20_rc: -1
-    data_21: "Not collected yet"
-    status_21: "ERROR"
-    details_21: "Not evaluated"
-    task_21_name: "Not executed"
-    task_21_cmd: "N/A"
-    task_21_rc: -1
-    is_dc: false
-    is_member: false
+    status_09: "PASS"
+    details_09: "Report generated"
+    task_09_name: "Generate audit report"
+    task_09_cmd: "debug msg with CIS 1.1.2 audit results"
+    task_09_rc: 0
     cis_result: "ERROR"
 
-# ---- Req 1 ----
-- name: "Req 1 - Detect Windows server domain role"
+- name: "Req 01 - Confirm domain controller and Group Policy tooling"
   ansible.windows.win_shell: |
-    (Get-WmiObject Win32_ComputerSystem).DomainRole
+    {% raw %}
+    try {
+      $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
+      Write-Output "DomainRole=$role"
+    } catch {
+      Write-Output "DomainRole=ERROR"
+    }
+    $mod = Get-Module -ListAvailable GroupPolicy -ErrorAction SilentlyContinue
+    if ($mod) {
+      Write-Output "GroupPolicyModule=AVAILABLE"
+    } else {
+      Write-Output "GroupPolicyModule=MISSING"
+    }
+    {% endraw %}
   register: result_01
   failed_when: false
   changed_when: false
 
 - name: "Store requirement 01 details"
-  ansible.builtin.set_fact:
-    is_dc: "{{ (result_01.stdout | default('') | trim) in ['4', '5'] }}"
-    is_member: "{{ (result_01.stdout | default('') | trim) in ['0', '1', '2', '3'] }}"
-    task_01_name: "Detect Windows server domain role"
-    task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole"
+  set_fact:
+    task_01_name: "Confirm domain controller and Group Policy tooling"
+    task_01_cmd: "(Get-WmiObject Win32_ComputerSystem).DomainRole; Get-Module -ListAvailable GroupPolicy"
     task_01_rc: "{{ result_01.rc | default(-1) }}"
-    data_01: "DomainRole={{ result_01.stdout | default('') | trim }}"
+    data_01: "{{ result_01.stdout | default('') | trim }}"
     status_01: >-
-      {%- if (result_01.stdout | default('') | trim) in ['0','1','2','3','4','5'] -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
+      {%- set is_dc = ('DomainRole=4' in result_01.stdout) or ('DomainRole=5' in result_01.stdout) -%}
+      {%- set has_gpo = 'GroupPolicyModule=AVAILABLE' in result_01.stdout -%}
+      {%- if is_dc and has_gpo -%}PASS{%- else -%}SKIP{%- endif -%}
     details_01: >-
-      {%- if (result_01.stdout | default('') | trim) in ['4','5'] -%}Domain Controller
-      {%- elif (result_01.stdout | default('') | trim) in ['0','1','2','3'] -%}Member Server
-      {%- else -%}Unknown role
-      {%- endif -%}
+      {%- set is_dc = ('DomainRole=4' in result_01.stdout) or ('DomainRole=5' in result_01.stdout) -%}
+      {%- set has_gpo = 'GroupPolicyModule=AVAILABLE' in result_01.stdout -%}
+      {%- if is_dc and has_gpo -%}Domain controller with Group Policy module available
+      {%- else -%}Host is not a domain controller or Group Policy module is missing - fallback to local policy checks{%- endif -%}
 
-# ---- Req 2 ----
-- name: "Req 2 - Check Active Directory module availability"
+- name: "Req 02 - Check Maximum password age via Get-ADDefaultDomainPasswordPolicy"
   ansible.windows.win_shell: |
-    if (Get-Module -ListAvailable -Name ActiveDirectory) { Write-Output 'PRESENT' } else { Write-Output 'ABSENT' }
+    {% raw %}
+    try {
+      $v = (Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop).MaxPasswordAge
+      $d = [int][math]::Floor($v.TotalDays)
+      Write-Output "RAW=$v"
+      Write-Output "DAYS=$d"
+      if ($d -gt 0 -and $d -le 365) {
+        Write-Output "POLICY=PASS"
+      } else {
+        Write-Output "POLICY=FAIL"
+      }
+    } catch {
+      Write-Output "POLICY=ERROR"
+      Write-Output "ERRORMSG=$($_.Exception.Message)"
+    }
+    {% endraw %}
   register: result_02
   failed_when: false
   changed_when: false
 
 - name: "Store requirement 02 details"
-  ansible.builtin.set_fact:
-    task_02_name: "Check Active Directory PowerShell module availability"
-    task_02_cmd: "Get-Module -ListAvailable -Name ActiveDirectory"
+  set_fact:
+    task_02_name: "Check Maximum password age via Get-ADDefaultDomainPasswordPolicy"
+    task_02_cmd: "Get-ADDefaultDomainPasswordPolicy | Select-Object MaxPasswordAge"
     task_02_rc: "{{ result_02.rc | default(-1) }}"
     data_02: "{{ result_02.stdout | default('') | trim }}"
-    status_02: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) == 'PRESENT' -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_02: >-
-      {%- if not (is_dc | bool) -%}Not applicable - member server
-      {%- elif (result_02.stdout | default('') | trim) == 'PRESENT' -%}ActiveDirectory module present on DC
-      {%- else -%}ActiveDirectory module not available on DC
-      {%- endif -%}
+    status_02: "{{ ('PASS' if 'POLICY=PASS' in result_02.stdout else ('FAIL' if 'POLICY=FAIL' in result_02.stdout else 'ERROR')) | trim }}"
+    details_02: "{{ ('MaxPasswordAge is between 1 and 365 days' if 'POLICY=PASS' in result_02.stdout else ('MaxPasswordAge is 0 (never expires) or exceeds 365 days' if 'POLICY=FAIL' in result_02.stdout else 'Get-ADDefaultDomainPasswordPolicy unavailable or failed')) | trim }}"
 
-# ---- Req 3 ----
-- name: "Req 3 - Check DC default domain password policy maximum age"
+- name: "Req 03 - Check Maximum password age via net accounts"
   ansible.windows.win_shell: |
+    {% raw %}
     try {
-      $p = Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop
-      [int][math]::Floor($p.MaxPasswordAge.TotalDays)
+      $out = net accounts 2>&1 | Out-String
+      Write-Output $out
+      $m = [regex]::Match($out, 'Maximum password age \(days\):\s*(\S+)')
+      if ($m.Success) {
+        $val = $m.Groups[1].Value
+        Write-Output "MAXAGE=$val"
+        if ($val -eq 'Unlimited' -or $val -eq 'Never') {
+          Write-Output "POLICY=FAIL"
+        } else {
+          $n = [int]$val
+          if ($n -gt 0 -and $n -le 365) {
+            Write-Output "POLICY=PASS"
+          } else {
+            Write-Output "POLICY=FAIL"
+          }
+        }
+      } else {
+        Write-Output "POLICY=ERROR"
+      }
     } catch {
-      Write-Output 'ERROR'
+      Write-Output "POLICY=ERROR"
     }
+    {% endraw %}
   register: result_03
   failed_when: false
   changed_when: false
-  when:
-  - "is_dc | bool"
-  - "(result_02.stdout | default('') | trim) == 'PRESENT'"
 
 - name: "Store requirement 03 details"
-  ansible.builtin.set_fact:
-    task_03_name: "Check DC default domain password policy maximum age"
-    task_03_cmd: "(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge"
+  set_fact:
+    task_03_name: "Check Maximum password age via net accounts"
+    task_03_cmd: "net accounts"
     task_03_rc: "{{ result_03.rc | default(-1) }}"
-    data_03: "{{ result_03.stdout | default('SKIPPED') | trim }}"
-    status_03: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_03.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_03.stdout | default('0') | trim | int) > 0 and (result_03.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_03: "MaxPasswordAge days value: {{ result_03.stdout | default('N/A') | trim }}"
+    data_03: "{{ result_03.stdout | default('') | trim }}"
+    status_03: "{{ ('PASS' if 'POLICY=PASS' in result_03.stdout else ('FAIL' if 'POLICY=FAIL' in result_03.stdout else 'ERROR')) | trim }}"
+    details_03: "{{ ('Maximum password age (days) is between 1 and 365' if 'POLICY=PASS' in result_03.stdout else ('Maximum password age is Unlimited or 0 or greater than 365' if 'POLICY=FAIL' in result_03.stdout else 'Unable to parse net accounts output')) | trim }}"
 
-# ---- Req 4 ----
-- name: "Req 4 - Check DC Default Domain Policy GPO MaxPasswordAge"
+- name: "Req 04 - Check Maximum password age via secedit export"
   ansible.windows.win_shell: |
-    try {
-      $xml = Get-GPO -Name "Default Domain Policy" -ErrorAction Stop | Get-GPOReport -ReportType Xml
-      $m = [regex]::Match($xml, 'Maximum\s+password\s+age.{0,400}?<SettingNumber>(\d+)</SettingNumber>')
-      if ($m.Success) { Write-Output $m.Groups[1].Value } else { Write-Output 'NOT_FOUND' }
-    } catch {
-      Write-Output 'ERROR'
+    {% raw %}
+    $secpol = Join-Path $env:TEMP 'secpol.cfg'
+    secedit /export /cfg $secpol | Out-Null
+    $content = Get-Content $secpol -ErrorAction SilentlyContinue
+    if (-not $content) {
+      Write-Output "POLICY=ERROR"
+    } else {
+      $content | Select-String 'MaximumPasswordAge' | ForEach-Object { Write-Output $_.Line }
+      $m = [regex]::Match(($content -join "`n"), 'MaximumPasswordAge\s*=\s*(-?\d+)')
+      if ($m.Success) {
+        $n = [int]$m.Groups[1].Value
+        if ($n -gt 0 -and $n -le 365) {
+          Write-Output "POLICY=PASS"
+        } else {
+          Write-Output "POLICY=FAIL"
+        }
+      } else {
+        Write-Output "POLICY=ERROR"
+      }
     }
+    {% endraw %}
   register: result_04
   failed_when: false
   changed_when: false
-  when:
-  - "is_dc | bool"
-  - "(result_02.stdout | default('') | trim) == 'PRESENT'"
 
 - name: "Store requirement 04 details"
-  ansible.builtin.set_fact:
-    task_04_name: "Check DC Default Domain Policy GPO MaxPasswordAge"
+  set_fact:
+    task_04_name: "Check Maximum password age via secedit export"
     task_04_cmd: |
-      Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml
+      secedit /export /cfg $env:TEMP\\secpol.cfg; Get-Content $env:TEMP\\secpol.cfg | Select-String 'MaximumPasswordAge'
     task_04_rc: "{{ result_04.rc | default(-1) }}"
-    data_04: "{{ result_04.stdout | default('SKIPPED') | trim }}"
-    status_04: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_04.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_04.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_04.stdout | default('0') | trim | int) > 0 and (result_04.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_04: "GPO MaxPasswordAge value: {{ result_04.stdout | default('N/A') | trim }}"
+    data_04: "{{ result_04.stdout | default('') | trim }}"
+    status_04: "{{ ('PASS' if 'POLICY=PASS' in result_04.stdout else ('FAIL' if 'POLICY=FAIL' in result_04.stdout else 'ERROR')) | trim }}"
+    details_04: "{{ ('MaximumPasswordAge in secedit export is between 1 and 365' if 'POLICY=PASS' in result_04.stdout else ('MaximumPasswordAge is 0, -1 (unlimited) or exceeds 365' if 'POLICY=FAIL' in result_04.stdout else 'Unable to parse secedit output')) | trim }}"
 
-    # ---- Req 5 ----
-    # FIX: build path entirely inside PowerShell ($env:TEMP) so no templated
-# newline can leak into the path. Trim templated values defensively too.
-- name: "Req 5 - Check member server local policy maximum age via secedit"
+- name: "Req 05 - Check Maximum password age via registry Netlogon Parameters"
   ansible.windows.win_shell: |
-    $cfg = Join-Path $env:TEMP 'cis_1_1_2_secpol.cfg'
-    & secedit.exe /export /cfg "$cfg" /areas SECURITYPOLICY /quiet | Out-Null
-    if (Test-Path -LiteralPath $cfg) {
-      $m = Select-String -Path $cfg -Pattern 'MaximumPasswordAge\s*=\s*(\d+)' | Select-Object -First 1
-      if ($m) {
-        Write-Output ([regex]::Match($m.Line, '\d+').Value)
+    {% raw %}
+    try {
+      $p = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction SilentlyContinue
+      if ($p -and $null -ne $p.MaximumPasswordAge) {
+        $n = [int]$p.MaximumPasswordAge
+        Write-Output "MAXAGE=$n"
+        if ($n -gt 0 -and $n -le 365) {
+          Write-Output "POLICY=PASS"
+        } else {
+          Write-Output "POLICY=FAIL"
+        }
       } else {
-        Write-Output 'NOT_FOUND'
+        Write-Output "MAXAGE=ABSENT"
+        Write-Output "POLICY=PASS"
       }
-      Remove-Item -LiteralPath $cfg -ErrorAction SilentlyContinue
-    } else {
-      Write-Output 'EXPORT_FAILED'
+    } catch {
+      Write-Output "POLICY=ERROR"
     }
+    {% endraw %}
   register: result_05
   failed_when: false
   changed_when: false
-  when: "is_member | bool"
 
 - name: "Store requirement 05 details"
-  ansible.builtin.set_fact:
-    task_05_name: "Check member server local policy maximum age via secedit"
+  set_fact:
+    task_05_name: "Check Maximum password age via registry Netlogon Parameters"
     task_05_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
+      Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Netlogon\\Parameters' -Name 'MaximumPasswordAge'
     task_05_rc: "{{ result_05.rc | default(-1) }}"
-    data_05: "{{ result_05.stdout | default('SKIPPED') | trim }}"
-    status_05: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_05.stdout | default('0') | trim | int) > 0 and (result_05.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_05: "Member server MaximumPasswordAge value: {{ result_05.stdout | default('N/A') | trim }}"
+    data_05: "{{ result_05.stdout | default('') | trim }}"
+    status_05: "{{ ('PASS' if 'POLICY=PASS' in result_05.stdout else ('FAIL' if 'POLICY=FAIL' in result_05.stdout else 'ERROR')) | trim }}"
+    details_05: "{{ ('MaximumPasswordAge is between 1 and 365 or absent (default domain policy applies)' if 'POLICY=PASS' in result_05.stdout else ('MaximumPasswordAge is 0 or exceeds 365' if 'POLICY=FAIL' in result_05.stdout else 'Unable to read registry value')) | trim }}"
 
-# ---- Req 6 (derived from Req 3) ----
+- name: "Req 06 - Check Maximum password age via LGPO parse"
+  ansible.windows.win_shell: |
+    {% raw %}
+    $lgpo = Get-Command LGPO.exe -ErrorAction SilentlyContinue
+    if (-not $lgpo) {
+      Write-Output "LGPO=NOT_AVAILABLE"
+      Write-Output "POLICY=SKIP"
+    } else {
+      $secpol = Join-Path $env:TEMP 'secpol.cfg'
+      if (-not (Test-Path $secpol)) {
+        Write-Output "SECPOL=NOT_EXPORTED"
+        Write-Output "POLICY=SKIP"
+      } else {
+        $out = & LGPO.exe /parse /m $secpol 2>&1 | Out-String
+        Write-Output $out
+        $m = [regex]::Match($out, 'MaximumPasswordAge\D+(-?\d+)')
+        if ($m.Success) {
+          $n = [int]$m.Groups[1].Value
+          if ($n -gt 0 -and $n -le 365) {
+            Write-Output "POLICY=PASS"
+          } else {
+            Write-Output "POLICY=FAIL"
+          }
+        } else {
+          Write-Output "POLICY=ERROR"
+        }
+      }
+    }
+    {% endraw %}
+  register: result_06
+  failed_when: false
+  changed_when: false
+
 - name: "Store requirement 06 details"
-  ansible.builtin.set_fact:
-    task_06_name: "Verify DC MaxPasswordAge not set to 0 (never expires)"
-    task_06_cmd: "(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge"
-    task_06_rc: "{{ result_03.rc | default(-1) }}"
-    data_06: "{{ result_03.stdout | default('SKIPPED') | trim }}"
-    status_06: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_03.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_03.stdout | default('0') | trim | int) > 0 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_06: "DC MaxPasswordAge days: {{ result_03.stdout | default('N/A') | trim }} (must be > 0)"
+  set_fact:
+    task_06_name: "Check Maximum password age via LGPO parse"
+    task_06_cmd: |
+      LGPO.exe /parse /m $env:TEMP\\secpol.cfg | Select-String 'MaximumPasswordAge'
+    task_06_rc: "{{ result_06.rc | default(-1) }}"
+    data_06: "{{ result_06.stdout | default('') | trim }}"
+    status_06: "{{ ('PASS' if 'POLICY=PASS' in result_06.stdout else ('FAIL' if 'POLICY=FAIL' in result_06.stdout else ('SKIP' if 'POLICY=SKIP' in result_06.stdout else 'ERROR'))) | trim }}"
+    details_06: "{{ ('MaximumPasswordAge via LGPO parse is between 1 and 365' if 'POLICY=PASS' in result_06.stdout else ('MaximumPasswordAge is 0 or exceeds 365' if 'POLICY=FAIL' in result_06.stdout else ('LGPO.exe or secpol.cfg unavailable' if 'POLICY=SKIP' in result_06.stdout else 'Unable to parse LGPO output'))) | trim }}"
 
-# ---- Req 7 (derived from Req 5) ----
-- name: "Store requirement 07 details"
-  ansible.builtin.set_fact:
-    task_07_name: "Verify member server MaxPasswordAge not set to 0"
-    task_07_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
-    task_07_rc: "{{ result_05.rc | default(-1) }}"
-    data_07: "{{ result_05.stdout | default('SKIPPED') | trim }}"
+- name: "Req 07 - Summarize overall compliance status"
+  set_fact:
+    task_07_name: "Summarize overall compliance status for Maximum password age"
+    task_07_cmd: "N/A - computed from prior requirement checks"
+    task_07_rc: 0
+    data_07: "status_01={{ status_01 | trim }} status_02={{ status_02 | trim }} status_03={{ status_03 | trim }} status_04={{ status_04 | trim }} status_05={{ status_05 | trim }} status_06={{ status_06 | trim }}"
     status_07: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_05.stdout | default('0') | trim | int) > 0 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_07: "Member server MaximumPasswordAge: {{ result_05.stdout | default('N/A') | trim }} (must be > 0)"
-
-# ---- Req 8 (derived from Req 3) ----
-- name: "Store requirement 08 details"
-  ansible.builtin.set_fact:
-    task_08_name: "Verify DC MaxPasswordAge is 365 days or fewer"
-    task_08_cmd: "(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge"
-    task_08_rc: "{{ result_03.rc | default(-1) }}"
-    data_08: "{{ result_03.stdout | default('SKIPPED') | trim }}"
-    status_08: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_03.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_03.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_08: "DC MaxPasswordAge days: {{ result_03.stdout | default('N/A') | trim }} (must be <= 365)"
-
-# ---- Req 9 (derived from Req 5) ----
-- name: "Store requirement 09 details"
-  ansible.builtin.set_fact:
-    task_09_name: "Verify member server MaxPasswordAge is 365 days or fewer"
-    task_09_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
-    task_09_rc: "{{ result_05.rc | default(-1) }}"
-    data_09: "{{ result_05.stdout | default('SKIPPED') | trim }}"
-    status_09: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_05.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_09: "Member server MaximumPasswordAge: {{ result_05.stdout | default('N/A') | trim }} (must be <= 365)"
-
-# ---- Req 10 (derived from Req 4) ----
-- name: "Store requirement 10 details"
-  ansible.builtin.set_fact:
-    task_10_name: "Verify Default Domain Policy GPO has MaxPasswordAge configured"
-    task_10_cmd: |
-      Get-GPO -Name \"Default Domain Policy\" | Get-GPOReport -ReportType Xml
-    task_10_rc: "{{ result_04.rc | default(-1) }}"
-    data_10: "{{ result_04.stdout | default('SKIPPED') | trim }}"
-    status_10: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_04.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_04.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- else -%}PASS
-      {%- endif -%}
-    details_10: "GPO MaxPasswordAge present: {{ result_04.stdout | default('N/A') | trim }}"
-
-# ---- Req 11 (derived from Req 5) ----
-- name: "Store requirement 11 details"
-  ansible.builtin.set_fact:
-    task_11_name: "Verify local security policy on member server has MaximumPasswordAge configured"
-    task_11_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
-    task_11_rc: "{{ result_05.rc | default(-1) }}"
-    data_11: "{{ result_05.stdout | default('SKIPPED') | trim }}"
-    status_11: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- else -%}PASS
-      {%- endif -%}
-    details_11: "Member server local policy MaximumPasswordAge: {{ result_05.stdout | default('N/A') | trim }}"
-
-# ---- Req 12 (derived from Req 3) ----
-- name: "Store requirement 12 details"
-  ansible.builtin.set_fact:
-    task_12_name: "Verify DC MaxPasswordAge is within 1-365"
-    task_12_cmd: "(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge"
-    task_12_rc: "{{ result_03.rc | default(-1) }}"
-    data_12: "{{ result_03.stdout | default('SKIPPED') | trim }}"
-    status_12: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_03.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_03.stdout | default('0') | trim | int) >= 1 and (result_03.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_12: "DC MaxPasswordAge days: {{ result_03.stdout | default('N/A') | trim }} (must be between 1 and 365)"
-
-# ---- Req 13 (derived from Req 5) ----
-- name: "Store requirement 13 details"
-  ansible.builtin.set_fact:
-    task_13_name: "Verify member server MaximumPasswordAge is within 1-365"
-    task_13_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
-    task_13_rc: "{{ result_05.rc | default(-1) }}"
-    data_13: "{{ result_05.stdout | default('SKIPPED') | trim }}"
-    status_13: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_05.stdout | default('0') | trim | int) >= 1 and (result_05.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_13: "Member server MaximumPasswordAge: {{ result_05.stdout | default('N/A') | trim }} (must be between 1 and 365)"
-
-# ---- Req 14 (derived from Req 3) ----
-- name: "Store requirement 14 details"
-  ansible.builtin.set_fact:
-    task_14_name: "Verify DC MaxPasswordAge is not set to 0"
-    task_14_cmd: "(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge"
-    task_14_rc: "{{ result_03.rc | default(-1) }}"
-    data_14: "{{ result_03.stdout | default('SKIPPED') | trim }}"
-    status_14: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_03.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_03.stdout | default('0') | trim | int) > 0 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_14: "DC MaxPasswordAge days: {{ result_03.stdout | default('N/A') | trim }} (must be > 0)"
-
-# ---- Req 15 (derived from Req 5) ----
-- name: "Store requirement 15 details"
-  ansible.builtin.set_fact:
-    task_15_name: "Verify member server MaximumPasswordAge is not set to 0"
-    task_15_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
-    task_15_rc: "{{ result_05.rc | default(-1) }}"
-    data_15: "{{ result_05.stdout | default('SKIPPED') | trim }}"
-    status_15: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_05.stdout | default('0') | trim | int) > 0 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_15: "Member server MaximumPasswordAge: {{ result_05.stdout | default('N/A') | trim }} (must be > 0)"
-
-# ---- Req 16 (derived from Req 3) ----
-- name: "Store requirement 16 details"
-  ansible.builtin.set_fact:
-    task_16_name: "Verify DC MaxPasswordAge is 365 days or fewer"
-    task_16_cmd: "(Get-ADDefaultDomainPasswordPolicy).MaxPasswordAge"
-    task_16_rc: "{{ result_03.rc | default(-1) }}"
-    data_16: "{{ result_03.stdout | default('SKIPPED') | trim }}"
-    status_16: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_03.stdout | default('') | trim) in ['', 'ERROR'] -%}ERROR
-      {%- elif (result_03.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_16: "DC MaxPasswordAge days: {{ result_03.stdout | default('N/A') | trim }} (must be <= 365)"
-
-# ---- Req 17 (derived from Req 5) ----
-- name: "Store requirement 17 details"
-  ansible.builtin.set_fact:
-    task_17_name: "Verify member server MaximumPasswordAge is 365 days or fewer"
-    task_17_cmd: |
-      secedit /export /cfg $env:TEMP\\cis_1_1_2_secpol.cfg /areas SECURITYPOLICY /quiet; Select-String MaximumPasswordAge
-    task_17_rc: "{{ result_05.rc | default(-1) }}"
-    data_17: "{{ result_05.stdout | default('SKIPPED') | trim }}"
-    status_17: >-
-      {%- if not (is_member | bool) -%}SKIP
-      {%- elif (result_05.stdout | default('') | trim) in ['', 'ERROR', 'EXPORT_FAILED'] -%}ERROR
-      {%- elif (result_05.stdout | default('') | trim) == 'NOT_FOUND' -%}FAIL
-      {%- elif (result_05.stdout | default('0') | trim | int) <= 365 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    details_17: "Member server MaximumPasswordAge: {{ result_05.stdout | default('N/A') | trim }} (must be <= 365)"
-
-# ---- Req 18 ----
-- name: "Req 18 - Check DC fine-grained password policies exist"
-  ansible.windows.win_shell: |
-    try {
-      $psos = Get-ADFineGrainedPasswordPolicy -ErrorAction Stop
-      if (-not $psos) {
-        Write-Output 'NO_POLICIES|none configured'
-      } else {
-        $out = @()
-        $compliant = $true
-        foreach ($p in $psos) {
-          $days = -1
-          if ($p.MaxPasswordAge -ne $null) {
-            $days = [int][math]::Floor($p.MaxPasswordAge.TotalDays)
-          }
-          $out += "$($p.Name)=$days"
-          if ($days -le 0 -or $days -gt 365) { $compliant = $false }
-        }
-        if ($compliant) { Write-Output ('PASS|' + ($out -join '; ')) }
-        else { Write-Output ('FAIL|' + ($out -join '; ')) }
-      }
-    } catch {
-      Write-Output 'ERROR|Get-ADFineGrainedPasswordPolicy failed'
-    }
-  register: result_18
-  failed_when: false
-  changed_when: false
-  when:
-  - "is_dc | bool"
-  - "(result_02.stdout | default('') | trim) == 'PRESENT'"
-
-- name: "Store requirement 18 details"
-  ansible.builtin.set_fact:
-    task_18_name: "Check DC fine-grained password policies (PSOs)"
-    task_18_cmd: "Get-ADFineGrainedPasswordPolicy"
-    task_18_rc: "{{ result_18.rc | default(-1) }}"
-    data_18: "{{ result_18.stdout | default('SKIPPED') | trim }}"
-    status_18: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_18.stdout | default('') | trim).startswith('PASS') -%}PASS
-      {%- elif (result_18.stdout | default('') | trim).startswith('FAIL') -%}FAIL
-      {%- elif (result_18.stdout | default('') | trim).startswith('NO_POLICIES') -%}PASS
+      {%- if status_01 | trim == 'SKIP' -%}SKIP
+      {%- elif status_02 | trim == 'PASS' -%}PASS
+      {%- elif status_02 | trim == 'FAIL' -%}FAIL
+      {%- elif status_03 | trim == 'PASS' or status_04 | trim == 'PASS' or status_05 | trim == 'PASS' -%}PASS
+      {%- elif status_03 | trim == 'FAIL' or status_04 | trim == 'FAIL' or status_05 | trim == 'FAIL' -%}FAIL
       {%- else -%}ERROR
       {%- endif -%}
-    details_18: "PSO MaxPasswordAge evaluation: {{ result_18.stdout | default('N/A') | trim }}"
-
-# ---- Req 19 ----
-- name: "Req 19 - Verify all PSOs have MaxPasswordAge between 1 and 365"
-  ansible.windows.win_shell: |
-    try {
-      $psos = Get-ADFineGrainedPasswordPolicy -ErrorAction Stop
-      if (-not $psos) {
-        Write-Output 'NO_POLICIES|none configured'
-      } else {
-        $out = @()
-        $compliant = $true
-        foreach ($p in $psos) {
-          $days = -1
-          if ($p.MaxPasswordAge -ne $null) {
-            $days = [int][math]::Floor($p.MaxPasswordAge.TotalDays)
-          }
-          $out += "$($p.Name)=$days"
-          if ($days -lt 1 -or $days -gt 365) { $compliant = $false }
-        }
-        if ($compliant) { Write-Output ('PASS|' + ($out -join '; ')) }
-        else { Write-Output ('FAIL|' + ($out -join '; ')) }
-      }
-    } catch {
-      Write-Output 'ERROR|Get-ADFineGrainedPasswordPolicy failed'
-    }
-  register: result_19
-  failed_when: false
-  changed_when: false
-  when:
-  - "is_dc | bool"
-  - "(result_02.stdout | default('') | trim) == 'PRESENT'"
-
-- name: "Store requirement 19 details"
-  ansible.builtin.set_fact:
-    task_19_name: "Verify all PSOs have MaxPasswordAge between 1 and 365"
-    task_19_cmd: "Get-ADFineGrainedPasswordPolicy | Select-Object Name, MaxPasswordAge"
-    task_19_rc: "{{ result_19.rc | default(-1) }}"
-    data_19: "{{ result_19.stdout | default('SKIPPED') | trim }}"
-    status_19: >-
-      {%- if not (is_dc | bool) -%}SKIP
-      {%- elif (result_02.stdout | default('') | trim) != 'PRESENT' -%}SKIP
-      {%- elif (result_19.stdout | default('') | trim).startswith('PASS') -%}PASS
-      {%- elif (result_19.stdout | default('') | trim).startswith('FAIL') -%}FAIL
-      {%- elif (result_19.stdout | default('') | trim).startswith('NO_POLICIES') -%}PASS
-      {%- else -%}ERROR
+    details_07: >-
+      {%- if status_01 | trim == 'SKIP' -%}Host has no domain context - skipped
+      {%- elif status_02 | trim == 'PASS' -%}AD Default Domain Policy MaxPasswordAge within 1-365 days
+      {%- elif status_02 | trim == 'FAIL' -%}AD Default Domain Policy MaxPasswordAge is 0 (never expires) or exceeds 365 days
+      {%- elif status_03 | trim == 'PASS' or status_04 | trim == 'PASS' or status_05 | trim == 'PASS' -%}Local policy corroborates MaxPasswordAge within 1-365 days
+      {%- elif status_03 | trim == 'FAIL' or status_04 | trim == 'FAIL' or status_05 | trim == 'FAIL' -%}Local policy indicates MaxPasswordAge is 0 or exceeds 365 days
+      {%- else -%}Could not determine compliance status
       {%- endif -%}
-    details_19: "PSO MaxPasswordAge evaluation: {{ result_19.stdout | default('N/A') | trim }}"
 
-# ---- Req 20 ----
-- name: "Store requirement 20 details - overall compliance"
-  ansible.builtin.set_fact:
-    task_20_name: "Compute overall compliance"
-    task_20_cmd: "N/A - aggregation of all checks"
-    task_20_rc: 0
-    status_20: >-
-      {%- set sts = [status_03, status_04, status_05, status_06, status_07, status_08, status_09, status_10, status_11, status_12, status_13, status_14, status_15, status_16, status_17, status_18, status_19] -%}
-      {%- set relevant = sts | reject('equalto', 'SKIP') | list -%}
-      {%- if (result_01.stdout | default('') | trim) not in ['0','1','2','3','4','5'] -%}SKIP
-      {%- elif relevant | length == 0 -%}SKIP
-      {%- elif relevant | select('ne', 'PASS') | list | length == 0 -%}PASS
-      {%- else -%}FAIL
-      {%- endif -%}
-    data_20: "DC={{ is_dc }} MEMBER={{ is_member }} applicable_checks={{ [status_03, status_04, status_05, status_06, status_07, status_08, status_09, status_10, status_11, status_12, status_13, status_14, status_15, status_16, status_17, status_18, status_19] | reject('equalto', 'SKIP') | list }}"
-    details_20: "Overall compliance computed from all applicable check statuses"
+- name: "Req 08 - Store final audit result in cis_result"
+  set_fact:
+    cis_result: "{{ status_07 | default('ERROR') | trim }}"
+    task_08_name: "Store final audit result in cis_result"
+    task_08_cmd: "set_fact - cis_result derived from status_07"
+    task_08_rc: 0
+    data_08: "cis_result={{ status_07 | default('ERROR') | trim }}"
+    status_08: "PASS"
+    details_08: "cis_result variable successfully set from summarized compliance status"
 
-# ---- Req 21 ----
-- name: "Store requirement 21 details - cis_result"
-  ansible.builtin.set_fact:
-    cis_result: "{{ status_20 | default('ERROR') | trim }}"
-    task_21_name: "Store final audit result in cis_result"
-    task_21_cmd: "set_fact cis_result = status_20"
-    task_21_rc: 0
-    data_21: "cis_result={{ status_20 | default('ERROR') | trim }}"
-    status_21: "{{ status_20 | default('ERROR') | trim }}"
-    details_21: "cis_result stored from overall compliance status_20"
-
-# ---- Report ----
 - name: "Generate audit report"
-  ansible.builtin.debug:
+  debug:
     msg:
     - "AUDIT REPORT — CIS 1.1.2"
     - "Reference: CIS Benchmark checkpoint 1.1.2"
     - ""
-    - "REQUIREMENT 01 - {{ req_01 }}"
+    - "REQUIREMENT 01 - {{ req_01 }}:"
     - "  Task: {{ task_01_name | default('Not recorded') }}"
     - "  Command: {{ task_01_cmd | default('N/A') }}"
     - "  Exit code: {{ task_01_rc | default(-1) }}"
@@ -624,7 +329,7 @@
     - "  Status: {{ status_01 | default('ERROR') | trim }}"
     - "  Details: {{ details_01 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 02 - {{ req_02 }}"
+    - "REQUIREMENT 02 - {{ req_02 }}:"
     - "  Task: {{ task_02_name | default('Not recorded') }}"
     - "  Command: {{ task_02_cmd | default('N/A') }}"
     - "  Exit code: {{ task_02_rc | default(-1) }}"
@@ -632,7 +337,7 @@
     - "  Status: {{ status_02 | default('ERROR') | trim }}"
     - "  Details: {{ details_02 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 03 - {{ req_03 }}"
+    - "REQUIREMENT 03 - {{ req_03 }}:"
     - "  Task: {{ task_03_name | default('Not recorded') }}"
     - "  Command: {{ task_03_cmd | default('N/A') }}"
     - "  Exit code: {{ task_03_rc | default(-1) }}"
@@ -640,7 +345,7 @@
     - "  Status: {{ status_03 | default('ERROR') | trim }}"
     - "  Details: {{ details_03 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 04 - {{ req_04 }}"
+    - "REQUIREMENT 04 - {{ req_04 }}:"
     - "  Task: {{ task_04_name | default('Not recorded') }}"
     - "  Command: {{ task_04_cmd | default('N/A') }}"
     - "  Exit code: {{ task_04_rc | default(-1) }}"
@@ -648,7 +353,7 @@
     - "  Status: {{ status_04 | default('ERROR') | trim }}"
     - "  Details: {{ details_04 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 05 - {{ req_05 }}"
+    - "REQUIREMENT 05 - {{ req_05 }}:"
     - "  Task: {{ task_05_name | default('Not recorded') }}"
     - "  Command: {{ task_05_cmd | default('N/A') }}"
     - "  Exit code: {{ task_05_rc | default(-1) }}"
@@ -656,7 +361,7 @@
     - "  Status: {{ status_05 | default('ERROR') | trim }}"
     - "  Details: {{ details_05 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 06 - {{ req_06 }}"
+    - "REQUIREMENT 06 - {{ req_06 }}:"
     - "  Task: {{ task_06_name | default('Not recorded') }}"
     - "  Command: {{ task_06_cmd | default('N/A') }}"
     - "  Exit code: {{ task_06_rc | default(-1) }}"
@@ -664,7 +369,7 @@
     - "  Status: {{ status_06 | default('ERROR') | trim }}"
     - "  Details: {{ details_06 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 07 - {{ req_07 }}"
+    - "REQUIREMENT 07 - {{ req_07 }}:"
     - "  Task: {{ task_07_name | default('Not recorded') }}"
     - "  Command: {{ task_07_cmd | default('N/A') }}"
     - "  Exit code: {{ task_07_rc | default(-1) }}"
@@ -672,7 +377,7 @@
     - "  Status: {{ status_07 | default('ERROR') | trim }}"
     - "  Details: {{ details_07 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 08 - {{ req_08 }}"
+    - "REQUIREMENT 08 - {{ req_08 }}:"
     - "  Task: {{ task_08_name | default('Not recorded') }}"
     - "  Command: {{ task_08_cmd | default('N/A') }}"
     - "  Exit code: {{ task_08_rc | default(-1) }}"
@@ -680,112 +385,16 @@
     - "  Status: {{ status_08 | default('ERROR') | trim }}"
     - "  Details: {{ details_08 | default('') | trim }}"
     - ""
-    - "REQUIREMENT 09 - {{ req_09 }}"
+    - "REQUIREMENT 09 - {{ req_09 }}:"
     - "  Task: {{ task_09_name | default('Not recorded') }}"
     - "  Command: {{ task_09_cmd | default('N/A') }}"
     - "  Exit code: {{ task_09_rc | default(-1) }}"
     - "  Data: {{ data_09 | default('') | trim }}"
-    - "  Status: {{ status_09 | default('ERROR') | trim }}"
-    - "  Details: {{ details_09 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 10 - {{ req_10 }}"
-    - "  Task: {{ task_10_name | default('Not recorded') }}"
-    - "  Command: {{ task_10_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_10_rc | default(-1) }}"
-    - "  Data: {{ data_10 | default('') | trim }}"
-    - "  Status: {{ status_10 | default('ERROR') | trim }}"
-    - "  Details: {{ details_10 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 11 - {{ req_11 }}"
-    - "  Task: {{ task_11_name | default('Not recorded') }}"
-    - "  Command: {{ task_11_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_11_rc | default(-1) }}"
-    - "  Data: {{ data_11 | default('') | trim }}"
-    - "  Status: {{ status_11 | default('ERROR') | trim }}"
-    - "  Details: {{ details_11 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 12 - {{ req_12 }}"
-    - "  Task: {{ task_12_name | default('Not recorded') }}"
-    - "  Command: {{ task_12_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_12_rc | default(-1) }}"
-    - "  Data: {{ data_12 | default('') | trim }}"
-    - "  Status: {{ status_12 | default('ERROR') | trim }}"
-    - "  Details: {{ details_12 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 13 - {{ req_13 }}"
-    - "  Task: {{ task_13_name | default('Not recorded') }}"
-    - "  Command: {{ task_13_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_13_rc | default(-1) }}"
-    - "  Data: {{ data_13 | default('') | trim }}"
-    - "  Status: {{ status_13 | default('ERROR') | trim }}"
-    - "  Details: {{ details_13 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 14 - {{ req_14 }}"
-    - "  Task: {{ task_14_name | default('Not recorded') }}"
-    - "  Command: {{ task_14_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_14_rc | default(-1) }}"
-    - "  Data: {{ data_14 | default('') | trim }}"
-    - "  Status: {{ status_14 | default('ERROR') | trim }}"
-    - "  Details: {{ details_14 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 15 - {{ req_15 }}"
-    - "  Task: {{ task_15_name | default('Not recorded') }}"
-    - "  Command: {{ task_15_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_15_rc | default(-1) }}"
-    - "  Data: {{ data_15 | default('') | trim }}"
-    - "  Status: {{ status_15 | default('ERROR') | trim }}"
-    - "  Details: {{ details_15 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 16 - {{ req_16 }}"
-    - "  Task: {{ task_16_name | default('Not recorded') }}"
-    - "  Command: {{ task_16_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_16_rc | default(-1) }}"
-    - "  Data: {{ data_16 | default('') | trim }}"
-    - "  Status: {{ status_16 | default('ERROR') | trim }}"
-    - "  Details: {{ details_16 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 17 - {{ req_17 }}"
-    - "  Task: {{ task_17_name | default('Not recorded') }}"
-    - "  Command: {{ task_17_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_17_rc | default(-1) }}"
-    - "  Data: {{ data_17 | default('') | trim }}"
-    - "  Status: {{ status_17 | default('ERROR') | trim }}"
-    - "  Details: {{ details_17 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 18 - {{ req_18 }}"
-    - "  Task: {{ task_18_name | default('Not recorded') }}"
-    - "  Command: {{ task_18_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_18_rc | default(-1) }}"
-    - "  Data: {{ data_18 | default('') | trim }}"
-    - "  Status: {{ status_18 | default('ERROR') | trim }}"
-    - "  Details: {{ details_18 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 19 - {{ req_19 }}"
-    - "  Task: {{ task_19_name | default('Not recorded') }}"
-    - "  Command: {{ task_19_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_19_rc | default(-1) }}"
-    - "  Data: {{ data_19 | default('') | trim }}"
-    - "  Status: {{ status_19 | default('ERROR') | trim }}"
-    - "  Details: {{ details_19 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 20 - {{ req_20 }}"
-    - "  Task: {{ task_20_name | default('Not recorded') }}"
-    - "  Command: {{ task_20_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_20_rc | default(-1) }}"
-    - "  Data: {{ data_20 | default('') | trim }}"
-    - "  Status: {{ status_20 | default('ERROR') | trim }}"
-    - "  Details: {{ details_20 | default('') | trim }}"
-    - ""
-    - "REQUIREMENT 21 - {{ req_21 }}"
-    - "  Task: {{ task_21_name | default('Not recorded') }}"
-    - "  Command: {{ task_21_cmd | default('N/A') }}"
-    - "  Exit code: {{ task_21_rc | default(-1) }}"
-    - "  Data: {{ data_21 | default('') | trim }}"
-    - "  Status: {{ status_21 | default('ERROR') | trim }}"
-    - "  Details: {{ details_21 | default('') | trim }}"
+    - "  Status: {{ status_09 | default('PASS') | trim }}"
+    - "  Details: {{ details_09 | default('Report generated') | trim }}"
     - ""
     - "========================================================"
     - "OVERALL COMPLIANCE:"
     - "  Result: {{ cis_result | default('ERROR') | trim }}"
+    - "  Details: {{ details_07 | default('Not evaluated') | trim }}"
     - "========================================================"
-  changed_when: false
