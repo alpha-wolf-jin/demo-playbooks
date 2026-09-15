@@ -73,9 +73,11 @@
       try {
         Import-Module ActiveDirectory -ErrorAction Stop
         $domainDN = (Get-ADDomain).DistinguishedName
-        $current = [int](Get-ADDefaultDomainPasswordPolicy -Identity $domainDN).MaxPasswordAge.Days
+        $policy = Get-ADDefaultDomainPasswordPolicy -Identity $domainDN
+        $current = -1
+        if ($null -ne $policy.MaxPasswordAge) { $current = [int]$policy.MaxPasswordAge.Days }
         Write-Output "CURRENT=$current"
-        if ($current -gt {{ max_password_age_days }} -or $current -eq 0) {
+        if ($current -lt 1 -or $current -gt {{ max_password_age_days }}) {
           Set-ADDefaultDomainPasswordPolicy -Identity $domainDN -MaxPasswordAge (New-TimeSpan -Days {{ max_password_age_days }})
           Write-Output "DC_APPLY_OK_CHANGED"
         } else {
