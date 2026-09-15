@@ -21,8 +21,10 @@
   tags: [snapshot]
 - name: "Snapshot - Export current security policy"
   ansible.windows.win_shell: |
-    secedit /export /cfg "{{ backup_dir }}/secpol_before.cfg" /quiet
-    if (Test-Path "{{ backup_dir }}/secpol_before.cfg") { Write-Output "SNAPSHOT_OK" } else { Write-Output "SNAPSHOT_FAIL" }
+    $dir = '{{ backup_dir_win }}'.Trim()
+    $cfg = Join-Path $dir 'secpol_before.cfg'
+    secedit /export /cfg "$cfg" /quiet
+    if (Test-Path $cfg) { Write-Output "SNAPSHOT_OK" } else { Write-Output "SNAPSHOT_FAIL" }
   register: _snapshot_secpol
   failed_when: false
   changed_when: false
@@ -75,7 +77,7 @@
         Write-Output "CURRENT=$current"
         if ($current -gt {{ max_password_age_days }} -or $current -eq 0) {
           Set-ADDefaultDomainPasswordPolicy -Identity $domainDN -MaxPasswordAge (New-TimeSpan -Days {{ max_password_age_days }})
-          Write-Output "DC_APPLY_OK"
+          Write-Output "DC_APPLY_OK_CHANGED"
         } else {
           Write-Output "DC_ALREADY_OK"
         }
@@ -87,7 +89,7 @@
     register: _dc_apply
     when: is_dc | bool
     failed_when: false
-    changed_when: "'DC_APPLY_OK' in (_dc_apply.stdout | default(''))"
+    changed_when: "'DC_APPLY_OK_CHANGED' in (_dc_apply.stdout | default(''))"
     tags: [execute]
 
   - name: "Req 01 - Apply Maximum password age on Member Server"
@@ -98,23 +100,34 @@
       secedit /export /cfg $cfg /quiet | Out-Null
       Start-Sleep -Seconds 1
       $content = Get-Content -LiteralPath $cfg -Raw
-      Write-Output "BEFORE:" + (($content -split "`r?`n" | Where-Object { $_ -match 'MaximumPasswordAge' }) -join ';')
-      if ($content -match '(?im)^\s*MaximumPasswordAge\s*=') {
-        $content = $content -replace '(?im)^\s*MaximumPasswordAge\s*=.*$', "MaximumPasswordAge = {{ max_password_age_days }}"
+      $before = $null
+      if ($content -match '(?im)^\s*MaximumPasswordAge\s*=\s*(\d+)') { $before = [int]$matches[1] }
+      Write-Output "BEFORE=$before"
+      if ($before -ne {{ max_password_age_days }}) {
+        $newContent = $content
+        if ($content -match '(?im)^\s*MaximumPasswordAge\s*=') {
+          $newContent = $content -replace '(?im)^\s*MaximumPasswordAge\s*=.*$', "MaximumPasswordAge = {{ max_password_age_days }}"
+        } else {
+          $newContent = $content -replace '(?im)^(\[System Access\]\s*\r?\n)', ('$1' + "MaximumPasswordAge = {{ max_password_age_days }}" + "`r`n")
+        }
+        Set-Content -LiteralPath $cfg -Value $newContent -Force
+        secedit /configure /db $db /cfg $cfg /areas SECURITYPOLICY /quiet
+        $afterContent = Get-Content -LiteralPath $cfg -Raw
+        $after = $null
+        if ($afterContent -match '(?im)^\s*MaximumPasswordAge\s*=\s*(\d+)') { $after = [int]$matches[1] }
+        Write-Output "AFTER=$after"
+        Write-Output "MEMBER_APPLY_OK_CHANGED"
       } else {
-        $content = $content -replace '(?im)^(\[System Access\]\s*\r?\n)', ('$1' + "MaximumPasswordAge = {{ max_password_age_days }}" + "`r`n")
+        Write-Output "AFTER=$before"
+        Write-Output "MEMBER_ALREADY_OK"
       }
-      Set-Content -LiteralPath $cfg -Value $content -Force
-      Write-Output "AFTER:" + (($content -split "`r?`n" | Where-Object { $_ -match 'MaximumPasswordAge' }) -join ';')
-      secedit /configure /db $db /cfg $cfg /areas SECURITYPOLICY /quiet
       Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
       Remove-Item -LiteralPath $db -Force -ErrorAction SilentlyContinue
-      Write-Output "MEMBER_APPLY_OK"
       exit 0
     register: _member_apply
     when: is_member | bool
     failed_when: false
-    changed_when: "'MEMBER_APPLY_OK' in (_member_apply.stdout | default(''))"
+    changed_when: "'MEMBER_APPLY_OK_CHANGED' in (_member_apply.stdout | default(''))"
     tags: [execute]
 
   - name: "Store requirement 01 details"
@@ -170,10 +183,28 @@
 
   - name: "Req 03 - Store final remediation result in cis_result"
     set_fact:
-      cis_result: "{{ status_02 | default('ERROR') | trim }}"
-      data_03: "cis_result={{ status_02 | default('ERROR') | trim }}"
-      status_03: "{{ status_02 | default('ERROR') | trim }}"
-      details_03: "cis_result derived from requirement 02 status"
+      cis_result: >-
+        {% set s1 = status_01 | default('ERROR') | trim %}
+        {% set s2 = status_02 | default('ERROR') | trim %}
+        {% if _verify_result.rc | default(1) | int != 0 %}ERROR
+        {% elif s1 not in ['PASS','SKIP'] or s2 not in ['PASS','SKIP'] %}ERROR
+        {% else %}{{ s2 }}
+        {% endif %}
+      data_03: >-
+        {% set s1 = status_01 | default('ERROR') | trim %}
+        {% set s2 = status_02 | default('ERROR') | trim %}
+        {% if _verify_result.rc | default(1) | int != 0 %}cis_result=ERROR
+        {% elif s1 not in ['PASS','SKIP'] or s2 not in ['PASS','SKIP'] %}cis_result=ERROR
+        {% else %}cis_result={{ s2 }}
+        {% endif %}
+      status_03: >-
+        {% set s1 = status_01 | default('ERROR') | trim %}
+        {% set s2 = status_02 | default('ERROR') | trim %}
+        {% if _verify_result.rc | default(1) | int != 0 %}ERROR
+        {% elif s1 not in ['PASS','SKIP'] or s2 not in ['PASS','SKIP'] %}ERROR
+        {% else %}{{ s2 }}
+        {% endif %}
+      details_03: "cis_result derived from requirement 01 and 02 statuses (ERROR if verify command failed to run or any prior requirement failed)"
     failed_when: false
     tags: [execute]
 
@@ -234,7 +265,8 @@
     ansible.windows.win_shell: |
       $role = (Get-WmiObject Win32_ComputerSystem).DomainRole
       if ($role -in 1,2,3) {
-        secedit /configure /db C:\Windows\Temp\cis_1_1_2_restore.sdb /cfg "{{ backup_dir }}/secpol_before.cfg" /areas SECURITYPOLICY /quiet
+        $cfg = Join-Path '{{ backup_dir_win }}'.Trim() 'secpol_before.cfg'
+        secedit /configure /db C:\Windows\Temp\cis_1_1_2_restore.sdb /cfg "$cfg" /areas SECURITYPOLICY /quiet
         Remove-Item -LiteralPath C:\Windows\Temp\cis_1_1_2_restore.sdb -Force -ErrorAction SilentlyContinue
         Write-Output "MEMBER_RESTORE_OK"
       } else {
