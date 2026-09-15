@@ -1,14 +1,14 @@
 {
   "schema": "cis-spec/v2",
   "benchmark": "win2022",
-  "checkpoint_id": "1.1.2",
-  "title": "Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
+  "checkpoint_id": "2.2.2",
+  "title": "Ensure 'Access this computer from the network' is set to 'Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS' (DC only)",
   "playbook_type": "audit",
   "role": "collect",
   "effect": "transient",
   "transport": "winrm",
   "connection_risk": false,
-  "objective": "Audit CIS checkpoint 1.1.2: Ensure 'Maximum password age' is set to '365 or fewer days, but not 0'",
+  "objective": "Audit CIS checkpoint 2.2.2: Ensure 'Access this computer from the network' is set to 'Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS' (DC only)",
   "connection": {
     "hosts": "{{ target_host }}",
     "gather_facts": false
@@ -31,14 +31,6 @@
         "default": null,
         "unit": null,
         "description": "SSH user with sudo access"
-      },
-      {
-        "name": "max_password_age_days",
-        "type": "integer",
-        "required": false,
-        "default": 180,
-        "unit": "days",
-        "description": "Maximum allowed password age in days (must be > 0 and ≤ this value)"
       }
     ]
   },
@@ -54,11 +46,11 @@
         "description": "PASS/FAIL/SKIP/ERROR — overall compliance result"
       },
       {
-        "name": "password_age_days",
-        "type": "integer",
+        "name": "audit_output",
+        "type": "string",
         "nullable": true,
         "required_by_sop": false,
-        "description": "Actual maximum password age in days as detected on the target host"
+        "description": "Raw output from the audit command"
       }
     ]
   },
@@ -67,20 +59,20 @@
     {
       "id": "step-01",
       "type": "collect",
-      "name": "Confirm domain controller and Group Policy tooling availability",
-      "function": "1. Confirm the target is a domain controller and that Group Policy tooling is available. Run: `(Get-WmiObject Win32_ComputerSystem).DomainRole` and `Get-Module -ListAvailable GroupPolicy`. Expected result: DomainRole is 4 or 5 (domain controller), and the GroupPolicy module is listed. Both facts confirm the AD/GPO audit path is valid; if the host is not a domain controller or the module is absent, use the local policy fallback in step-03 through step-06.",
+      "name": "Check if the system is a Domain Controller or `(Get-CimInstance Win32_OperatingSystem).ProductType`",
+      "function": "1. Check if the system is a Domain Controller using command: `wmic os get ProductType /value` or `(Get-CimInstance Win32_OperatingSystem).ProductType`. Expected result: ProductType=2 (Domain Controller). If not a Domain Controller, SKIP this checkpoint.",
       "module": "ansible.builtin.shell",
       "stores": [
         "_step01_output"
       ],
       "on_success": "step-02",
-      "on_fail": "step-11"
+      "on_fail": "step-09"
     },
     {
       "id": "step-02",
       "type": "collect",
-      "name": "Check the 'Maximum password age' setting in the Default Domain Policy GPO",
-      "function": "2. Check the 'Maximum password age' setting in the Default Domain Policy GPO using command: `Get-ADDefaultDomainPasswordPolicy | Select-Object MaxPasswordAge`. Expected result: MaxPasswordAge is greater than 0 days and less than or equal to 365 days (e.g., 365.00:00:00 or less, but not 00:00:00 or unlimited).",
+      "name": "Check the 'Access this computer from the network' user right assignment",
+      "function": "2. Check the 'Access this computer from the network' user right assignment using command: `secedit /export /cfg $env:TEMP\\secpol.cfg; Get-Content $env:TEMP\\secpol.cfg | Select-String 'SeNetworkLogonRight'`. Expected result: SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11,*S-1-5-9 (Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS).",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-01",
@@ -92,13 +84,13 @@
         "_step02_output"
       ],
       "on_success": "step-03",
-      "on_fail": "step-11"
+      "on_fail": "step-09"
     },
     {
       "id": "step-03",
       "type": "collect",
-      "name": "Check the 'Maximum password age' setting via the local security policy",
-      "function": "3. Check the 'Maximum password age' setting via the local security policy using command: `net accounts`. Expected result: 'Maximum password age (days)' is a value between 1 and 365, not 'Unlimited' or 0.",
+      "name": "Check the 'Access this computer from the network' setting via registry",
+      "function": "3. Check the 'Access this computer from the network' setting via registry using command: `Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name 'SeNetworkLogonRight' -ErrorAction SilentlyContinue`. Expected result: Value contains SIDs for Administrators (S-1-5-32-544), Authenticated Users (S-1-5-11), and ENTERPRISE DOMAIN CONTROLLERS (S-1-5-9).",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-02",
@@ -110,13 +102,13 @@
         "_step03_output"
       ],
       "on_success": "step-04",
-      "on_fail": "step-11"
+      "on_fail": "step-09"
     },
     {
       "id": "step-04",
       "type": "collect",
-      "name": "Check the 'Maximum password age' setting via secedit export",
-      "function": "4. Check the 'Maximum password age' setting via secedit export using command: `secedit /export /cfg $env:TEMP\\secpol.cfg; Get-Content $env:TEMP\\secpol.cfg | Select-String 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge is set to a value between 1 and 365.",
+      "name": "Check the effective user right assignment or `Get-CimInstance -ClassName Win32_UserAccount` combined with `secedit…",
+      "function": "4. Check the effective user right assignment using command: `whoami /priv` or `Get-CimInstance -ClassName Win32_UserAccount` combined with `secedit /export`. Expected result: The exported security policy shows SeNetworkLogonRight assigned exactly to Administrators, Authenticated Users, and ENTERPRISE DOMAIN CONTROLLERS with no additional or missing principals.",
       "module": "ansible.builtin.shell",
       "input": {
         "source": "step-03",
@@ -128,53 +120,17 @@
         "_step04_output"
       ],
       "on_success": "step-05",
-      "on_fail": "step-11"
+      "on_fail": "step-09"
     },
     {
       "id": "step-05",
-      "type": "collect",
-      "name": "Check the 'Maximum password age' setting via registry",
-      "function": "5. Check the 'Maximum password age' setting via registry using command: `Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Netlogon\\Parameters' -Name 'MaximumPasswordAge' -ErrorAction SilentlyContinue`. Expected result: MaximumPasswordAge is a value between 1 and 365, or the property is absent (indicating default domain policy applies).",
-      "module": "ansible.builtin.shell",
+      "type": "transform",
+      "name": "Summarize overall compliance status: PASS if the system is a Domain Controller and SeNetworkLogonRight is set exactly…",
+      "function": "5. Summarize overall compliance status: PASS if the system is a Domain Controller and SeNetworkLogonRight is set exactly to Administrators, Authenticated Users, and ENTERPRISE DOMAIN CONTROLLERS; SKIP if the system is not a Domain Controller; FAIL if the system is a Domain Controller but the user right assignment is missing, has extra principals, or is misconfigured.",
       "input": {
         "source": "step-04",
         "fields": [
           "_step04_output"
-        ]
-      },
-      "stores": [
-        "_step05_output"
-      ],
-      "on_success": "step-06",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-06",
-      "type": "collect",
-      "name": "Check the 'Maximum password age' setting via auditpol or LGPO",
-      "function": "6. Check the 'Maximum password age' setting via auditpol or LGPO using command: `LGPO.exe /parse /m $env:TEMP\\secpol.cfg | Select-String 'MaximumPasswordAge'`. Expected result: MaximumPasswordAge is configured to a value between 1 and 365 days.",
-      "module": "ansible.builtin.shell",
-      "input": {
-        "source": "step-05",
-        "fields": [
-          "_step05_output"
-        ]
-      },
-      "stores": [
-        "_step06_output"
-      ],
-      "on_success": "step-07",
-      "on_fail": "step-11"
-    },
-    {
-      "id": "step-07",
-      "type": "transform",
-      "name": "Summarize overall compliance status: PASS if all checks confirm Maximum password age is set to 365 or fewer days but…",
-      "function": "7. Summarize overall compliance status: PASS if all checks confirm Maximum password age is set to 365 or fewer days but not 0; SKIP if the Group Policy module or Active Directory environment is not present; FAIL if the setting exists but is configured to 0 (never expires) or greater than 365 days.",
-      "input": {
-        "source": "step-06",
-        "fields": [
-          "_step06_output"
         ]
       },
       "computations": {
@@ -183,16 +139,16 @@
       "stores": [
         "_cis_status"
       ],
-      "on_success": "step-08"
+      "on_success": "step-06"
     },
     {
-      "id": "step-08",
+      "id": "step-06",
       "type": "transform",
       "name": "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance…",
-      "function": "8. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
+      "function": "6. Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable.",
       "module": "ansible.builtin.set_fact",
       "input": {
-        "source": "step-07",
+        "source": "step-05",
         "fields": [
           "_cis_status"
         ]
@@ -200,24 +156,24 @@
       "stores": [
         "cis_result"
       ],
-      "on_success": "step-09"
+      "on_success": "step-07"
     },
     {
-      "id": "step-09",
+      "id": "step-07",
       "type": "emit",
       "name": "Create a task named 'Generate audit report' using debug msg with EXACTLY this format:",
-      "function": "9. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 1.1.2\nReference: CIS Benchmark checkpoint 1.1.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
+      "function": "7. Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 2.2.2\nReference: CIS Benchmark checkpoint 2.2.2\nThen for each requirement: REQUIREMENT NN - {{ req_NN }}:\n  With fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{{ cis_result }}}",
       "module": "ansible.builtin.debug",
       "input": {
-        "source": "step-08",
+        "source": "step-06",
         "fields": [
           "cis_result"
         ]
       },
-      "on_success": "step-10"
+      "on_success": "step-08"
     },
     {
-      "id": "step-10",
+      "id": "step-08",
       "type": "emit",
       "name": "Emit compliance result",
       "function": "Output the overall compliance status to the caller.",
@@ -227,11 +183,11 @@
       "on_success": "end"
     },
     {
-      "id": "step-11",
+      "id": "step-09",
       "type": "abort",
       "name": "Handle task failure",
       "function": "Reached via rescue block on any unexpected task failure.",
-      "error_message": "ERROR: CIS 1.1.2 audit failed",
+      "error_message": "ERROR: CIS 2.2.2 audit failed",
       "on_success": "end"
     }
   ],
@@ -243,32 +199,30 @@
         "step-01",
         "step-02",
         "step-03",
-        "step-04",
-        "step-05",
-        "step-06"
+        "step-04"
       ]
     },
     {
       "name": "Analysis",
       "description": "Evaluate collected data and determine compliance status.",
       "steps": [
-        "step-07",
-        "step-08"
+        "step-05",
+        "step-06"
       ]
     },
     {
       "name": "Reporting",
       "description": "Emit the compliance result to the caller.",
       "steps": [
-        "step-09",
-        "step-10"
+        "step-07",
+        "step-08"
       ]
     },
     {
       "name": "Error handling",
       "description": "Handle unexpected failures gracefully.",
       "steps": [
-        "step-11"
+        "step-09"
       ]
     }
   ],
@@ -276,23 +230,21 @@
     "Use failed_when: false on all audit tasks (except set_fact, debug) so all checks complete and report status",
     "If the audit targets a specific software/service (e.g., GDM, GNOME, sshd, httpd), FIRST check if it is installed. If NOT installed, report SKIP for all checks.",
     "This is an AUDIT playbook — it MUST NOT make any changes to the system. All tasks must be read-only (shell commands, stat, slurp, command with check-only flags, etc.).",
-    "The target is a domain server (domain controller). Audit the effective domain password policy via the Active Directory cmdlets (Get-ADDefaultDomainPasswordPolicy) as the authoritative source; the secedit / net accounts / registry checks are corroborating fallbacks only, used when the GroupPolicy or ActiveDirectory module is unavailable. Only report SKIP when the host has no domain context at all (no AD module and DomainRole not 4 or 5) — do not SKIP merely because a local policy value is absent.",
-    "The maximum password age threshold is configurable via the input parameter max_password_age_days (default 180). All comparisons must use this parameter instead of a hardcoded 365.",
-    "The maximum password age threshold is fixed at 365 days. All comparisons must use 365 as the upper bound and 0 as the lower bound (exclusive)."
+    "The audit script must be read-only: it may create a temporary export file for secedit but must remove it afterward and must not modify any system settings."
   ],
   "error_handling": {
     "no_silent_exit": true
   },
   "reference_procedure": "Navigate to the UI Path articulated in the Remediation section and confirm it is set as prescribed.",
   "example_output": "",
-  "filename": "cis_audit_1_1_2.yml",
+  "filename": "cis_audit_2_2_2.yml",
   "output_dir": "./cis_win2022_audit_playbooks",
   "provenance": {
     "source_json": "/home/jin/ai/talk-aap/incident/AIops_CIS/resources/CIS_Microsoft_Windows_Server_2022_Benchmark_v5.0.0.json",
     "source_json_sha256": "be68800928cdaa96528150042eab3619286fcf8b70f0bb0e99bc7bc05ce6ad69",
-    "drafted_at": "2026-09-15T19:39:54",
-    "revision": 4,
-    "approved_at": "2026-09-15T19:42:00",
+    "drafted_at": "2026-09-15T21:28:58",
+    "revision": 3,
+    "approved_at": "2026-09-15T21:29:39",
     "saved_by": null
   }
 }
