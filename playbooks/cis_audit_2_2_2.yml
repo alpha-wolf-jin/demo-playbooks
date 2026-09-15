@@ -1,83 +1,244 @@
 ---
-- name: "Audit CIS checkpoint 2.2.2: Ensure 'Access this computer from the network' is set to 'Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS' (DC only)"
+- name: "Audit CIS checkpoint 2.2.2 - Ensure 'Access this computer from the network' is set to 'Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS' (DC only)"
   hosts: all
-  become: yes
   gather_facts: false
   vars:
-    req_01: "Use read-only PowerShell to check if the host is a Domain Controller and query the current value of 'Access this computer from the network'. Emits ** PASS **, ** FAIL **, ** SKIP **, or ** ERROR **. changed_when: false; failed_when: rc not in [0, 1]."
-    req_02: "Evaluate the output of step-01 to determine compliance. PASS if the script reported compliant value; FAIL if non-compliant; SKIP if not a domain controller; ERROR on any failure."
-    req_03: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    req_04: |-
-      Create a task named 'Generate audit report' using debug msg with EXACTLY this format:\nAUDIT REPORT — CIS 2.2.2\nReference: CIS Benchmark checkpoint 2.2.2\nThen for each requirement: REQUIREMENT NN - {{ '{{' }} req_NN {{ '}}' }}:\nWith fields: Task, Command, Exit code, Data, Status (PASS/FAIL/SKIP/ERROR), Details.\nEnd with OVERALL COMPLIANCE: section containing Result: {{ '{{{' }} cis_result {{ '}}}' }}
+    req_01: "Check if the system is a Domain Controller using command: `wmic os get ProductType /value` or `(Get-CimInstance Win32_OperatingSystem).ProductType`. Expected result: ProductType=2 (Domain Controller). If not a Domain Controller, SKIP this checkpoint."
+    req_02: |
+      Check the 'Access this computer from the network' user right assignment using command: `secedit /export /cfg $env:TEMP\\secpol.cfg; Get-Content $env:TEMP\\secpol.cfg | Select-String 'SeNetworkLogonRight'`. Expected result: SeNetworkLogonRight = *S-1-5-32-544,*S-1-5-11,*S-1-5-9 (Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS).
+    req_03: |
+      Check the 'Access this computer from the network' setting via registry using command: `Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name 'SeNetworkLogonRight' -ErrorAction SilentlyContinue`. Expected result: Value contains SIDs for Administrators (S-1-5-32-544), Authenticated Users (S-1-5-11), and ENTERPRISE DOMAIN CONTROLLERS (S-1-5-9).
+    req_04: "Check the effective user right assignment using command: `whoami /priv` or `Get-CimInstance -ClassName Win32_UserAccount` combined with `secedit /export`. Expected result: The exported security policy shows SeNetworkLogonRight assigned exactly to Administrators, Authenticated Users, and ENTERPRISE DOMAIN CONTROLLERS with no additional or missing principals."
+    req_05: "Summarize overall compliance status: PASS if the system is a Domain Controller and SeNetworkLogonRight is set exactly to Administrators, Authenticated Users, and ENTERPRISE DOMAIN CONTROLLERS; SKIP if the system is not a Domain Controller; FAIL if the system is a Domain Controller but the user right assignment is missing, has extra principals, or is misconfigured."
+    req_06: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
 
   tasks:
-    - name: "Req step-01 - Check if host is a Domain Controller and query 'Access this computer from the network' policy using PowerShell"
+    - name: "Initialize data variables"
+      set_fact:
+        data_01: "Not collected yet"
+        status_01: "ERROR"
+        details_01: "Not evaluated"
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        data_02: "Not collected yet"
+        status_02: "ERROR"
+        details_02: "Not evaluated"
+        task_02_name: "Not executed"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        data_03: "Not collected yet"
+        status_03: "ERROR"
+        details_03: "Not evaluated"
+        task_03_name: "Not executed"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
+        data_04: "Not collected yet"
+        status_04: "ERROR"
+        details_04: "Not evaluated"
+        task_04_name: "Not executed"
+        task_04_cmd: "N/A"
+        task_04_rc: -1
+        data_05: "Not collected yet"
+        status_05: "ERROR"
+        details_05: "Not evaluated"
+        task_05_name: "Not executed"
+        task_05_cmd: "N/A"
+        task_05_rc: -1
+        data_06: "Not collected yet"
+        status_06: "ERROR"
+        details_06: "Not evaluated"
+        task_06_name: "Not executed"
+        task_06_cmd: "N/A"
+        task_06_rc: -1
+
+    - name: "Req 01 - Check if system is a Domain Controller"
       ansible.windows.win_shell: |
         {% raw %}
-        $ErrorActionPreference = 'Stop'
         try {
-          $domainRole = (Get-CimInstance Win32_ComputerSystem).DomainRole
-          if ($domainRole -in 4,5) {
-            $tempCfg = Join-Path $env:TEMP ("cis_222_secpol_{0}.cfg" -f ([System.Guid]::NewGuid().ToString('N')))
-            try {
-              secedit /export /cfg $tempCfg /areas USER_RIGHTS | Out-Null
-              if (Test-Path -LiteralPath $tempCfg) {
-                $line = Select-String -LiteralPath $tempCfg -Pattern '^\s*SeNetworkLogonRight\s*=' | Select-Object -First 1
-                if ($line) {
-                  $actual = (($line.Line -split '=', 2)[1]).Trim()
-                  $expected = @('*S-1-5-32-544', '*S-1-5-11', '*S-1-5-9')
-                  $actualSids = @($actual -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                  $missing = @($expected | Where-Object { $_ -notin $actualSids })
-                  $extra = @($actualSids | Where-Object { $_ -notin $expected })
-                  if ($missing.Count -eq 0 -and $extra.Count -eq 0) {
-                    Write-Output '** PASS **'
-                    Write-Output "Access this computer from the network = $actual"
-                  } else {
-                    Write-Output '** FAIL **'
-                    Write-Output "Expected: $($expected -join ',')"
-                    Write-Output "Actual: $actual"
-                  }
-                } else {
-                  Write-Output '** ERROR **'
-                  Write-Output 'SeNetworkLogonRight not found in secedit export'
-                }
-              } else {
-                Write-Output '** ERROR **'
-                Write-Output 'secedit export did not produce a configuration file'
-              }
-            } finally {
-              if (Test-Path -LiteralPath $tempCfg) { Remove-Item -LiteralPath $tempCfg -Force }
-            }
-          } else {
-            Write-Output '** SKIP **'
-            Write-Output 'Host is not a domain controller'
-          }
+          $pt = (Get-CimInstance Win32_OperatingSystem).ProductType
+          Write-Output ("ProductType=" + $pt)
         } catch {
-          Write-Output '** ERROR **'
-          Write-Output $_.Exception.Message
+          Write-Output ("ERROR: " + $_.Exception.Message)
         }
         {% endraw %}
-      register: _step01_output
+      register: result_01
+      failed_when: false
       changed_when: false
-      failed_when: (_step01_output.rc | default(-1)) not in [0, 1]
 
-    - name: "Req step-02 - Evaluate PowerShell output to determine compliance"
-      ansible.builtin.set_fact:
-        task_01_name: "Check if host is a Domain Controller and query 'Access this computer from the network' policy using PowerShell"
-        task_01_cmd: "PowerShell: secedit /export /areas USER_RIGHTS; parse SeNetworkLogonRight"
-        task_01_rc: "{{ _step01_output.rc | default(-1) }}"
-        data_01: "{{ _step01_output.stdout | default('') | trim }}"
-        status_02: "{{ ('PASS' if '** PASS **' in (_step01_output.stdout | default('')) else 'FAIL' if '** FAIL **' in (_step01_output.stdout | default('')) else 'SKIP' if '** SKIP **' in (_step01_output.stdout | default('')) else 'ERROR') | trim }}"
-        _cis_status: "{{ ('PASS' if '** PASS **' in (_step01_output.stdout | default('')) else 'FAIL' if '** FAIL **' in (_step01_output.stdout | default('')) else 'SKIP' if '** SKIP **' in (_step01_output.stdout | default('')) else 'ERROR') | trim }}"
-        details_01: |-
-          {{ _step01_output.stdout | default("No output") | replace("\r\n", " ; ") | replace("\n", " ; ") | trim }}
+    - name: "Store requirement 01 details"
+      set_fact:
+        task_01_name: "Check Domain Controller status via ProductType"
+        task_01_cmd: "(Get-CimInstance Win32_OperatingSystem).ProductType"
+        task_01_rc: "{{ result_01.rc | default(-1) }}"
+        data_01: "{{ result_01.stdout | default('') | trim }}"
+        status_01: "{{ ('PASS' if (result_01.stdout | default('') | trim == 'ProductType=2') else 'SKIP') | trim }}"
+        details_01: "{{ ('System is a Domain Controller - checkpoint applies' if (result_01.stdout | default('') | trim == 'ProductType=2') else 'System is NOT a Domain Controller - checkpoint not applicable') | trim }}"
 
-    - name: "Req step-03 - Store final audit result in cis_result"
-      ansible.builtin.set_fact:
-        cis_result: "{{ status_02 | default('ERROR') | trim }}"
+    - name: "Req 02 - Check SeNetworkLogonRight via secedit export"
+      ansible.windows.win_shell: |
+        {% raw %}
+        $tempFile = Join-Path $env:TEMP ("cis_secpol_{0}.cfg" -f ([System.Guid]::NewGuid().ToString('N')))
+        try {
+          secedit /export /cfg $tempFile /areas USER_RIGHTS | Out-Null
+          $line = Get-Content -LiteralPath $tempFile | Select-String 'SeNetworkLogonRight'
+          if ($line) {
+            Write-Output $line.Line.Trim()
+          } else {
+            Write-Output "SeNetworkLogonRight_NOT_FOUND"
+          }
+        } catch {
+          Write-Output ("ERROR: " + $_.Exception.Message)
+        } finally {
+          if (Test-Path -LiteralPath $tempFile) { Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue }
+        }
+        {% endraw %}
+      register: result_02
+      failed_when: false
+      changed_when: false
 
-    - name: "Req step-04 - Generate audit report"
-      ansible.builtin.debug:
+    - name: "Store requirement 02 details"
+      set_fact:
+        task_02_name: "Check SeNetworkLogonRight via secedit export"
+        task_02_cmd: |
+          secedit /export /cfg %TEMP%\\secpol.cfg ; Select-String 'SeNetworkLogonRight'
+        task_02_rc: "{{ result_02.rc | default(-1) }}"
+        data_02: "{{ result_02.stdout | default('') | trim }}"
+        status_02: >-
+          {%- set out = result_02.stdout | default('') | trim -%}
+          {%- if status_01 | trim != 'PASS' -%}SKIP
+          {%- elif 'S-1-5-32-544' in out and 'S-1-5-11' in out and 'S-1-5-9' in out -%}PASS
+          {%- else -%}FAIL
+          {%- endif -%}
+        details_02: >-
+          {%- set out = result_02.stdout | default('') | trim -%}
+          {%- if status_01 | trim != 'PASS' -%}Skipped - host is not a Domain Controller
+          {%- elif 'S-1-5-32-544' in out and 'S-1-5-11' in out and 'S-1-5-9' in out -%}SeNetworkLogonRight includes Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS
+          {%- else -%}SeNetworkLogonRight does not include all required SIDs
+          {%- endif -%}
+
+    - name: "Req 03 - Check SeNetworkLogonRight registry value"
+      ansible.windows.win_shell: |
+        {% raw %}
+        try {
+          $val = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'SeNetworkLogonRight' -ErrorAction SilentlyContinue).SeNetworkLogonRight
+          if ($val) {
+            Write-Output ("SeNetworkLogonRight=" + $val)
+          } else {
+            Write-Output "SeNetworkLogonRight_NOT_FOUND"
+          }
+        } catch {
+          Write-Output ("ERROR: " + $_.Exception.Message)
+        }
+        {% endraw %}
+      register: result_03
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 03 details"
+      set_fact:
+        task_03_name: "Check SeNetworkLogonRight registry value under Lsa key"
+        task_03_cmd: |
+          Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name 'SeNetworkLogonRight'
+        task_03_rc: "{{ result_03.rc | default(-1) }}"
+        data_03: "{{ result_03.stdout | default('') | trim }}"
+        status_03: >-
+          {%- set out = result_03.stdout | default('') | trim -%}
+          {%- if status_01 | trim != 'PASS' -%}SKIP
+          {%- elif 'S-1-5-32-544' in out and 'S-1-5-11' in out and 'S-1-5-9' in out -%}PASS
+          {%- else -%}FAIL
+          {%- endif -%}
+        details_03: >-
+          {%- set out = result_03.stdout | default('') | trim -%}
+          {%- if status_01 | trim != 'PASS' -%}Skipped - host is not a Domain Controller
+          {%- elif 'S-1-5-32-544' in out and 'S-1-5-11' in out and 'S-1-5-9' in out -%}Registry value contains required SIDs
+          {%- else -%}Registry value missing or missing required SIDs
+          {%- endif -%}
+
+    - name: "Req 04 - Check effective SeNetworkLogonRight assignment"
+      ansible.windows.win_shell: |
+        {% raw %}
+        $tempFile = Join-Path $env:TEMP ("cis_secpol_{0}.cfg" -f ([System.Guid]::NewGuid().ToString('N')))
+        try {
+          secedit /export /cfg $tempFile /areas USER_RIGHTS | Out-Null
+          $line = Get-Content -LiteralPath $tempFile | Select-String '^\s*SeNetworkLogonRight\s*=' | Select-Object -First 1
+          if ($line) {
+            $actual = (($line.Line -split '=',2)[1]).Trim()
+            $actualSids = @($actual -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            $expectedSids = @('*S-1-5-32-544','*S-1-5-11','*S-1-5-9')
+            $actualSorted = ($actualSids | Sort-Object) -join ','
+            $expectedSorted = ($expectedSids | Sort-Object) -join ','
+            Write-Output ("Actual=" + $actual)
+            Write-Output ("Expected=" + ($expectedSids -join ','))
+            if ($actualSorted -eq $expectedSorted) {
+              Write-Output "Match=True"
+            } else {
+              Write-Output "Match=False"
+            }
+          } else {
+            Write-Output "SeNetworkLogonRight_NOT_FOUND"
+            Write-Output "Match=False"
+          }
+        } catch {
+          Write-Output ("ERROR: " + $_.Exception.Message)
+          Write-Output "Match=False"
+        } finally {
+          if (Test-Path -LiteralPath $tempFile) { Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue }
+        }
+        {% endraw %}
+      register: result_04
+      failed_when: false
+      changed_when: false
+
+    - name: "Store requirement 04 details"
+      set_fact:
+        task_04_name: "Check effective SeNetworkLogonRight assignment via secedit"
+        task_04_cmd: |
+          secedit /export /cfg %TEMP%\\secpol.cfg ; compare SeNetworkLogonRight SIDs
+        task_04_rc: "{{ result_04.rc | default(-1) }}"
+        data_04: "{{ result_04.stdout | default('') | trim }}"
+        status_04: >-
+          {%- set out = result_04.stdout | default('') | trim -%}
+          {%- if status_01 | trim != 'PASS' -%}SKIP
+          {%- elif 'Match=True' in out -%}PASS
+          {%- else -%}FAIL
+          {%- endif -%}
+        details_04: >-
+          {%- set out = result_04.stdout | default('') | trim -%}
+          {%- if status_01 | trim != 'PASS' -%}Skipped - host is not a Domain Controller
+          {%- elif 'Match=True' in out -%}SeNetworkLogonRight matches expected principals exactly
+          {%- else -%}SeNetworkLogonRight differs from required set of principals
+          {%- endif -%}
+
+    - name: "Req 05 - Summarize overall compliance status"
+      set_fact:
+        task_05_name: "Summarize overall compliance status"
+        task_05_cmd: "N/A - logic only"
+        task_05_rc: 0
+        data_05: "Compliance summary computed from requirements 01-04"
+        status_05: >-
+          {%- if status_01 | trim != 'PASS' -%}SKIP
+          {%- elif status_02 | trim == 'PASS' and status_03 | trim == 'PASS' and status_04 | trim == 'PASS' -%}PASS
+          {%- else -%}FAIL
+          {%- endif -%}
+        details_05: >-
+          {%- if status_01 | trim != 'PASS' -%}SKIP - system is not a Domain Controller
+          {%- elif status_02 | trim == 'PASS' and status_03 | trim == 'PASS' and status_04 | trim == 'PASS' -%}PASS - SeNetworkLogonRight correctly set to Administrators, Authenticated Users, ENTERPRISE DOMAIN CONTROLLERS
+          {%- else -%}FAIL - SeNetworkLogonRight is missing, has extra principals, or misconfigured
+          {%- endif -%}
+
+    - name: "Req 06 - Store final audit result in cis_result"
+      set_fact:
+        task_06_name: "Store final audit result in cis_result"
+        task_06_cmd: "N/A - set_fact"
+        task_06_rc: 0
+        data_06: "cis_result derived from status_05"
+        status_06: "{{ status_05 | default('ERROR') | trim }}"
+        details_06: "cis_result = {{ status_05 | default('ERROR') | trim }}"
+        cis_result: "{{ status_05 | default('ERROR') | trim }}"
+
+    - name: "Generate audit report"
+      debug:
         msg:
           - "AUDIT REPORT — CIS 2.2.2"
           - "Reference: CIS Benchmark checkpoint 2.2.2"
@@ -87,34 +248,51 @@
           - "  Command: {{ task_01_cmd | default('N/A') }}"
           - "  Exit code: {{ task_01_rc | default(-1) }}"
           - "  Data: {{ data_01 | default('') | trim }}"
-          - "  Status: {{ status_02 | default('ERROR') | trim }}"
+          - "  Status: {{ status_01 | default('ERROR') | trim }}"
           - "  Details: {{ details_01 | default('') | trim }}"
           - ""
           - "REQUIREMENT 02 - {{ req_02 }}:"
-          - "  Task: Evaluate PowerShell output to determine compliance"
-          - "  Command: set_fact"
-          - "  Exit code: 0"
-          - "  Data: {{ status_02 | default('ERROR') | trim }}"
+          - "  Task: {{ task_02_name | default('Not recorded') }}"
+          - "  Command: {{ task_02_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_02_rc | default(-1) }}"
+          - "  Data: {{ data_02 | default('') | trim }}"
           - "  Status: {{ status_02 | default('ERROR') | trim }}"
-          - "  Details: Compliance evaluation completed based on Req step-01 output."
+          - "  Details: {{ details_02 | default('') | trim }}"
           - ""
           - "REQUIREMENT 03 - {{ req_03 }}:"
-          - "  Task: Store final audit result in cis_result"
-          - "  Command: set_fact"
-          - "  Exit code: 0"
-          - "  Data: {{ cis_result | default('ERROR') | trim }}"
-          - "  Status: {{ cis_result | default('ERROR') | trim }}"
-          - "  Details: Overall compliance result stored in cis_result."
+          - "  Task: {{ task_03_name | default('Not recorded') }}"
+          - "  Command: {{ task_03_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_03_rc | default(-1) }}"
+          - "  Data: {{ data_03 | default('') | trim }}"
+          - "  Status: {{ status_03 | default('ERROR') | trim }}"
+          - "  Details: {{ details_03 | default('') | trim }}"
           - ""
           - "REQUIREMENT 04 - {{ req_04 }}:"
-          - "  Task: Generate audit report"
-          - "  Command: debug"
-          - "  Exit code: 0"
-          - "  Data: Audit report message"
-          - "  Status: PASS"
-          - "  Details: Audit report generated."
+          - "  Task: {{ task_04_name | default('Not recorded') }}"
+          - "  Command: {{ task_04_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_04_rc | default(-1) }}"
+          - "  Data: {{ data_04 | default('') | trim }}"
+          - "  Status: {{ status_04 | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 05 - {{ req_05 }}:"
+          - "  Task: {{ task_05_name | default('Not recorded') }}"
+          - "  Command: {{ task_05_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_05_rc | default(-1) }}"
+          - "  Data: {{ data_05 | default('') | trim }}"
+          - "  Status: {{ status_05 | default('ERROR') | trim }}"
+          - "  Details: {{ details_05 | default('') | trim }}"
+          - ""
+          - "REQUIREMENT 06 - {{ req_06 }}:"
+          - "  Task: {{ task_06_name | default('Not recorded') }}"
+          - "  Command: {{ task_06_cmd | default('N/A') }}"
+          - "  Exit code: {{ task_06_rc | default(-1) }}"
+          - "  Data: {{ data_06 | default('') | trim }}"
+          - "  Status: {{ status_06 | default('ERROR') | trim }}"
+          - "  Details: {{ details_06 | default('') | trim }}"
           - ""
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: {{ details_05 | default('Not evaluated') | trim }}"
           - "========================================================"
