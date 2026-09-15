@@ -1,0 +1,17 @@
+playbook_name: "cis_2_2_18"
+backup_dir: |
+  C:\\Windows\\Temp\\ai-playbooks-backup\\{{ playbook_name }}
+backup_policy_file: |
+  C:\\Windows\\Temp\\ai-playbooks-backup\\{{ playbook_name }}\\secpol_backup.cfg
+policy_inf: |
+  C:\\Windows\\Temp\\cis_2_2_18_policy.inf
+secedit_db: |
+  C:\\Windows\\Temp\\cis_2_2_18.sdb
+privilege_right: "SeCreateSymbolicLinkPrivilege"
+admin_sid: "*S-1-5-32-544"
+hyperv_sid: "*S-1-5-83-0"
+req_01: |
+  Apply the 'Create symbolic links' user right assignment to Administrators and (when the Hyper-V Role is installed) NT VIRTUAL MACHINE\\Virtual Machines via the UI path Computer Configuration\\Policies\\Windows Settings\\Security Settings\\Local Policies\\User Rights Assignment\\Create symbolic links. Expected result: The policy is configured to grant the Create symbolic links privilege only to Administrators and, when Hyper-V is installed, NT VIRTUAL MACHINE\\Virtual Machines.
+req_02: |
+  Verify the 'Create symbolic links' user right assignment is set to Administrators and (when the Hyper-V Role is installed) NT VIRTUAL MACHINE\\Virtual Machines by checking the effective policy at Computer Configuration\\Policies\\Windows Settings\\Security Settings\\Local Policies\\User Rights Assignment\\Create symbolic links. Expected result: The setting shows Administrators and, when Hyper-V is installed, NT VIRTUAL MACHINE\\Virtual Machines as the only assigned principals.
+req_03: "Store the final remediation result in a variable named 'cis_result' using set_fact. Set cis_result to the overall remediation status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
