@@ -1,0 +1,8 @@
+req_01: "Determine the host role (domain controller vs member/standalone server) and whether the Hyper-V role is installed."
+req_02: |
+  Export effective user rights and read the 'Create symbolic links' assignment: secedit /export /areas USER_RIGHTS /cfg $env:TEMP\\secpol_export.inf; Select-String -Path $env:TEMP\\secpol_export.inf -Pattern 'SeCreateSymbolicLinkPrivilege'.
+req_03: |
+  Check for a policy-driven value: reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v CreateSymbolicLink.
+req_04: "On a domain controller, determine whether the assignment is delivered by a domain GPO rather than local policy."
+req_05: "Summarize overall compliance status."
+req_06: "Store the final audit result in a variable named 'cis_result' using set_fact."
