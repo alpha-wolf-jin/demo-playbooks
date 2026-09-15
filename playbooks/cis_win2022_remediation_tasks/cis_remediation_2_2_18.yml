@@ -1,0 +1,252 @@
+---
+- name: Initialize meta data variables
+  include_vars: cis_remediation_var_2_2_18.yml
+
+- name: "Snapshot - Create backup directory"
+  ansible.windows.win_file:
+    path: "{{ backup_dir | trim }}"
+    state: directory
+  failed_when: false
+  tags: [snapshot]
+- name: "Snapshot - Export current local security policy"
+  ansible.windows.win_shell: |
+    $cfg = "{{ backup_policy_file | trim }}"
+    secedit /export /cfg $cfg /areas USER_RIGHTS 2>&1 | Out-Null
+    if (Test-Path -LiteralPath $cfg) { Write-Output "SNAPSHOT_OK" } else { Write-Output "SNAPSHOT_SKIPPED" }
+  failed_when: false
+  changed_when: false
+  tags: [snapshot]
+
+- block:
+  - name: "Normalise path variables"
+    set_fact:
+      backup_dir: "{{ backup_dir | trim }}"
+      backup_policy_file: "{{ backup_policy_file | trim }}"
+      policy_inf: "{{ policy_inf | trim }}"
+      secedit_db: "{{ secedit_db | trim }}"
+    failed_when: false
+    tags: [execute]
+
+  - name: "Initialize data variables"
+    set_fact:
+      task_01_name: "Not executed"
+      task_01_cmd: "N/A"
+      task_01_rc: -1
+      data_01: "Not collected yet"
+      status_01: "ERROR"
+      details_01: "Not evaluated"
+      task_02_name: "Not executed"
+      task_02_cmd: "N/A"
+      task_02_rc: -1
+      data_02: "Not collected yet"
+      status_02: "ERROR"
+      details_02: "Not evaluated"
+      task_03_name: "Not executed"
+      task_03_cmd: "N/A"
+      task_03_rc: -1
+      data_03: "Not collected yet"
+      status_03: "ERROR"
+      details_03: "Not evaluated"
+    tags: [execute]
+
+  - name: "Req 01 - Check if Hyper-V role is installed"
+    ansible.windows.win_shell: |
+      $installed = $false
+      try {
+        $h = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -ErrorAction Stop
+        if ($h.State -eq 'Enabled') { $installed = $true }
+      } catch {
+        try {
+          $w = Get-WindowsFeature -Name Hyper-V -ErrorAction Stop
+          if ($w.Installed) { $installed = $true }
+        } catch {}
+      }
+      if ($installed) { Write-Output 'HAS_HYPERV' } else { Write-Output 'NO_HYPERV' }
+    register: hyperv_check
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Req 01 - Determine required privilege SIDs"
+    set_fact:
+      policy_sids: >-
+        {%- if (hyperv_check.stdout | default('') | trim) == 'HAS_HYPERV' -%}
+        {{ admin_sid }},{{ hyperv_sid }}
+        {%- else -%}
+        {{ admin_sid }}
+        {%- endif -%}
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req 01 - Create security policy INF with Create symbolic links assignment"
+    ansible.windows.win_copy:
+      dest: "{{ policy_inf | trim }}"
+      content: |
+        [Version]
+        signature="$CHICAGO$"
+        Revision=1
+        [Privilege Rights]
+        {{ privilege_right }} = {{ policy_sids | trim }}
+    register: inf_result
+    failed_when: false
+    tags: [execute]
+
+  - name: "Req 01 - Apply user right assignment via secedit configure"
+    ansible.windows.win_shell: |
+      secedit /configure /db "{{ secedit_db | trim }}" /cfg "{{ policy_inf | trim }}" /areas USER_RIGHTS /quiet
+      exit $LASTEXITCODE
+    register: apply_result
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Store requirement 01 details"
+    set_fact:
+      task_01_name: "Apply Create symbolic links user right via secedit"
+      task_01_cmd: "secedit /configure /db {{ secedit_db | trim }} /cfg {{ policy_inf | trim }} /areas USER_RIGHTS /quiet"
+      task_01_rc: "{{ apply_result.rc | default(-1) }}"
+      data_01: "{{ ((apply_result.stdout | default('') | trim) ~ ' | hyperv=' ~ (hyperv_check.stdout | default('') | trim) ~ ' | sids=' ~ (policy_sids | trim)) | trim }}"
+      status_01: "{{ ('PASS' if (apply_result.rc | default(-1)) == 0 else 'FAIL') | trim }}"
+      details_01: >-
+        {%- if (apply_result.rc | default(-1)) == 0 -%}
+        Create symbolic links privilege set to {{ policy_sids | trim }}
+        {%- else -%}
+        secedit configure failed with rc {{ apply_result.rc | default(-1) }}
+        {%- endif -%}
+    tags: [execute]
+
+  - name: "Req 02 - Verify Create symbolic links user right assignment"
+    ansible.windows.win_shell: |
+      $cfg = Join-Path $env:TEMP "cis_2_2_18_verify.cfg"
+      secedit /export /cfg $cfg /areas USER_RIGHTS | Out-Null
+      if (Test-Path -LiteralPath $cfg) {
+        $lines = [System.IO.File]::ReadAllLines($cfg, [System.Text.Encoding]::Unicode)
+        $line = $lines | Where-Object { $_ -match '^SeCreateSymbolicLinkPrivilege\s*=' } | Select-Object -First 1
+        if ($line) { Write-Output ($line.Trim()) } else { Write-Output 'NOT_FOUND' }
+        Remove-Item -Path $cfg -Force -ErrorAction SilentlyContinue
+      } else {
+        Write-Output 'EXPORT_FAILED'
+      }
+    register: verify_result
+    failed_when: false
+    changed_when: false
+    tags: [execute]
+
+  - name: "Store requirement 02 details"
+    set_fact:
+      task_02_name: "Verify Create symbolic links user right assignment"
+      task_02_cmd: "secedit /export /cfg <tmp> /areas USER_RIGHTS; parse SeCreateSymbolicLinkPrivilege"
+      task_02_rc: "{{ verify_result.rc | default(-1) }}"
+      data_02: "{{ verify_result.stdout | default('') | trim }}"
+      status_02: >-
+        {%- set apply_ok = (apply_result.rc | default(1)) == 0 -%}
+        {%- set out = verify_result.stdout | default('') | trim -%}
+        {%- set hyperv = (hyperv_check.stdout | default('') | trim) == 'HAS_HYPERV' -%}
+        {%- set admins_ok = 'S-1-5-32-544' in out -%}
+        {%- set vm_ok = 'S-1-5-83-0' in out -%}
+        {%- if not apply_ok -%}
+        FAIL
+        {%- elif ('SeCreateSymbolicLinkPrivilege' in out) and admins_ok and ((hyperv and vm_ok) or (not hyperv)) -%}
+        PASS
+        {%- else -%}
+        FAIL
+        {%- endif -%}
+      details_02: >-
+        {%- set apply_ok = (apply_result.rc | default(1)) == 0 -%}
+        {%- set out = verify_result.stdout | default('') | trim -%}
+        {%- set hyperv = (hyperv_check.stdout | default('') | trim) == 'HAS_HYPERV' -%}
+        {%- set admins_ok = 'S-1-5-32-544' in out -%}
+        {%- set vm_ok = 'S-1-5-83-0' in out -%}
+        {%- if not apply_ok -%}
+        Verification failed - apply step returned rc={{ apply_result.rc | default(1) }}
+        {%- elif ('SeCreateSymbolicLinkPrivilege' in out) and admins_ok and ((hyperv and vm_ok) or (not hyperv)) -%}
+        Create symbolic links matches expected principals
+        {%- else -%}
+        Create symbolic links does not match expected principals
+        {%- endif -%}
+    tags: [execute]
+
+  - name: "Req 03 - Store final remediation result in cis_result"
+    set_fact:
+      cis_result: >-
+        {%- set s1 = status_01 | default('ERROR') | trim -%}
+        {%- set s2 = status_02 | default('ERROR') | trim -%}
+        {%- if 'FAIL' in [s1, s2] -%}FAIL
+        {%- elif 'ERROR' in [s1, s2] -%}ERROR
+        {%- elif 'SKIP' in [s1, s2] -%}SKIP
+        {%- else -%}PASS
+        {%- endif -%}
+      task_03_name: "Store final remediation result in cis_result"
+      task_03_cmd: "set_fact - aggregate status_01 and status_02 into cis_result"
+      task_03_rc: 0
+      data_03: "status_01={{ status_01 | default('ERROR') | trim }}, status_02={{ status_02 | default('ERROR') | trim }}"
+      status_03: >-
+        {%- set s1 = status_01 | default('ERROR') | trim -%}
+        {%- set s2 = status_02 | default('ERROR') | trim -%}
+        {%- if 'FAIL' in [s1, s2] -%}FAIL
+        {%- elif 'ERROR' in [s1, s2] -%}ERROR
+        {%- elif 'SKIP' in [s1, s2] -%}SKIP
+        {%- else -%}PASS
+        {%- endif -%}
+      details_03: "Overall remediation status aggregated from Req 01 and Req 02"
+    tags: [execute]
+
+  - name: "Generate remediation report"
+    debug:
+      msg:
+      - "REMEDIATION REPORT — CIS 2.2.18"
+      - "Reference: CIS Benchmark checkpoint 2.2.18"
+      - ""
+      - "REQUIREMENT 01 - {{ req_01 }}:"
+      - "  Task: {{ task_01_name | default('Not recorded') }}"
+      - "  Command: {{ task_01_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_01_rc | default(-1) }}"
+      - "  Data: {{ data_01 | default('') | trim }}"
+      - "  Status: {{ status_01 | default('ERROR') | trim }}"
+      - "  Details: {{ details_01 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 02 - {{ req_02 }}:"
+      - "  Task: {{ task_02_name | default('Not recorded') }}"
+      - "  Command: {{ task_02_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_02_rc | default(-1) }}"
+      - "  Data: {{ data_02 | default('') | trim }}"
+      - "  Status: {{ status_02 | default('ERROR') | trim }}"
+      - "  Details: {{ details_02 | default('') | trim }}"
+      - ""
+      - "REQUIREMENT 03 - {{ req_03 }}:"
+      - "  Task: {{ task_03_name | default('Not recorded') }}"
+      - "  Command: {{ task_03_cmd | default('N/A') }}"
+      - "  Exit code: {{ task_03_rc | default(-1) }}"
+      - "  Data: {{ data_03 | default('') | trim }}"
+      - "  Status: {{ status_03 | default('ERROR') | trim }}"
+      - "  Details: {{ details_03 | default('') | trim }}"
+      - ""
+      - "========================================================"
+      - "OVERALL REMEDIATION:"
+      - "  Result: {{ cis_result | default('ERROR') | trim }}"
+      - "========================================================"
+    tags: [execute]
+
+  always:
+  - name: "Restore - Check if backup exists"
+    ansible.windows.win_stat:
+      path: "{{ backup_policy_file | trim }}"
+    register: _restore_check
+    failed_when: false
+    tags: [restore]
+
+  - name: "Restore - Overwrite with original"
+    ansible.windows.win_shell: |
+      secedit /configure /db "{{ secedit_db | trim }}" /cfg "{{ backup_policy_file | trim }}" /areas USER_RIGHTS /quiet
+      exit $LASTEXITCODE
+    when: _restore_check.stat.exists | default(false)
+    failed_when: false
+    changed_when: false
+    tags: [restore]
+
+  - name: "Restore - Remove backup directory"
+    ansible.windows.win_file:
+      path: "{{ backup_dir | trim }}"
+      state: absent
+    failed_when: false
+    tags: [restore]
