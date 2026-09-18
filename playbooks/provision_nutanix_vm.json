@@ -1,0 +1,562 @@
+{
+  "tool_name": "provision_nutanix_vm",
+  "version": "1.0",
+  "title": "Provision Nutanix AHV VM from Pre-Hardened Template",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Provisions a Nutanix AHV VM by cloning an approved pre-hardened template, configuring CPU/RAM/NIC/guest customization, creating the disk layout, initializing the OS (Windows Server 2025 or RHEL 10), and capturing a pre-CIS hardening checkpoint with provisioning evidence.",
+  "aap_template": "provision_nutanix_vm++Default",
+  "organization": "Default",
+  "execution_target": "controller",
+  "connection": {
+    "hosts": "localhost",
+    "connection": "local",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "nutanix_host",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Prism Central hostname or IP address."
+      },
+      {
+        "name": "nutanix_username",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Prism Central username."
+      },
+      {
+        "name": "nutanix_password",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Prism Central password."
+      },
+      {
+        "name": "validate_certs",
+        "type": "string",
+        "required": false,
+        "default": "false",
+        "unit": null,
+        "description": "Whether to validate SSL certificates for Prism Central API calls."
+      },
+      {
+        "name": "template_vm_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the approved pre-hardened template VM to clone."
+      },
+      {
+        "name": "new_vm_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name to assign to the newly provisioned VM."
+      },
+      {
+        "name": "os_family",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Target OS family: 'windows' or 'rhel'."
+      },
+      {
+        "name": "cpu_sockets",
+        "type": "integer",
+        "required": false,
+        "default": "2",
+        "unit": "count",
+        "description": "Number of vCPU sockets for the new VM."
+      },
+      {
+        "name": "cpu_cores_per_socket",
+        "type": "integer",
+        "required": false,
+        "default": "2",
+        "unit": "count",
+        "description": "Number of cores per socket for the new VM."
+      },
+      {
+        "name": "cpu_threads_per_core",
+        "type": "integer",
+        "required": false,
+        "default": "1",
+        "unit": "count",
+        "description": "Number of threads per core for the new VM."
+      },
+      {
+        "name": "memory_gb",
+        "type": "integer",
+        "required": false,
+        "default": "8",
+        "unit": "GB",
+        "description": "Memory size in GB for the new VM."
+      },
+      {
+        "name": "provisioning_port_group_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the temporary provisioning port group (subnet) to attach the vNIC to."
+      },
+      {
+        "name": "hostname",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname to configure on the new VM via guest customization."
+      },
+      {
+        "name": "os_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": "100",
+        "unit": "GB",
+        "description": "Size of the OS disk in GB."
+      },
+      {
+        "name": "data_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": "0",
+        "unit": "GB",
+        "description": "Size of the data disk in GB. Set to 0 to skip data disk creation."
+      },
+      {
+        "name": "checkpoint_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the pre-CIS hardening checkpoint to create."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Emits new_vm_name, new_vm_ext_id, checkpoint_name, checkpoint_ext_id, and provisioning_evidence.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "new_vm_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Name of the newly provisioned VM."
+      },
+      {
+        "name": "new_vm_ext_id",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "External ID of the newly provisioned VM."
+      },
+      {
+        "name": "checkpoint_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Name of the pre-CIS hardening checkpoint."
+      },
+      {
+        "name": "checkpoint_ext_id",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "External ID of the created checkpoint."
+      },
+      {
+        "name": "provisioning_evidence",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Captured provisioning evidence summary."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Resolve template VM name to ext_id",
+      "function": "Look up the template VM by name to obtain its external ID.",
+      "module": "nutanix.ncp.ntnx_vms_info_v2",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "template_vm_name",
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "stores": [
+        "_template_vm_lookup"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-02",
+      "type": "transform",
+      "name": "Extract template VM ext_id",
+      "function": "Extract the external ID of the template VM from the lookup result.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_template_vm_lookup"
+        ]
+      },
+      "computations": {
+        "_template_vm_ext_id": "Extract the ext_id of the first matching VM from _template_vm_lookup."
+      },
+      "stores": [
+        "_template_vm_ext_id"
+      ],
+      "on_success": "step-03",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Does the template VM exist?",
+      "function": "Branch on whether the template VM lookup found a matching VM.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_template_vm_ext_id"
+        ]
+      },
+      "condition": "The template VM lookup returned at least one result.",
+      "on_pass": "step-04",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Resolve provisioning port group name to subnet ext_id",
+      "function": "Look up the temporary provisioning port group (subnet) by name to obtain its external ID.",
+      "module": "nutanix.ncp.ntnx_subnets_info_v2",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "provisioning_port_group_name",
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "stores": [
+        "_subnet_lookup"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-05",
+      "type": "decide",
+      "name": "Does the provisioning port group exist?",
+      "function": "Branch on whether the subnet lookup found a matching port group.",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_subnet_lookup"
+        ]
+      },
+      "condition": "The provisioning port group lookup returned at least one result.",
+      "on_pass": "step-06",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-06",
+      "type": "transform",
+      "name": "Extract subnet ext_id",
+      "function": "Extract the external ID of the provisioning subnet from the lookup result.",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_subnet_lookup"
+        ]
+      },
+      "computations": {
+        "_subnet_ext_id": "Extract the ext_id of the first matching subnet from _subnet_lookup."
+      },
+      "stores": [
+        "_subnet_ext_id"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Clone template VM with CPU/RAM/NIC/guest customization",
+      "function": "Clone the pre-hardened template VM, configure CPU/RAM, attach one vNIC to the provisioning port group, and stage guest customization with DHCP and hostname.",
+      "module": "nutanix.ncp.ntnx_vms_clone_v2",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "new_vm_name",
+          "cpu_sockets",
+          "cpu_cores_per_socket",
+          "cpu_threads_per_core",
+          "memory_gb",
+          "hostname",
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_new_vm_ext_id"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-08",
+      "type": "decide",
+      "name": "Is the selected OS family Windows?",
+      "function": "Branch on the selected OS family to choose the correct initialization path.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "os_family"
+        ]
+      },
+      "condition": "The selected OS family is Windows.",
+      "on_pass": "step-09",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-09",
+      "type": "action",
+      "name": "Create OS and data disk layout",
+      "function": "Create the OS disk and optional data disk layout on the cloned VM.",
+      "module": "ansible.builtin.uri",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "os_disk_gb",
+          "data_disk_gb",
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_disk_layout_result"
+      ],
+      "on_success": "step-10",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-10",
+      "type": "action",
+      "name": "Initialize Windows Server 2025 (Unattend/NGT Tools)",
+      "function": "Initialize the Windows Server 2025 guest using Unattend and Nutanix Guest Tools.",
+      "module": "ansible.builtin.uri",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_windows_init_result"
+      ],
+      "on_success": "step-13",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-11",
+      "type": "decide",
+      "name": "Is the selected OS family RHEL?",
+      "function": "Branch on the selected OS family to choose the RHEL initialization path.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "os_family"
+        ]
+      },
+      "condition": "The selected OS family is RHEL.",
+      "on_pass": "step-12",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-12",
+      "type": "action",
+      "name": "Initialize RHEL 10 (Cloud-init/NGT Tools)",
+      "function": "Initialize the RHEL 10 guest using Cloud-init and Nutanix Guest Tools.",
+      "module": "ansible.builtin.uri",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_rhel_init_result"
+      ],
+      "on_success": "step-13",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-13",
+      "type": "action",
+      "name": "Create pre-CIS hardening checkpoint",
+      "function": "Create a Nutanix checkpoint (snapshot) of the VM before CIS hardening.",
+      "module": "ansible.builtin.uri",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "checkpoint_name",
+          "nutanix_host",
+          "nutanix_username",
+          "nutanix_password",
+          "validate_certs"
+        ]
+      },
+      "idempotent": false,
+      "stores": [
+        "_checkpoint_ext_id"
+      ],
+      "on_success": "step-14",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-14",
+      "type": "transform",
+      "name": "Capture provisioning evidence",
+      "function": "Assemble a provisioning evidence summary from the VM and checkpoint results.",
+      "input": {
+        "source": "step-13",
+        "fields": [
+          "_checkpoint_ext_id"
+        ]
+      },
+      "computations": {
+        "_provisioning_evidence": "Build a summary string containing the new VM name, VM ext_id, checkpoint name, and checkpoint ext_id."
+      },
+      "stores": [
+        "_provisioning_evidence"
+      ],
+      "on_success": "step-15",
+      "on_fail": "step-16"
+    },
+    {
+      "id": "step-15",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the Required Output Format <result> block on success.",
+      "output_fields": {
+        "new_vm_name": "{{ new_vm_name }}",
+        "new_vm_ext_id": "{{ _new_vm_ext_id }}",
+        "checkpoint_name": "{{ checkpoint_name }}",
+        "checkpoint_ext_id": "{{ _checkpoint_ext_id }}",
+        "provisioning_evidence": "{{ _provisioning_evidence }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-16",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: provision_nutanix_vm failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-16",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Resolve template VM and provisioning port group names to external IDs and validate they exist.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05",
+        "step-06"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Clone the template VM with CPU/RAM/NIC/guest customization and create the disk layout.",
+      "steps": [
+        "step-07",
+        "step-08",
+        "step-09"
+      ]
+    },
+    {
+      "name": "OS initialization",
+      "description": "Initialize the guest OS based on the selected OS family (Windows or RHEL).",
+      "steps": [
+        "step-10",
+        "step-11",
+        "step-12"
+      ]
+    },
+    {
+      "name": "Snapshot and evidence",
+      "description": "Create the pre-CIS hardening checkpoint and capture provisioning evidence.",
+      "steps": [
+        "step-13",
+        "step-14"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final result to the caller.",
+      "steps": [
+        "step-15"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-16"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "7922f42036379a95c009ed330df86d1f5057fea8a89fa274f26d23df30158913",
+    "saved_at": "2026-09-18T17:42:36+00:00",
+    "saved_by": "admin",
+    "revision": 9
+  }
+}
