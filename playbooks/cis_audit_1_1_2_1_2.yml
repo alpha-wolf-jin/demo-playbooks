@@ -7,11 +7,10 @@
   vars:
     partition: "/tmp"
     fs_option: "nodev"
-    req_01: "Check if a separate partition exists for /tmp using command: findmnt -kn /tmp. Expected result: a mount point entry for /tmp is returned (if nothing is returned, the check is SKIPPED as no separate /tmp partition exists)."
-    req_02: "Check that the nodev mount option is set on the /tmp partition using command: findmnt -kn /tmp | grep -v nodev. Expected result: nothing should be returned (empty output indicates nodev is set)."
+    req_01: "Check if a separate partition exists for /tmp using command: `findmnt -kn /tmp`. Expected result: a mount point entry for /tmp is returned (if nothing is returned, the check is SKIPPED as no separate /tmp partition exists)."
+    req_02: "Check that the nodev mount option is set on the /tmp partition using command: `findmnt -kn /tmp | grep -v nodev`. Expected result: nothing should be returned (empty output indicates nodev is set)."
     req_03: "Determine overall compliance status: PASS if the /tmp partition exists and the nodev option is set (grep returns nothing); SKIP if no separate /tmp partition exists (findmnt returns nothing); FAIL if the /tmp partition exists but the nodev option is not set (grep returns output)."
     req_04: "Store the final audit result in a variable named 'cis_result' using set_fact. Set cis_result to the overall compliance status (PASS/FAIL/SKIP/ERROR) derived from the last requirement's status variable."
-    req_05: "Create a task named 'Generate audit report' using debug msg with the required AUDIT REPORT format for CIS 1.1.2.1.2 listing each requirement's Task, Command, Exit code, Data, Status, Details, and ending with the OVERALL COMPLIANCE section showing Result: cis_result."
 
   tasks:
     - name: "Initialize data variables"
@@ -19,81 +18,84 @@
         data_01: "Not collected yet"
         status_01: "ERROR"
         details_01: "Not evaluated"
-        task_01_name: "Not executed"
-        task_01_cmd: "N/A"
-        task_01_rc: -1
         data_02: "Not collected yet"
         status_02: "ERROR"
         details_02: "Not evaluated"
-        task_02_name: "Not executed"
-        task_02_cmd: "N/A"
-        task_02_rc: -1
         data_03: "Not collected yet"
         status_03: "ERROR"
         details_03: "Not evaluated"
-        task_03_name: "Not executed"
-        task_03_cmd: "N/A"
-        task_03_rc: -1
         data_04: "Not collected yet"
         status_04: "ERROR"
         details_04: "Not evaluated"
+        task_01_name: "Not executed"
+        task_01_cmd: "N/A"
+        task_01_rc: -1
+        task_02_name: "Not executed"
+        task_02_cmd: "N/A"
+        task_02_rc: -1
+        task_03_name: "Not executed"
+        task_03_cmd: "N/A"
+        task_03_rc: -1
         task_04_name: "Not executed"
         task_04_cmd: "N/A"
         task_04_rc: -1
         cis_result: "ERROR"
 
     - name: "Req step-01 - Check if a separate partition exists for /tmp"
-      ansible.builtin.command: "findmnt -kn {{ partition }}"
+      ansible.builtin.command:
+        cmd: "findmnt -kn {{ partition }}"
       register: _step01_output
       failed_when: false
       changed_when: false
 
     - name: "Store requirement 01 details"
       ansible.builtin.set_fact:
-        task_01_name: "Check if a separate partition exists for /tmp"
+        task_01_name: "Check if a separate partition exists for /tmp using findmnt"
         task_01_cmd: "findmnt -kn {{ partition }}"
         task_01_rc: "{{ _step01_output.rc | default(-1) }}"
         data_01: "{{ _step01_output.stdout | default('') | trim }}"
         status_01: "{{ ('PASS' if (_step01_output.stdout | default('') | trim) != '' else 'SKIP') | trim }}"
-        details_01: "{{ ('Separate /tmp partition exists' if (_step01_output.stdout | default('') | trim) != '' else 'No separate /tmp partition exists - check skipped') | trim }}"
+        details_01: "{{ ('Separate /tmp partition exists' if (_step01_output.stdout | default('') | trim) != '' else 'No separate /tmp partition found - nodev check skipped') | trim }}"
 
-    - name: "Req step-02 - Check if the nodev mount option is set on the /tmp partition"
-      ansible.builtin.shell: "set -o pipefail && findmnt -kn {{ partition }} | grep -v {{ fs_option }}"
+    - name: "Req step-02 - Check that the nodev mount option is set on the /tmp partition"
+      ansible.builtin.shell: |
+        set -o pipefail
+        findmnt -kn "{{ partition }}" | grep -v "{{ fs_option }}"
       args:
         executable: /bin/bash
       register: _step02_output
       failed_when: false
       changed_when: false
-      when: (_step01_output.stdout | default('') | trim) != ''
+      when: (status_01 | default('SKIP') | trim) == 'PASS'
 
     - name: "Store requirement 02 details"
       ansible.builtin.set_fact:
-        task_02_name: "Check if the nodev mount option is set on the /tmp partition"
+        task_02_name: "Check that the nodev mount option is set on the /tmp partition using findmnt and grep"
         task_02_cmd: "findmnt -kn {{ partition }} | grep -v {{ fs_option }}"
         task_02_rc: "{{ _step02_output.rc | default(-1) }}"
         data_02: "{{ _step02_output.stdout | default('') | trim }}"
-        status_02: "{{ ('SKIP' if (_step01_output.stdout | default('') | trim) == '' else ('PASS' if (_step02_output.stdout | default('') | trim) == '' else 'FAIL')) | trim }}"
-        details_02: "{{ ('No separate /tmp partition exists - check skipped' if (_step01_output.stdout | default('') | trim) == '' else ('nodev option is set on /tmp partition' if (_step02_output.stdout | default('') | trim) == '' else 'nodev option is NOT set on /tmp partition')) | trim }}"
+        status_02: "{{ ('SKIP' if (status_01 | default('SKIP') | trim) != 'PASS' else 'PASS' if ((_step02_output.stdout | default('') | trim) == '' and (_step02_output.rc | default(-1)) == 1) else 'FAIL' if (_step02_output.rc | default(-1)) == 0 else 'ERROR') | trim }}"
+        details_02: "{{ ('No separate /tmp partition - nodev check not applicable' if (status_01 | default('SKIP') | trim) != 'PASS' else 'nodev option is set on /tmp' if ((_step02_output.stdout | default('') | trim) == '' and (_step02_output.rc | default(-1)) == 1) else 'nodev option is NOT set on /tmp' if (_step02_output.rc | default(-1)) == 0 else 'Unable to determine nodev status') | trim }}"
 
-    - name: "Req step-03 - Determine overall compliance status"
+    - name: "Req step-03 - Determine overall compliance status for the /tmp nodev option"
       ansible.builtin.set_fact:
-        task_03_name: "Determine overall compliance status"
-        task_03_cmd: "N/A"
+        task_03_name: "Determine overall compliance status from partition existence and nodev check results"
+        task_03_cmd: "N/A - derived from Req step-01 and Req step-02 results"
         task_03_rc: 0
-        data_03: "{{ _step02_output.stdout | default('') | trim }}"
-        status_03: "{{ ('SKIP' if (_step01_output.stdout | default('') | trim) == '' else ('PASS' if (_step02_output.stdout | default('') | trim) == '' else 'FAIL')) | trim }}"
-        details_03: "{{ ('Overall compliance: SKIP - no separate /tmp partition' if (_step01_output.stdout | default('') | trim) == '' else ('Overall compliance: PASS - nodev option is set on /tmp' if (_step02_output.stdout | default('') | trim) == '' else 'Overall compliance: FAIL - nodev option is not set on /tmp')) | trim }}"
+        data_03: "partition_status={{ status_01 | default('SKIP') | trim }}, nodev_status={{ status_02 | default('ERROR') | trim }}"
+        status_03: "{{ ('SKIP' if (status_01 | default('SKIP') | trim) != 'PASS' else (status_02 | default('ERROR') | trim)) | trim }}"
+        details_03: "{{ ('No separate /tmp partition exists - audit skipped' if (status_01 | default('SKIP') | trim) != 'PASS' else 'nodev option is set on /tmp' if (status_02 | default('ERROR') | trim) == 'PASS' else 'nodev option is NOT set on /tmp' if (status_02 | default('ERROR') | trim) == 'FAIL' else 'Unable to determine compliance status') | trim }}"
       register: _step03_output
 
-    - name: "Req step-04 - Store the final audit result in cis_result"
+    - name: "Req step-04 - Store the final audit result in cis_result using set_fact"
       ansible.builtin.set_fact:
         cis_result: "{{ status_03 | default('ERROR') | trim }}"
-        task_04_name: "Store the final audit result in cis_result"
-        task_04_cmd: "N/A"
+        task_04_name: "Store final audit result in cis_result using set_fact"
+        task_04_cmd: "N/A - set_fact from Req step-03 status"
         task_04_rc: 0
-        data_04: "{{ status_03 | default('ERROR') | trim }}"
+        data_04: "cis_result={{ status_03 | default('ERROR') | trim }}"
         status_04: "{{ status_03 | default('ERROR') | trim }}"
-        details_04: "cis_result set to {{ status_03 | default('ERROR') | trim }}"
+        details_04: "{{ ('Overall compliance result is ' + (status_03 | default('ERROR') | trim)) | trim }}"
 
     - name: "Req 05 - Generate audit report"
       ansible.builtin.debug:
@@ -133,15 +135,8 @@
           - "  Status: {{ status_04 | default('ERROR') | trim }}"
           - "  Details: {{ details_04 | default('') | trim }}"
           - ""
-          - "REQUIREMENT 05 - {{ req_05 }}:"
-          - "  Task: Generate audit report"
-          - "  Command: N/A"
-          - "  Exit code: 0"
-          - "  Data: Audit report generated"
-          - "  Status: PASS"
-          - "  Details: Report displayed to console"
-          - ""
           - "========================================================"
           - "OVERALL COMPLIANCE:"
           - "  Result: {{ cis_result | default('ERROR') | trim }}"
+          - "  Details: {{ details_04 | default('Not evaluated') | trim }}"
           - "========================================================"
