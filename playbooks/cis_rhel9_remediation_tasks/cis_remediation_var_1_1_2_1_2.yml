@@ -1,11 +1,18 @@
-fs_option: "nodev"
-partition: "/tmp"
 playbook_name: "cis-1.1.2.1.2-nodev-tmp"
 backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
-req_01: "Run two read-only checks and register boolean facts"
-req_04: "Add nodev to the /tmp mount options in /etc/fstab"
-req_05: "Run mount -o remount /tmp to activate the nodev option without rebooting"
-req_06: "Run findmnt -kn -o OPTIONS /tmp to read the live mount options"
-req_07: "Set cis_result based on _verify_output and raw_mount_options"
-req_08: "Store the final cis_result using set_fact. Ensure cis_result is one of PASS/FAIL/SKIP/ERROR. For separate partitions, cis_result and raw_mount_options were already set in step-07. This step finalises the result for the paths that converged through step-07."
-req_12: "Set cis_result=SKIP and raw_mount_options='' when /tmp is not a separate mount"
+fstab_file: "/etc/fstab"
+fs_option: "nodev"
+partition: "/tmp"
+fstab_sed_cmd: >-
+  sed -i '\#\s{{ partition }}\s# s#^\(\S\+\)\(\s\S\+\)\(\s\S\+\)\(\s\S\+\)#\1\2\3\4,{{ fs_option }}#' /etc/fstab
+req_01: "RUNTIME INPUT VALUES (use these exact values as playbook vars): fs_option='nodev', partition='/tmp'"
+req_02: |
+  Run two read-only checks and register boolean facts: a) findmnt -kn /tmp - register _partition_is_separate=true if output is non-empty, false if empty; b) grep -E '\\s/tmp\\s' /etc/fstab | grep -c nodev - register _option_in_fstab=true if count > 0, false otherwise. Use failed_when: false on both. Do NOT modify anything in this step
+req_03: |
+  Add nodev to the /tmp mount options in /etc/fstab: sed -i '/\\s/tmp\\s/ s/\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)/\\1 \\2 \\3 \\4,nodev/' /etc/fstab - Guard with when: _partition_is_separate and not _option_in_fstab. Use failed_when: false
+req_04: "Run mount -o remount /tmp to activate the nodev option without rebooting. Guard with when: _partition_is_separate. This MUST run after step-04 when fstab was modified, and also when nodev was already present in fstab but not reflected in the live mount. Use failed_when: false"
+req_05: "Run findmnt -kn -o OPTIONS /tmp to read the live mount options of the partition. Register the output as _verify_output. Use failed_when: false. Run only when _partition_is_separate is true"
+req_06: "Set cis_result based on _verify_output: if the stdout contains 'nodev', set cis_result='PASS'; otherwise set cis_result='FAIL'. Also set raw_mount_options to the raw output (_verify_output.stdout). Run only when _partition_is_separate is true"
+req_07: "Store the final cis_result using set_fact. Ensure cis_result is one of PASS/FAIL/SKIP/ERROR. For separate partitions, cis_result and raw_mount_options were already set in step-07. This step finalises the result for the paths that converged through step-07"
+req_08: "Set cis_result='SKIP' and raw_mount_options='' when /tmp is not a separate mount. This runs only from step-02 on_fail, before emitting the report"
+req_09: "Create a task named 'Generate remediation report' using debug msg with the EXACT required format (REMEDIATION REPORT, Reference, per-requirement Task/Command/Exit code/Data/Status/Details, and OVERALL REMEDIATION with Result)"
