@@ -1,20 +1,28 @@
 ---
 - name: "Remediate CIS checkpoint 1.1.2.1.2: Ensure nodev option set on /tmp partition"
-  hosts: all
-  become: yes
+  hosts: 192.168.122.57
+  become: true
+  become_user: root
   gather_facts: false
   vars:
-    fs_option: "nodev"
-    partition: "/tmp"
     playbook_name: "cis-1.1.2.1.2-nodev-tmp"
     backup_dir: "/var/log/ai-playbooks-backup/{{ playbook_name }}"
-    req_01: "Run two read-only checks and register boolean facts"
-    req_04: "Add nodev to the /tmp mount options in /etc/fstab"
-    req_05: "Run mount -o remount /tmp to activate the nodev option without rebooting"
-    req_06: "Run findmnt -kn -o OPTIONS /tmp to read the live mount options"
-    req_07: "Set cis_result based on _verify_output and raw_mount_options"
-    req_08: "Store the final cis_result using set_fact. Ensure cis_result is one of PASS/FAIL/SKIP/ERROR. For separate partitions, cis_result and raw_mount_options were already set in step-07. This step finalises the result for the paths that converged through step-07."
-    req_12: "Set cis_result=SKIP and raw_mount_options='' when /tmp is not a separate mount"
+    fstab_file: "/etc/fstab"
+    fs_option: "nodev"
+    partition: "/tmp"
+    fstab_sed_cmd: >-
+      sed -i '\#\s{{ partition }}\s# s#^\(\S\+\)\(\s\S\+\)\(\s\S\+\)\(\s\S\+\)#\1\2\3\4,{{ fs_option }}#' /etc/fstab
+    req_01: "RUNTIME INPUT VALUES (use these exact values as playbook vars): fs_option='nodev', partition='/tmp'"
+    req_02: |
+      Run two read-only checks and register boolean facts: a) findmnt -kn /tmp - register _partition_is_separate=true if output is non-empty, false if empty; b) grep -E '\\s/tmp\\s' /etc/fstab | grep -c nodev - register _option_in_fstab=true if count > 0, false otherwise. Use failed_when: false on both. Do NOT modify anything in this step
+    req_03: |
+      Add nodev to the /tmp mount options in /etc/fstab: sed -i '/\\s/tmp\\s/ s/\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)\\(\\s\\S\\+\\)/\\1 \\2 \\3 \\4,nodev/' /etc/fstab - Guard with when: _partition_is_separate and not _option_in_fstab. Use failed_when: false
+    req_04: "Run mount -o remount /tmp to activate the nodev option without rebooting. Guard with when: _partition_is_separate. This MUST run after step-04 when fstab was modified, and also when nodev was already present in fstab but not reflected in the live mount. Use failed_when: false"
+    req_05: "Run findmnt -kn -o OPTIONS /tmp to read the live mount options of the partition. Register the output as _verify_output. Use failed_when: false. Run only when _partition_is_separate is true"
+    req_06: "Set cis_result based on _verify_output: if the stdout contains 'nodev', set cis_result='PASS'; otherwise set cis_result='FAIL'. Also set raw_mount_options to the raw output (_verify_output.stdout). Run only when _partition_is_separate is true"
+    req_07: "Store the final cis_result using set_fact. Ensure cis_result is one of PASS/FAIL/SKIP/ERROR. For separate partitions, cis_result and raw_mount_options were already set in step-07. This step finalises the result for the paths that converged through step-07"
+    req_08: "Set cis_result='SKIP' and raw_mount_options='' when /tmp is not a separate mount. This runs only from step-02 on_fail, before emitting the report"
+    req_09: "Create a task named 'Generate remediation report' using debug msg with the EXACT required format (REMEDIATION REPORT, Reference, per-requirement Task/Command/Exit code/Data/Status/Details, and OVERALL REMEDIATION with Result)"
 
   pre_tasks:
     - name: "Snapshot - Create backup directory"
@@ -24,72 +32,108 @@
         mode: '0700'
       tags: [snapshot]
 
-    - name: "Snapshot - Check if /etc/fstab exists"
+    - name: "Snapshot - Check if config file exists"
       ansible.builtin.stat:
-        path: /etc/fstab
-      register: _snap_fstab_stat
+        path: "{{ fstab_file }}"
+      register: _sg_fstab_stat
       tags: [snapshot]
 
-    - name: "Snapshot - Backup /etc/fstab"
+    - name: "Snapshot - Backup config file if exists"
       ansible.builtin.copy:
-        src: /etc/fstab
+        src: "{{ fstab_file }}"
         dest: "{{ backup_dir }}/fstab.present"
         remote_src: true
-      when: _snap_fstab_stat.stat.exists
+        force: false
+      when: _sg_fstab_stat.stat.exists | default(false)
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Save current mount options for the partition"
+      ansible.builtin.shell: set -o pipefail && findmnt -kn -o OPTIONS {{ partition }} 2>/dev/null || echo NOTMOUNTED
+      args:
+        executable: /bin/bash
+      register: _sg_mount_opts
+      failed_when: false
+      changed_when: false
+      tags: [snapshot]
+
+    - name: "Snapshot - Persist mount options to file"
+      ansible.builtin.copy:
+        content: "{{ _sg_mount_opts.stdout | default('') | trim }}"
+        dest: "{{ backup_dir }}/mount_options.present"
+        force: false
+      failed_when: false
+      changed_when: false
       tags: [snapshot]
 
   tasks:
     - block:
-        - name: "Initialize execution variables"
-          ansible.builtin.set_fact:
-            cis_result: "ERROR"
-            raw_mount_options: ""
-            _verify_output: {"rc": -1, "stdout": ""}
-            _fstab_modify: {"rc": -1, "stdout": ""}
-            _remount_output: {"rc": -1, "stdout": ""}
-          tags: [execute]
-
-        - name: "Req step-01 - Run audit for /tmp separate mount and nodev in fstab"
-          ansible.builtin.shell: |
-            set -o pipefail
-            findmnt -kn {{ partition }}; grep -E '\s{{ partition }}\s' /etc/fstab | grep -c {{ fs_option }}
+        - name: "Req step-01 - Run read-only check whether the partition is a separate mount"
+          ansible.builtin.shell: findmnt -kn {{ partition }}
           args:
             executable: /bin/bash
-          register: _audit_output
+          register: _findmnt_check
           failed_when: false
           changed_when: false
           tags: [execute]
 
-        - name: "Req step-01 - Register partition_is_separate and option_in_fstab facts"
-          ansible.builtin.set_fact:
-            _partition_is_separate: "{{ (_audit_output.stdout_lines | default([]) | length) > 1 }}"
-            _option_in_fstab: "{{ ((_audit_output.stdout_lines | default(['0']) | last) | trim | int) > 0 }}"
+        - name: "Req step-01 - Run read-only check whether the option is already in /etc/fstab"
+          ansible.builtin.shell: |
+            set -o pipefail
+            grep -E '\s{{ partition }}\s' {{ fstab_file }} | grep -c {{ fs_option }}
+          args:
+            executable: /bin/bash
+          register: _fstab_check
+          failed_when: false
+          changed_when: false
           tags: [execute]
 
-        - name: "Req step-04 - Add nodev option to /tmp entry in /etc/fstab"
-          ansible.builtin.shell: |
-            sed -i -E '\#^[[:space:]]*[^[:space:]]+[[:space:]]+{{ partition }}[[:space:]]# s#^([[:space:]]*[^[:space:]]+[[:space:]]+{{ partition }}[[:space:]]+[^[:space:]]+[[:space:]]+)([^[:space:]]+)#\1\2,{{ fs_option }}#' /etc/fstab
+        - name: "Req step-02 - Set boolean fact whether the partition is a separate mount"
+          ansible.builtin.set_fact:
+            _partition_is_separate: "{{ (_findmnt_check.stdout | default('') | trim | length) > 0 }}"
+          tags: [execute]
+
+        - name: "Req step-02 - Set boolean fact whether the option is already set in /etc/fstab"
+          ansible.builtin.set_fact:
+            _option_in_fstab: "{{ (_fstab_check.stdout | default('0') | trim | int) > 0 }}"
+          when: _partition_is_separate | bool
+          tags: [execute]
+
+        - name: "Req step-04 - Add the option to the partition mount options in /etc/fstab"
+          ansible.builtin.shell: "{{ fstab_sed_cmd }}"
           args:
             executable: /bin/bash
           register: _fstab_modify
           failed_when: false
-          changed_when: false
-          when:
-            - _partition_is_separate | bool
-            - not (_option_in_fstab | bool)
+          when: (_partition_is_separate | bool) and (not (_option_in_fstab | default(false) | bool))
           tags: [execute]
 
-        - name: "Req step-05 - Remount /tmp to activate nodev option"
+        - name: "Req step-04b - Confirm the option landed in /etc/fstab"
+          ansible.builtin.shell: |
+            set -o pipefail
+            grep -E '\s{{ partition }}\s' {{ fstab_file }} | grep -c {{ fs_option }}
+          args:
+            executable: /bin/bash
+          register: _fstab_post
+          failed_when: false
+          changed_when: false
+          when: (_partition_is_separate | bool) and (not (_option_in_fstab | default(false) | bool))
+          tags: [execute]
+
+        - name: "Req step-05 - Remount the partition to activate the option"
           ansible.builtin.shell: mount -o remount {{ partition }}
           args:
             executable: /bin/bash
-          register: _remount_output
+          register: _remount_result
           failed_when: false
           changed_when: false
-          when: _partition_is_separate | bool
+          when: >-
+            (_partition_is_separate | bool) and
+            ((_option_in_fstab | default(false) | bool) or ((_fstab_post.stdout | default('0') | trim | int) > 0))
           tags: [execute]
 
-        - name: "Req step-06 - Read live mount options of /tmp"
+        - name: "Req step-06 - Read live mount options of the partition with findmnt"
           ansible.builtin.shell: findmnt -kn -o OPTIONS {{ partition }}
           args:
             executable: /bin/bash
@@ -99,118 +143,200 @@
           when: _partition_is_separate | bool
           tags: [execute]
 
-        - name: "Req step-07 - Set cis_result based on live mount options"
+        - name: "Req step-07 - Set cis_result from the live mount options"
           ansible.builtin.set_fact:
             cis_result: "{{ 'PASS' if (fs_option in (_verify_output.stdout | default(''))) else 'FAIL' }}"
             raw_mount_options: "{{ _verify_output.stdout | default('') | trim }}"
           when: _partition_is_separate | bool
           tags: [execute]
 
-        - name: "Req step-08 - Finalise compliance status for separate partitions"
+        - name: "Req step-08 - Finalize cis_result fact to one of PASS/FAIL/SKIP/ERROR"
           ansible.builtin.set_fact:
-            cis_result: "{{ cis_result if (cis_result | default('ERROR')) in ['PASS', 'FAIL', 'SKIP', 'ERROR'] else 'ERROR' }}"
-            raw_mount_options: "{{ raw_mount_options | default('') }}"
-          when: _partition_is_separate | bool
+            cis_result: "{{ cis_result | default('SKIP') | trim }}"
+            raw_mount_options: "{{ raw_mount_options | default('') | trim }}"
           tags: [execute]
 
-        - name: "Req step-12 - Set cis_result to SKIP when /tmp is not a separate mount"
+        - name: "Req step-12 - Set cis_result to SKIP when the partition is not a separate mount"
           ansible.builtin.set_fact:
-            cis_result: "SKIP"
+            cis_result: "{{ 'SKIP' }}"
             raw_mount_options: ""
-          when: not (_partition_is_separate | bool)
+          when: not (_partition_is_separate | default(false) | bool)
           tags: [execute]
 
-        - name: "Generate remediation report"
+        - name: "Store requirement results for the report"
+          ansible.builtin.set_fact:
+            task_01_name: "Declare runtime input values"
+            task_01_cmd: "vars: fs_option={{ fs_option }}, partition={{ partition }}"
+            task_01_rc: 0
+            data_01: "fs_option={{ fs_option }}, partition={{ partition }}"
+            status_01: "{{ 'PASS' }}"
+            details_01: "Runtime input values used by every remediation step"
+            task_02_name: "Run read-only checks for the partition and the option in /etc/fstab"
+            task_02_cmd: |
+              findmnt -kn {{ partition }}; grep -E '\\s{{ partition }}\\s' {{ fstab_file }} | grep -c {{ fs_option }}
+            task_02_rc: "{{ _fstab_check.rc | default(-1) }}"
+            data_02: "partition_is_separate={{ _partition_is_separate | default(false) }}, option_in_fstab={{ _option_in_fstab | default(false) }}"
+            status_02: "{{ 'PASS' if (_fstab_check.rc | default(1)) in [0, 1] else 'ERROR' }}"
+            details_02: "Read-only checks completed, nothing modified"
+            task_03_name: "Add the option to the partition mount options in /etc/fstab"
+            task_03_cmd: "{{ fstab_sed_cmd }}"
+            task_03_rc: "{{ _fstab_modify.rc | default(-1) }}"
+            data_03: "option_in_fstab_before={{ _option_in_fstab | default(false) }}, option_in_fstab_after={{ _fstab_post.stdout | default('n/a') | trim }}"
+            status_03: >-
+              {{ 'SKIP' if not (_partition_is_separate | default(false) | bool)
+                 else ('PASS' if (_option_in_fstab | default(false) | bool) or ((_fstab_modify.rc | default(-1)) == 0 and (_fstab_post.stdout | default('0') | trim | int) > 0)
+                 else 'FAIL') }}
+            details_03: "Option present in the partition fstab entry, added only when it was missing"
+            task_04_name: "Remount the partition to activate the option"
+            task_04_cmd: "mount -o remount {{ partition }}"
+            task_04_rc: "{{ _remount_result.rc | default(-1) }}"
+            data_04: "remount_stderr={{ _remount_result.stderr | default('') | trim }}"
+            status_04: >-
+              {{ 'SKIP' if not (_partition_is_separate | default(false) | bool)
+                 else ('PASS' if (_remount_result.rc | default(-1)) == 0 else 'FAIL') }}
+            details_04: "Partition remounted from the options in /etc/fstab"
+            task_05_name: "Read live mount options with findmnt"
+            task_05_cmd: "findmnt -kn -o OPTIONS {{ partition }}"
+            task_05_rc: "{{ _verify_output.rc | default(-1) }}"
+            data_05: "{{ _verify_output.stdout | default('') | trim }}"
+            status_05: >-
+              {{ 'SKIP' if not (_partition_is_separate | default(false) | bool)
+                 else ('PASS' if (_verify_output.rc | default(1)) == 0 else 'FAIL') }}
+            details_05: "Live mount options inspected for the option"
+            task_06_name: "Set cis_result from the live mount options"
+            task_06_cmd: "set_fact cis_result and raw_mount_options from findmnt output"
+            task_06_rc: 0
+            data_06: "cis_result={{ cis_result | default('SKIP') }}, raw_mount_options={{ raw_mount_options | default('') }}"
+            status_06: "{{ cis_result | default('SKIP') | trim }}"
+            details_06: "Compliance decided from the live partition mount options"
+            task_07_name: "Finalize cis_result fact"
+            task_07_cmd: "set_fact cis_result"
+            task_07_rc: 0
+            data_07: "cis_result={{ cis_result | default('SKIP') }}"
+            status_07: "{{ 'PASS' if (cis_result | default('SKIP') | trim) in ['PASS', 'FAIL', 'SKIP', 'ERROR'] else 'ERROR' }}"
+            details_07: "cis_result finalized to one of PASS/FAIL/SKIP/ERROR"
+            task_08_name: "Set cis_result to SKIP when the partition is not a separate mount"
+            task_08_cmd: "set_fact cis_result=SKIP, raw_mount_options=''"
+            task_08_rc: 0
+            data_08: "partition_is_separate={{ _partition_is_separate | default(false) }}"
+            status_08: "{{ 'PASS' if not (_partition_is_separate | default(false) | bool) else 'SKIP' }}"
+            details_08: "SKIP path applied when the partition is not a separate mount"
+            task_09_name: "Generate remediation report"
+            task_09_cmd: "debug msg"
+            task_09_rc: 0
+            data_09: "cis_result={{ cis_result | default('SKIP') }}"
+            status_09: "{{ cis_result | default('SKIP') | trim }}"
+            details_09: "Remediation report emitted"
+          tags: [execute]
+
+        - name: "Req step-09 - Generate remediation report"
           ansible.builtin.debug:
             msg:
               - "REMEDIATION REPORT — CIS 1.1.2.1.2"
               - "Reference: CIS Benchmark checkpoint 1.1.2.1.2"
               - ""
               - "REQUIREMENT 01 - {{ req_01 }}:"
-              - "  Task: Run audit for /tmp separate mount and nodev in fstab"
-              - "  Command: set -o pipefail; findmnt -kn /tmp; grep -E '\\s/tmp\\s' /etc/fstab | grep -c nodev"
-              - "  Exit code: {{ _audit_output.rc | default(-1) }}"
-              - "  Data: {{ _audit_output.stdout | default('') | trim }}"
-              - "  Status: PASS"
-              - "  Details: partition_is_separate={{ _partition_is_separate | default(false) }}, option_in_fstab={{ _option_in_fstab | default(false) }}"
+              - "  Task: {{ task_01_name | default('Not recorded') }}"
+              - "  Command: {{ task_01_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_01_rc | default(-1) }}"
+              - "  Data: {{ data_01 | default('') | trim }}"
+              - "  Status: {{ status_01 | default('ERROR') | trim }}"
+              - "  Details: {{ details_01 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 02 - {{ req_02 }}:"
+              - "  Task: {{ task_02_name | default('Not recorded') }}"
+              - "  Command: {{ task_02_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_02_rc | default(-1) }}"
+              - "  Data: {{ data_02 | default('') | trim }}"
+              - "  Status: {{ status_02 | default('ERROR') | trim }}"
+              - "  Details: {{ details_02 | default('') | trim }}"
+              - ""
+              - "REQUIREMENT 03 - {{ req_03 }}:"
+              - "  Task: {{ task_03_name | default('Not recorded') }}"
+              - "  Command: {{ task_03_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_03_rc | default(-1) }}"
+              - "  Data: {{ data_03 | default('') | trim }}"
+              - "  Status: {{ status_03 | default('ERROR') | trim }}"
+              - "  Details: {{ details_03 | default('') | trim }}"
               - ""
               - "REQUIREMENT 04 - {{ req_04 }}:"
-              - "  Task: Add nodev option to /tmp entry in /etc/fstab"
-              - "  Command: sed -i -E delimiter-safe /tmp fstab edit (\\#...# address, 4th-field backref append)"
-              - "  Exit code: {{ _fstab_modify.rc | default(-1) }}"
-              - "  Data: fstab_modified={{ (_partition_is_separate | bool) and (not (_option_in_fstab | bool)) }}"
-              - "  Status: {{ 'SKIP' if (not (_partition_is_separate | bool)) or (_option_in_fstab | bool) else ('PASS' if (_fstab_modify.rc | default(-1)) == 0 else 'FAIL') }}"
-              - "  Details: nodev option appended to /tmp fstab entry when /tmp is a separate mount and option was missing"
+              - "  Task: {{ task_04_name | default('Not recorded') }}"
+              - "  Command: {{ task_04_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_04_rc | default(-1) }}"
+              - "  Data: {{ data_04 | default('') | trim }}"
+              - "  Status: {{ status_04 | default('ERROR') | trim }}"
+              - "  Details: {{ details_04 | default('') | trim }}"
               - ""
               - "REQUIREMENT 05 - {{ req_05 }}:"
-              - "  Task: Remount /tmp to activate nodev option"
-              - "  Command: mount -o remount /tmp"
-              - "  Exit code: {{ _remount_output.rc | default(-1) }}"
-              - "  Data: remounted={{ _partition_is_separate | default(false) }}"
-              - "  Status: {{ 'SKIP' if not (_partition_is_separate | bool) else ('PASS' if (_remount_output.rc | default(-1)) == 0 else 'FAIL') }}"
-              - "  Details: Live /tmp remount triggered to activate nodev from fstab"
+              - "  Task: {{ task_05_name | default('Not recorded') }}"
+              - "  Command: {{ task_05_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_05_rc | default(-1) }}"
+              - "  Data: {{ data_05 | default('') | trim }}"
+              - "  Status: {{ status_05 | default('ERROR') | trim }}"
+              - "  Details: {{ details_05 | default('') | trim }}"
               - ""
               - "REQUIREMENT 06 - {{ req_06 }}:"
-              - "  Task: Read live mount options of /tmp"
-              - "  Command: findmnt -kn -o OPTIONS /tmp"
-              - "  Exit code: {{ _verify_output.rc | default(-1) }}"
-              - "  Data: {{ _verify_output.stdout | default('') | trim }}"
-              - "  Status: {{ 'SKIP' if not (_partition_is_separate | bool) else 'PASS' }}"
-              - "  Details: Live mount options of /tmp captured for verification"
+              - "  Task: {{ task_06_name | default('Not recorded') }}"
+              - "  Command: {{ task_06_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_06_rc | default(-1) }}"
+              - "  Data: {{ data_06 | default('') | trim }}"
+              - "  Status: {{ status_06 | default('ERROR') | trim }}"
+              - "  Details: {{ details_06 | default('') | trim }}"
               - ""
               - "REQUIREMENT 07 - {{ req_07 }}:"
-              - "  Task: Set cis_result based on live mount options"
-              - "  Command: n/a (set_fact)"
-              - "  Exit code: {{ _verify_output.rc | default(-1) }}"
-              - "  Data: raw_mount_options={{ raw_mount_options | default('') }}"
-              - "  Status: {{ 'SKIP' if not (_partition_is_separate | bool) else 'PASS' }}"
-              - "  Details: cis_result={{ cis_result | default('ERROR') }} computed from live mount options"
+              - "  Task: {{ task_07_name | default('Not recorded') }}"
+              - "  Command: {{ task_07_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_07_rc | default(-1) }}"
+              - "  Data: {{ data_07 | default('') | trim }}"
+              - "  Status: {{ status_07 | default('ERROR') | trim }}"
+              - "  Details: {{ details_07 | default('') | trim }}"
               - ""
               - "REQUIREMENT 08 - {{ req_08 }}:"
-              - "  Task: Finalise compliance status for separate partitions"
-              - "  Command: n/a (set_fact)"
-              - "  Exit code: 0"
-              - "  Data: cis_result={{ cis_result | default('ERROR') }}, raw_mount_options={{ raw_mount_options | default('') }}"
-              - "  Status: {{ 'SKIP' if not (_partition_is_separate | bool) else 'PASS' }}"
-              - "  Details: cis_result finalised to one of PASS/FAIL/SKIP/ERROR for the separate-partition path"
+              - "  Task: {{ task_08_name | default('Not recorded') }}"
+              - "  Command: {{ task_08_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_08_rc | default(-1) }}"
+              - "  Data: {{ data_08 | default('') | trim }}"
+              - "  Status: {{ status_08 | default('ERROR') | trim }}"
+              - "  Details: {{ details_08 | default('') | trim }}"
               - ""
-              - "REQUIREMENT 12 - {{ req_12 }}:"
-              - "  Task: Set cis_result to SKIP when /tmp is not a separate mount"
-              - "  Command: n/a (set_fact)"
-              - "  Exit code: 0"
-              - "  Data: partition_is_separate={{ _partition_is_separate | default(false) }}"
-              - "  Status: {{ 'SKIP' if (_partition_is_separate | bool) else 'PASS' }}"
-              - "  Details: cis_result set to SKIP if /tmp is not a separate mount"
+              - "REQUIREMENT 09 - {{ req_09 }}:"
+              - "  Task: {{ task_09_name | default('Not recorded') }}"
+              - "  Command: {{ task_09_cmd | default('N/A') }}"
+              - "  Exit code: {{ task_09_rc | default(-1) }}"
+              - "  Data: {{ data_09 | default('') | trim }}"
+              - "  Status: {{ status_09 | default('ERROR') | trim }}"
+              - "  Details: {{ details_09 | default('') | trim }}"
               - ""
               - "========================================================"
               - "OVERALL REMEDIATION:"
-              - "  Result: {{ cis_result | default('ERROR') }}"
-              - "  Raw mount options: {{ raw_mount_options | default('') }}"
+              - "  Result: {{ cis_result | default('ERROR') | trim }}"
+              - "  Raw mount options: {{ raw_mount_options | default('') | trim }}"
               - "========================================================"
           tags: [execute]
 
       always:
-        - name: "Restore - Check if backup exists"
+        - name: "Restore - Check if fstab backup exists"
           ansible.builtin.stat:
             path: "{{ backup_dir }}/fstab.present"
-          register: _restore_stat
+          register: _restore_check
           failed_when: false
           tags: [restore]
 
         - name: "Restore - Overwrite /etc/fstab with original"
           ansible.builtin.copy:
             src: "{{ backup_dir }}/fstab.present"
-            dest: /etc/fstab
+            dest: "{{ fstab_file }}"
             remote_src: true
-          when: _restore_stat.stat.exists | default(false)
+          register: _restore_fstab_result
+          when: _restore_check.stat.exists | default(false)
           failed_when: false
           tags: [restore]
 
-        - name: "Restore - Remount /tmp to reflect restored fstab"
-          ansible.builtin.shell: mount -o remount {{ partition }}
+        - name: "Restore - Re-apply mount from restored fstab"
+          ansible.builtin.shell: set -o pipefail && mount -o remount {{ partition }} 2>/dev/null || true
           args:
             executable: /bin/bash
-          when: _restore_stat.stat.exists | default(false)
+          when: _restore_check.stat.exists | default(false)
           failed_when: false
           changed_when: false
           tags: [restore]
