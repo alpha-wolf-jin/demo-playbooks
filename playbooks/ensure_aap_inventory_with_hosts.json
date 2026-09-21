@@ -4,7 +4,7 @@
   "title": "Ensure AAP Inventory with Hosts",
   "role": "action",
   "effect": "persistent",
-  "description": "Ensures an AAP organization and inventory exist, then adds all specified hosts to the inventory, reporting per-host success/failure.",
+  "description": "Ensure an AAP organization, inventory, and optionally a group with hosts (or hosts directly in the inventory) exist in the controller.",
   "aap_template": "ensure_aap_inventory_with_hosts++Default",
   "organization": "Default",
   "execution_target": "controller",
@@ -30,7 +30,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "Username for authenticating to the AAP controller API."
+        "description": "The username used to authenticate to the AAP controller."
       },
       {
         "name": "aap_password",
@@ -38,7 +38,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "Password for authenticating to the AAP controller API."
+        "description": "The password used to authenticate to the AAP controller."
       },
       {
         "name": "organization_name",
@@ -46,7 +46,7 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The name of the AAP organization to ensure exists."
+        "description": "The name of the organization to ensure exists."
       },
       {
         "name": "inventory_name",
@@ -54,20 +54,28 @@
         "required": true,
         "default": null,
         "unit": null,
-        "description": "The name of the AAP inventory to ensure exists within the organization."
+        "description": "The name of the inventory to ensure exists in the organization."
+      },
+      {
+        "name": "group_name",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "unit": null,
+        "description": "Optional group name to ensure exists in the inventory. When provided, hosts are added to this group."
       },
       {
         "name": "hosts_list",
         "type": "string",
-        "required": true,
-        "default": null,
+        "required": false,
+        "default": "",
         "unit": null,
-        "description": "Comma-separated list of host names to ensure present in the inventory."
+        "description": "Optional comma-separated list of host names to ensure present in the inventory (or group when group_name is provided)."
       }
     ]
   },
   "playbook_output": {
-    "description": "Emits organization_name, inventory_name, added_hosts, and failed_hosts.",
+    "description": "Emits organization_name, inventory_name, group_name, hosts_list, and a status message.",
     "output_wrapper": "<result>...</result>",
     "fields": [
       {
@@ -75,132 +83,152 @@
         "type": "string",
         "nullable": false,
         "required_by_sop": true,
-        "description": "The name of the AAP organization."
+        "description": "The name of the organization that was ensured."
       },
       {
         "name": "inventory_name",
         "type": "string",
         "nullable": false,
         "required_by_sop": true,
-        "description": "The name of the AAP inventory."
+        "description": "The name of the inventory that was ensured."
       },
       {
-        "name": "added_hosts",
-        "type": "list",
-        "nullable": false,
+        "name": "group_name",
+        "type": "string",
+        "nullable": true,
         "required_by_sop": true,
-        "description": "List of host names that were successfully added to the inventory."
+        "description": "The name of the group that was ensured, or empty if no group was provided."
       },
       {
-        "name": "failed_hosts",
-        "type": "list",
+        "name": "hosts_list",
+        "type": "string",
+        "nullable": true,
+        "required_by_sop": true,
+        "description": "The comma-separated list of hosts that were ensured, or empty if none were provided."
+      },
+      {
+        "name": "status",
+        "type": "string",
         "nullable": false,
         "required_by_sop": true,
-        "description": "List of host names that failed to be added to the inventory."
+        "description": "A status message indicating the outcome of the operation."
       }
     ]
   },
   "steps": [
     {
       "id": "step-01",
-      "type": "collect",
-      "name": "Look up existing organization",
-      "function": "Query the AAP controller API for an organization matching the given name.",
-      "module": "ansible.controller.controller_api",
+      "type": "action",
+      "name": "Ensure the organization exists",
+      "function": "Create the organization if it does not already exist.",
+      "module": "ansible.controller.organization",
       "input": {
         "source": "playbook_input.parameters",
         "fields": [
-          "organization_name"
+          "organization_name",
+          "aap_gateway_ip",
+          "aap_user",
+          "aap_password"
         ]
       },
+      "idempotent": true,
       "stores": [
-        "_existing_org"
+        "_organization_result"
       ],
       "on_success": "step-02",
       "on_fail": "step-08"
     },
     {
       "id": "step-02",
-      "type": "decide",
-      "name": "Does the organization already exist?",
-      "function": "Branch on whether step-01's lookup found a matching organization.",
-      "input": {
-        "source": "step-01",
-        "fields": [
-          "_existing_org"
-        ]
-      },
-      "condition": "The organization lookup returned at least one result.",
-      "on_pass": "step-04",
-      "on_fail": "step-03"
-    },
-    {
-      "id": "step-03",
       "type": "action",
-      "name": "Create the organization",
-      "function": "Create the organization using the idempotent ansible.controller.organization module.",
-      "module": "ansible.controller.organization",
-      "input": {
-        "source": "playbook_input.parameters",
-        "fields": [
-          "organization_name"
-        ]
-      },
-      "idempotent": true,
-      "stores": [
-        "_created_org_id"
-      ],
-      "on_success": "step-04",
-      "on_fail": "step-08"
-    },
-    {
-      "id": "step-04",
-      "type": "decide",
-      "name": "Does the inventory already exist?",
-      "function": "Branch on whether the inventory lookup found a matching inventory in the given organization.",
-      "input": {
-        "source": "playbook_input.parameters",
-        "fields": [
-          "organization_name",
-          "inventory_name"
-        ]
-      },
-      "condition": "The inventory lookup returned at least one result.",
-      "on_pass": "step-06",
-      "on_fail": "step-05"
-    },
-    {
-      "id": "step-05",
-      "type": "action",
-      "name": "Create the inventory",
-      "function": "Create the inventory using the idempotent ansible.controller.inventory module.",
+      "name": "Ensure the inventory exists",
+      "function": "Create the inventory in the organization if it does not already exist.",
       "module": "ansible.controller.inventory",
       "input": {
         "source": "playbook_input.parameters",
         "fields": [
           "organization_name",
-          "inventory_name"
+          "inventory_name",
+          "aap_gateway_ip",
+          "aap_user",
+          "aap_password"
         ]
       },
       "idempotent": true,
       "stores": [
-        "_created_inventory_id"
+        "_inventory_result"
       ],
-      "on_success": "step-06",
+      "on_success": "step-03",
       "on_fail": "step-08"
+    },
+    {
+      "id": "step-03",
+      "type": "decide",
+      "name": "Was a group name provided?",
+      "function": "Branch on whether the caller supplied a group name.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "group_name"
+        ]
+      },
+      "condition": "A group name was provided by the caller.",
+      "on_pass": "step-04",
+      "on_fail": "step-05"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Ensure the group and its hosts exist",
+      "function": "Create the group in the inventory if missing, and ensure the provided hosts are members of the group while preserving existing members.",
+      "module": "ansible.controller.group",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "group_name",
+          "inventory_name",
+          "hosts_list",
+          "aap_gateway_ip",
+          "aap_user",
+          "aap_password"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_group_result"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-08"
+    },
+    {
+      "id": "step-05",
+      "type": "decide",
+      "name": "Were hosts provided?",
+      "function": "Branch on whether the caller supplied a hosts list.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "hosts_list"
+        ]
+      },
+      "condition": "Hosts were provided by the caller.",
+      "on_pass": "step-06",
+      "on_fail": "step-07"
     },
     {
       "id": "step-06",
       "type": "action",
-      "name": "Add hosts to the inventory",
-      "function": "Loop through the comma-separated hosts_list and add each host to the inventory using the idempotent ansible.controller.host module, recording per-host success and failure.",
+      "name": "Ensure hosts exist directly in the inventory",
+      "function": "Create each provided host directly in the inventory if it does not already exist.",
       "module": "ansible.controller.host",
       "input": {
         "source": "playbook_input.parameters",
         "fields": [
-          "organization_name",
           "inventory_name",
-          "hosts_list"
+          "hosts_list",
+          "aap_gateway_ip",
+          "aap_user",
+          "aap_password"
         ]
       },
       "idempotent": true,
@@ -218,8 +246,9 @@
       "output_fields": {
         "organization_name": "{{ organization_name }}",
         "inventory_name": "{{ inventory_name }}",
-        "added_hosts": "{{ _host_results | selectattr('failed', 'equalto', false) | map(attribute='item') | list }}",
-        "failed_hosts": "{{ _host_results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
+        "group_name": "{{ group_name }}",
+        "hosts_list": "{{ hosts_list }}",
+        "status": "success"
       },
       "on_success": "end"
     },
@@ -240,18 +269,18 @@
   "phases": [
     {
       "name": "Pre-checks",
-      "description": "Look up the organization and inventory to determine what needs to be created.",
+      "description": "Ensure the organization and inventory exist before applying host or group changes.",
       "steps": [
         "step-01",
-        "step-02",
-        "step-04"
+        "step-02"
       ]
     },
     {
       "name": "Main action",
-      "description": "Create the organization and inventory if missing, then add all hosts to the inventory.",
+      "description": "Ensure the group and hosts (or hosts directly in the inventory) exist based on the provided inputs.",
       "steps": [
         "step-03",
+        "step-04",
         "step-05",
         "step-06"
       ]
@@ -272,8 +301,8 @@
     }
   ],
   "meta": {
-    "content_sha256": "a5600046dad1eed7bc87b90d54aa2b6b202e3ebe872de0fada5404747a5d0d42",
-    "saved_at": "2026-08-30T14:48:37+00:00",
+    "content_sha256": "1b8a31a43dd218cfe668b15cb4f68fa3d81ba1c77e46e86c466fc4685b312809",
+    "saved_at": "2026-09-21T04:57:46+00:00",
     "saved_by": "admin",
     "revision": 1
   }
