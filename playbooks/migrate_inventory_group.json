@@ -1,0 +1,375 @@
+{
+  "tool_name": "migrate_inventory_group",
+  "version": "1.0",
+  "title": "Migrate Inventory Group Between AAP Inventories",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Migrate an inventory group, including its description, variables, associated hosts, and child subgroups, from a source AAP inventory to a target AAP inventory, then delete the old group structure from the source inventory while keeping its hosts.",
+  "aap_template": "migrate_inventory_group++Default",
+  "organization": "Default",
+  "execution_target": "controller",
+  "connection": {
+    "hosts": "localhost",
+    "connection": "local",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "source_inventory",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the source AAP inventory (Inventory A) containing the group to migrate."
+      },
+      {
+        "name": "target_inventory",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the target AAP inventory (Inventory B) where the group will be created."
+      },
+      {
+        "name": "group_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the group to migrate from the source inventory to the target inventory."
+      },
+      {
+        "name": "aap_gateway_ip",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP address of the AAP controller gateway."
+      },
+      {
+        "name": "aap_username",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Username for authenticating to the AAP controller."
+      },
+      {
+        "name": "aap_password",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Password for authenticating to the AAP controller."
+      },
+      {
+        "name": "aap_validate_certs",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "unit": null,
+        "description": "Whether to validate SSL certificates when connecting to the AAP controller. Defaults to false for self-signed certificates."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Emits group_name, source_inventory, target_inventory, migrated_hosts, migrated_children, and a status message.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "group_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Name of the migrated group."
+      },
+      {
+        "name": "source_inventory",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Name of the source inventory the group was migrated from."
+      },
+      {
+        "name": "target_inventory",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Name of the target inventory the group was migrated to."
+      },
+      {
+        "name": "migrated_hosts",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of host names associated with the migrated group."
+      },
+      {
+        "name": "migrated_children",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of child subgroup names associated with the migrated group."
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status message indicating the migration result."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Look up source group details",
+      "function": "Query the AAP controller API for the source group by name within the source inventory, recording its name, description, variables, and id.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "group_name",
+          "source_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "stores": [
+        "_source_group"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-02",
+      "type": "decide",
+      "name": "Does the source group exist?",
+      "function": "Branch on whether step-01's lookup found exactly one matching source group.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_source_group"
+        ]
+      },
+      "condition": "The source group lookup returned exactly one matching group.",
+      "on_pass": "step-03",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-03",
+      "type": "collect",
+      "name": "Look up source group hosts",
+      "function": "Query the AAP controller API for the hosts associated with the source group, recording the associated host names.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_source_group",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "stores": [
+        "_source_hosts"
+      ],
+      "on_success": "step-04",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-04",
+      "type": "collect",
+      "name": "Look up source group child subgroups",
+      "function": "Query the AAP controller API for the child subgroups nested inside the source group, recording the child subgroup names.",
+      "module": "ansible.controller.controller_api",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_source_group",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "stores": [
+        "_source_child_groups"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-05",
+      "type": "transform",
+      "name": "Normalize group variables to a dict",
+      "function": "Convert the source group's variables field from a YAML/JSON string into a dict for use when creating the target group.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_source_group"
+        ]
+      },
+      "computations": {
+        "_group_variables": "Parse _source_group.variables from a YAML/JSON string into a dict; if empty or null, use an empty dict."
+      },
+      "stores": [
+        "_group_variables"
+      ],
+      "on_success": "step-06",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-06",
+      "type": "action",
+      "name": "Ensure hosts exist in target inventory",
+      "function": "Ensure each host associated with the source group exists in the target inventory, so they can be associated with the new group.",
+      "module": "ansible.controller.host",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_source_hosts",
+          "target_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_host_ensure_results"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Create group in target inventory",
+      "function": "Create the group in the target inventory with the same name, description, and variables from the source group, and associate the source group's hosts and child subgroups with the new group.",
+      "module": "ansible.controller.group",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_source_group",
+          "_group_variables",
+          "_source_hosts",
+          "_source_child_groups",
+          "target_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_target_group"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-08",
+      "type": "action",
+      "name": "Delete old group structure from source inventory",
+      "function": "Delete the old group and its subgroup structure from the source inventory while keeping the underlying hosts in the source inventory.",
+      "module": "ansible.controller.group",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_source_group",
+          "_source_child_groups",
+          "source_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_cleanup_results"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-09",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the Required Output Format <result> block on success.",
+      "output_fields": {
+        "group_name": "{{ group_name }}",
+        "source_inventory": "{{ source_inventory }}",
+        "target_inventory": "{{ target_inventory }}",
+        "migrated_hosts": "{{ _source_hosts | map(attribute='name') | list }}",
+        "migrated_children": "{{ _source_child_groups | map(attribute='name') | list }}",
+        "status": "Group migrated successfully."
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-10",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: migrate_inventory_group failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-10",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Look up the source group, its hosts, and child subgroups, and validate the group exists before migrating.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Ensure hosts exist in the target inventory, create the migrated group, and delete the old group structure from the source inventory.",
+      "steps": [
+        "step-06",
+        "step-07",
+        "step-08"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final result to the caller.",
+      "steps": [
+        "step-09"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-10"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "1832dafe6b1a34ecd59847e4f071a8df795f0d8b6e2b7cd5ef4061a48e12fa6f",
+    "saved_at": "2026-09-22T12:27:26+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
