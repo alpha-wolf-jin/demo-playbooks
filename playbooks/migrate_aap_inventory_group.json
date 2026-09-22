@@ -1,0 +1,543 @@
+{
+  "tool_name": "migrate_aap_inventory_group",
+  "version": "1.0",
+  "title": "Migrate AAP Inventory Group (Recursive)",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Migrate an AAP Controller inventory group and its entire subgroup tree from a source inventory to a target inventory, preserving group and host data, then optionally delete the source group structure after verification while keeping hosts intact.",
+  "aap_template": "migrate_aap_inventory_group++Default",
+  "organization": "Default",
+  "execution_target": "controller",
+  "connection": {
+    "hosts": "localhost",
+    "connection": "local",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "source_inventory",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the source inventory (Inventory A) containing the group tree to migrate."
+      },
+      {
+        "name": "target_inventory",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the target inventory (Inventory B) that will receive the migrated group tree."
+      },
+      {
+        "name": "group_name",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Name of the root group to migrate; the entire subgroup tree beneath it is migrated."
+      },
+      {
+        "name": "aap_gateway_ip",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Controller gateway host/IP address."
+      },
+      {
+        "name": "aap_username",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Controller username. Never echoed to output (no_log)."
+      },
+      {
+        "name": "aap_password",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Controller password. Never echoed to output (no_log); prefer credential injection."
+      },
+      {
+        "name": "aap_validate_certs",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "unit": null,
+        "description": "Whether to validate SSL certificates. Set false for self-signed certificates."
+      },
+      {
+        "name": "delete_source",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "unit": null,
+        "description": "Opt-in deletion of the source group tree after successful verification. Hosts are never deleted."
+      },
+      {
+        "name": "dry_run",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "unit": null,
+        "description": "Report the migration plan and make no changes."
+      },
+      {
+        "name": "fail_on_collision",
+        "type": "boolean",
+        "required": false,
+        "default": "true",
+        "unit": null,
+        "description": "Abort if a target-side group name already exists in the source tree."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Emits group_name, source_inventory, target_inventory, migrated_groups, associated_hosts, source_deleted, dry_run, and status.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "group_name",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The root group that was migrated."
+      },
+      {
+        "name": "source_inventory",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The source inventory name."
+      },
+      {
+        "name": "target_inventory",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "The target inventory name."
+      },
+      {
+        "name": "migrated_groups",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "List of group names migrated to the target inventory."
+      },
+      {
+        "name": "associated_hosts",
+        "type": "list",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Unique list of host names associated with the migrated group tree."
+      },
+      {
+        "name": "source_deleted",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Whether the source group tree was deleted."
+      },
+      {
+        "name": "dry_run",
+        "type": "boolean",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Whether the run was a dry-run (no changes made)."
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Overall status of the migration (success or dry-run)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "transform",
+      "name": "Resolve source and target inventories and root group",
+      "function": "Confirm the source inventory, target inventory, and source root group each resolve to exactly one object, and store their resolved IDs.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "source_inventory",
+          "target_inventory",
+          "group_name",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "computations": {
+        "_source_inventory": "Look up the source inventory by name using the controller_api lookup on the inventories endpoint, requiring exactly one result.",
+        "_target_inventory": "Look up the target inventory by name using the controller_api lookup on the inventories endpoint, requiring exactly one result.",
+        "_source_root_group": "Look up the source root group by name within the source inventory using the controller_api lookup on the groups endpoint, requiring exactly one result."
+      },
+      "stores": [
+        "_source_inventory",
+        "_target_inventory",
+        "_source_root_group"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-02",
+      "type": "collect",
+      "name": "Record source inventory group tree snapshot",
+      "function": "Record the complete source inventory group tree read-only, including all groups, subgroups, parent/child names, group variables, host associations, host variables, descriptions, and enabled state.",
+      "module": "ansible.controller.export",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "source_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "stores": [
+        "_source_export"
+      ],
+      "on_success": "step-03",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-03",
+      "type": "transform",
+      "name": "Extract root subtree into group and host facts",
+      "function": "Decompose the exported source snapshot into group facts and host facts scoped to the root group subtree.",
+      "input": {
+        "source": "step-02",
+        "fields": [
+          "_source_export",
+          "_source_root_group",
+          "_target_inventory"
+        ]
+      },
+      "computations": {
+        "_source_groups": "Extract all groups belonging to the root group subtree from _source_export.assets, including name, description, variables, children, and hosts.",
+        "_source_hosts": "Extract all hosts associated with the root group subtree from _source_export.assets, including name, description, enabled, and variables.",
+        "_source_group_names": "Collect the list of group names present in the source subtree."
+      },
+      "stores": [
+        "_source_groups",
+        "_source_hosts",
+        "_source_group_names",
+        "_target_inventory"
+      ],
+      "on_success": "step-04",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-04",
+      "type": "transform",
+      "name": "Build leaf-first ordered group list",
+      "function": "Order the source groups leaf-first so that child groups are created before their parents, enabling parent/child linking in a single pass.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_source_groups"
+        ]
+      },
+      "computations": {
+        "_source_groups_ordered": "Order _source_groups leaf-first (deepest subgroups first, root last) so children exist before parents are linked."
+      },
+      "stores": [
+        "_source_groups_ordered"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-05",
+      "type": "decide",
+      "name": "Check for target name collisions",
+      "function": "Branch on whether the target inventory already contains any group name from the source tree.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_target_inventory",
+          "_source_group_names"
+        ]
+      },
+      "condition": "The target inventory already contains one or more group names from the source tree.",
+      "on_pass": "step-15",
+      "on_fail": "step-06"
+    },
+    {
+      "id": "step-06",
+      "type": "action",
+      "name": "Create or update target hosts",
+      "function": "Reproduce each source host in the target inventory with its name, description, enabled state, and variables, unless dry_run is true.",
+      "module": "ansible.controller.host",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_source_hosts",
+          "target_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs",
+          "dry_run"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_host_results"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-07",
+      "type": "action",
+      "name": "Create or update target group tree",
+      "function": "Reproduce every group and subgroup in the target inventory with name, description, variables, parent/child relationships, and host associations, unless dry_run is true.",
+      "module": "ansible.controller.group",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_source_groups_ordered",
+          "target_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs",
+          "dry_run"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_group_results"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-08",
+      "type": "collect",
+      "name": "Record target inventory group tree snapshot",
+      "function": "Record a snapshot of the target inventory group tree to verify fidelity after migration, unless dry_run is true.",
+      "module": "ansible.controller.export",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs",
+          "dry_run"
+        ]
+      },
+      "stores": [
+        "_target_export"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-09",
+      "type": "transform",
+      "name": "Compare normalized source and target subtrees",
+      "function": "Normalize the source and target exports to remove inventory IDs and metadata, then compare group tree, variables, relationships, host associations, host variables, descriptions, and enabled state, unless dry_run is true.",
+      "input": {
+        "source": "step-08",
+        "fields": [
+          "_source_export",
+          "_target_export",
+          "_source_root_group",
+          "dry_run"
+        ]
+      },
+      "computations": {
+        "_verification_passed": "True if dry_run is true, or if the normalized target subtree matches the normalized source subtree across groups, variables, parent/child relationships, host associations, host variables, descriptions, and enabled state; false otherwise."
+      },
+      "stores": [
+        "_verification_passed"
+      ],
+      "on_success": "step-10",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-10",
+      "type": "decide",
+      "name": "Check verification result",
+      "function": "Branch on whether target verification failed.",
+      "input": {
+        "source": "step-09",
+        "fields": [
+          "_verification_passed"
+        ]
+      },
+      "condition": "Target verification failed (the target subtree does not match the source subtree).",
+      "on_pass": "step-15",
+      "on_fail": "step-11"
+    },
+    {
+      "id": "step-11",
+      "type": "decide",
+      "name": "Check delete_source opt-in",
+      "function": "Branch on whether the delete_source flag is true and the run is not a dry-run.",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "delete_source",
+          "dry_run"
+        ]
+      },
+      "condition": "The delete_source flag is true and the run is not a dry-run.",
+      "on_pass": "step-12",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-12",
+      "type": "action",
+      "name": "Delete source group tree",
+      "function": "Delete the migrated group and its subgroups from the source inventory, keeping the underlying hosts intact.",
+      "module": "ansible.controller.group",
+      "input": {
+        "source": "step-04",
+        "fields": [
+          "_source_groups_ordered",
+          "source_inventory",
+          "aap_gateway_ip",
+          "aap_username",
+          "aap_password",
+          "aap_validate_certs"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_delete_results"
+      ],
+      "on_success": "step-13",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-13",
+      "type": "transform",
+      "name": "Summarize migration results",
+      "function": "Derive the migrated group list, unique associated hosts, source deletion flag, and overall status for the output block.",
+      "input": {
+        "source": "step-03",
+        "fields": [
+          "_source_groups_ordered",
+          "_source_hosts",
+          "delete_source",
+          "dry_run"
+        ]
+      },
+      "computations": {
+        "_migrated_groups": "Collect the list of group names from _source_groups_ordered.",
+        "_associated_hosts": "Collect the unique list of host names from _source_hosts.",
+        "_source_deleted": "True if delete_source is true and the run was not a dry-run, false otherwise.",
+        "_status": "The string 'dry-run' if dry_run is true, otherwise 'success'."
+      },
+      "stores": [
+        "_migrated_groups",
+        "_associated_hosts",
+        "_source_deleted",
+        "_status"
+      ],
+      "on_success": "step-14",
+      "on_fail": "step-15"
+    },
+    {
+      "id": "step-14",
+      "type": "emit",
+      "name": "Emit result block",
+      "function": "Print the Required Output Format result block on success.",
+      "output_fields": {
+        "group_name": "{{ group_name }}",
+        "source_inventory": "{{ source_inventory }}",
+        "target_inventory": "{{ target_inventory }}",
+        "migrated_groups": "{{ _migrated_groups }}",
+        "associated_hosts": "{{ _associated_hosts }}",
+        "source_deleted": "{{ _source_deleted }}",
+        "dry_run": "{{ dry_run }}",
+        "status": "{{ _status }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-15",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure, target name collision, or verification failure. Prints the Required Error Output Format block and fails the play without deleting anything in the source inventory.",
+      "error_message": "ERROR: migrate_aap_inventory_group failed — source tree left intact",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-15",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Resolve inventories and root group, record the source tree, and validate there are no target name collisions.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03",
+        "step-04",
+        "step-05"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Recreate hosts and the group tree in the target inventory.",
+      "steps": [
+        "step-06",
+        "step-07"
+      ]
+    },
+    {
+      "name": "Post-checks",
+      "description": "Verify the target matches the source and optionally delete the source group tree.",
+      "steps": [
+        "step-08",
+        "step-09",
+        "step-10",
+        "step-11",
+        "step-12"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Summarize and emit the structured final result to the caller.",
+      "steps": [
+        "step-13",
+        "step-14"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails or a collision/verification failure occurs; records failure and halts execution.",
+      "steps": [
+        "step-15"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "daa1a0731f0247eead7c4950f509f63f4b2e0c42abf1f134e07d9fc13644eeac",
+    "saved_at": "2026-09-21T15:22:23+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
