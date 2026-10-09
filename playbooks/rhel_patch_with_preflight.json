@@ -1,0 +1,399 @@
+{
+  "tool_name": "rhel_patch_with_preflight",
+  "version": "1.0",
+  "title": "RHEL Server Patch with Preflight Checks",
+  "role": "action",
+  "effect": "persistent",
+  "description": "Patch a RHEL server by validating pre-patch memory, disk, and service state, applying all package updates, rebooting, and reporting post-patch status.",
+  "aap_template": "rhel_patch_with_preflight++Default",
+  "organization": "Default",
+  "execution_target": "managed_host",
+  "connection": {
+    "hosts": "{{ target_server }}",
+    "gather_facts": false
+  },
+  "playbook_input": {
+    "description": "Parameters the caller provides before execution",
+    "parameters": [
+      {
+        "name": "target_server",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "unit": null,
+        "description": "Hostname or IP address of the RHEL server to patch."
+      },
+      {
+        "name": "fs_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "/boot,/iso",
+        "unit": null,
+        "description": "Comma-separated list of mount points to exclude from disk space checks."
+      },
+      {
+        "name": "fs_type_exclude_list",
+        "type": "string",
+        "required": false,
+        "default": "devtmpfs,tmpfs,cgroup2,iso9660",
+        "unit": null,
+        "description": "Comma-separated list of filesystem types to exclude from disk space checks."
+      },
+      {
+        "name": "min_free_mem_mb",
+        "type": "integer",
+        "required": false,
+        "default": "2048",
+        "unit": "MB",
+        "description": "Minimum free memory required before and after patching."
+      },
+      {
+        "name": "min_free_disk_gb",
+        "type": "integer",
+        "required": false,
+        "default": "5",
+        "unit": "GB",
+        "description": "Minimum free disk space required per filesystem before and after patching."
+      }
+    ]
+  },
+  "playbook_output": {
+    "description": "Emits per-step status, memory status, mount point status, and service comparison results.",
+    "output_wrapper": "<result>...</result>",
+    "fields": [
+      {
+        "name": "preflight_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status of the pre-patch memory and disk checks."
+      },
+      {
+        "name": "patch_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status of the package update step."
+      },
+      {
+        "name": "reboot_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Status of the reboot step."
+      },
+      {
+        "name": "post_memory_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Post-patch free memory status."
+      },
+      {
+        "name": "post_disk_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Post-patch mount point free space status."
+      },
+      {
+        "name": "service_status",
+        "type": "string",
+        "nullable": false,
+        "required_by_sop": true,
+        "description": "Comparison of pre and post running services, including any mismatches."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "step-01",
+      "type": "collect",
+      "name": "Gather pre-patch memory and filesystem facts",
+      "function": "Collect free memory and mount point facts before patching.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_pre_facts"
+      ],
+      "on_success": "step-02",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-02",
+      "type": "decide",
+      "name": "Check pre-patch memory and disk space",
+      "function": "Branch on whether pre-patch free memory is below the minimum threshold or any non-excluded filesystem has insufficient free space.",
+      "input": {
+        "source": "step-01",
+        "fields": [
+          "_pre_facts"
+        ]
+      },
+      "condition": "Pre-patch free memory is below the minimum threshold OR any non-excluded filesystem has insufficient free space.",
+      "on_pass": "step-13",
+      "on_fail": "step-03"
+    },
+    {
+      "id": "step-03",
+      "type": "collect",
+      "name": "Gather pre-patch running systemd service list",
+      "function": "Collect the list of running systemd services before patching.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_pre_service_facts"
+      ],
+      "on_success": "step-04",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-04",
+      "type": "action",
+      "name": "Update all packages",
+      "function": "Apply all available package updates to the server.",
+      "module": "ansible.builtin.dnf",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_patch_result"
+      ],
+      "on_success": "step-05",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-05",
+      "type": "action",
+      "name": "Reboot the server",
+      "function": "Reboot the server and wait for it to become reachable again.",
+      "module": "ansible.builtin.reboot",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "idempotent": true,
+      "stores": [
+        "_reboot_result"
+      ],
+      "on_success": "step-06",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-06",
+      "type": "collect",
+      "name": "Gather post-patch memory and filesystem facts",
+      "function": "Collect free memory and mount point facts after patching.",
+      "module": "ansible.builtin.setup",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_post_facts"
+      ],
+      "on_success": "step-07",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-07",
+      "type": "collect",
+      "name": "Gather post-patch running systemd service list",
+      "function": "Collect the list of running systemd services after patching.",
+      "module": "ansible.builtin.service_facts",
+      "input": {
+        "source": "playbook_input.parameters",
+        "fields": [
+          "target_server"
+        ]
+      },
+      "stores": [
+        "_post_service_facts"
+      ],
+      "on_success": "step-08",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-08",
+      "type": "transform",
+      "name": "Compare pre and post service lists",
+      "function": "Compare the pre-patch and post-patch running service lists and compute the mismatch list.",
+      "input": {
+        "source": "step-07",
+        "fields": [
+          "_pre_service_facts",
+          "_post_service_facts"
+        ]
+      },
+      "computations": {
+        "_service_mismatch": "List of services present in the pre-patch running list but absent from the post-patch running list, and vice versa."
+      },
+      "stores": [
+        "_service_mismatch"
+      ],
+      "on_success": "step-09",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-09",
+      "type": "decide",
+      "name": "Check post-patch memory and disk space",
+      "function": "Branch on whether post-patch free memory is below the minimum threshold or any non-excluded filesystem has insufficient free space.",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_post_facts"
+        ]
+      },
+      "condition": "Post-patch free memory is below the minimum threshold OR any non-excluded filesystem has insufficient free space.",
+      "on_pass": "step-10",
+      "on_fail": "step-10"
+    },
+    {
+      "id": "step-10",
+      "type": "transform",
+      "name": "Extract post-patch memory and disk status",
+      "function": "Extract post-patch free memory value and per-mount free-space status from the post-patch facts.",
+      "input": {
+        "source": "step-06",
+        "fields": [
+          "_post_facts"
+        ]
+      },
+      "computations": {
+        "_post_memory_status": "Post-patch free memory in MB from _post_facts.",
+        "_post_disk_status": "Per-mount free-space status for each non-excluded filesystem from _post_facts."
+      },
+      "stores": [
+        "_post_memory_status",
+        "_post_disk_status"
+      ],
+      "on_success": "step-11",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-11",
+      "type": "transform",
+      "name": "Build report with status",
+      "function": "Build the final report with memory, disk, and service status.",
+      "input": {
+        "source": "step-10",
+        "fields": [
+          "_post_memory_status",
+          "_post_disk_status",
+          "_service_mismatch",
+          "_pre_service_facts",
+          "_post_service_facts",
+          "_pre_facts",
+          "_patch_result",
+          "_reboot_result"
+        ]
+      },
+      "computations": {
+        "_report": "Assemble the final report with memory/disk status and service comparison."
+      },
+      "stores": [
+        "_report"
+      ],
+      "on_success": "step-12",
+      "on_fail": "step-13"
+    },
+    {
+      "id": "step-12",
+      "type": "emit",
+      "name": "Emit final report",
+      "function": "Print the Required Output Format result block containing per-step status, memory status, mount point status, and service comparison.",
+      "output_fields": {
+        "preflight_status": "{{ _pre_facts }}",
+        "patch_status": "{{ _patch_result }}",
+        "reboot_status": "{{ _reboot_result }}",
+        "post_memory_status": "{{ _post_memory_status }}",
+        "post_disk_status": "{{ _post_disk_status }}",
+        "service_status": "{{ _service_mismatch }}"
+      },
+      "on_success": "end"
+    },
+    {
+      "id": "step-13",
+      "type": "abort",
+      "name": "Emit error and fail",
+      "function": "Reached via the playbook's rescue block on any task failure. Prints the Required Error Output Format block and fails the play.",
+      "error_message": "ERROR: rhel_patch_with_preflight failed",
+      "on_success": "end"
+    }
+  ],
+  "error_handling": {
+    "abort_step_id": "step-13",
+    "no_silent_exit": true
+  },
+  "timeout_seconds": 300,
+  "phases": [
+    {
+      "name": "Pre-checks",
+      "description": "Collect pre-patch memory, disk, and service state and validate prerequisites before applying changes.",
+      "steps": [
+        "step-01",
+        "step-02",
+        "step-03"
+      ]
+    },
+    {
+      "name": "Main action",
+      "description": "Apply package updates and reboot the server.",
+      "steps": [
+        "step-04",
+        "step-05"
+      ]
+    },
+    {
+      "name": "Post-checks",
+      "description": "Collect post-patch state and compare services against the pre-patch baseline.",
+      "steps": [
+        "step-06",
+        "step-07",
+        "step-08",
+        "step-09",
+        "step-10",
+        "step-11"
+      ]
+    },
+    {
+      "name": "Reporting",
+      "description": "Emit the structured final report to the caller.",
+      "steps": [
+        "step-12"
+      ]
+    },
+    {
+      "name": "Error handling",
+      "description": "Reached when any step fails; records failure and halts execution.",
+      "steps": [
+        "step-13"
+      ]
+    }
+  ],
+  "meta": {
+    "content_sha256": "d1bb88300c72d1c5b7af34159bf989d83e73bf5a8fa66dc5d39249f5498985c4",
+    "saved_at": "2026-10-09T06:52:57+00:00",
+    "saved_by": "admin",
+    "revision": 1
+  }
+}
