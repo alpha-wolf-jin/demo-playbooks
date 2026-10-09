@@ -127,7 +127,7 @@
     {
       "id": "step-02",
       "type": "decide",
-      "name": "Check pre-patch memory and disk space",
+      "name": "Check pre-patch memory and disk space threshold",
       "function": "Branch on whether pre-patch free memory is below the minimum threshold or any non-excluded filesystem has insufficient free space.",
       "input": {
         "source": "step-01",
@@ -391,8 +391,8 @@
     }
   ],
   "meta": {
-    "content_sha256": "d1bb88300c72d1c5b7af34159bf989d83e73bf5a8fa66dc5d39249f5498985c4",
-    "saved_at": "2026-10-09T17:00:54+00:00",
+    "content_sha256": "60854b43b271c87908c99ccee8c5b907f725146f9ddf619b342645df329d4320",
+    "saved_at": "2026-10-09T17:35:01+00:00",
     "saved_by": "admin",
     "revision": 1
   }
